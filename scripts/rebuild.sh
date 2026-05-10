@@ -70,7 +70,7 @@ EOF
 }
 
 # Parse arguments
-BUILD_ROCM=true
+BUILD_ROCM=false
 BUILD_VULKAN=true
 CLEAN=false
 REBUILD=false

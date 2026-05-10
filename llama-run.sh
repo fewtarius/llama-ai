@@ -59,20 +59,20 @@ detect_backend() {
         return 0
     fi
     
-    # Check for ROCm first (faster)
-    if [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
-        BACKEND="rocm"
-        return 0
-    fi
-    
-    # Check for Vulkan
+    # Check for Vulkan first (default backend - best stability on RDNA3)
     if [[ -x "$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server" ]]; then
         BACKEND="vulkan"
         return 0
     fi
     
+    # Check for ROCm (optional backend - known issues with some archs)
+    if [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
+        BACKEND="rocm"
+        return 0
+    fi
+    
     # Fallback
-    BACKEND="rocm"
+    BACKEND="vulkan"
 }
 
 setup_backend_env() {
@@ -94,9 +94,10 @@ CTX_SIZE=65536
 USER_CTX_SIZE=""  # set when user explicitly passes -c
 N_PREDICT=256
 GPU_LAYERS=99
-KV_CACHE_TYPE_K="q8_0"
-KV_CACHE_TYPE_V="q8_0"
+KV_CACHE_TYPE_K="f16"
+KV_CACHE_TYPE_V="f16"
 INTERACTIVE=false
+PRINT_PROFILE=false
 SERVER_MODE=false
 PORT=9090
 HOST="0.0.0.0"
@@ -105,11 +106,16 @@ EXTRA_SERVER_ARGS=""
 OVERRIDE_REASONING=""
 OVERRIDE_FIT=""
 SSD_PATH=""
-SSD_CHECKPOINTS=""
-SSD_HOT_WINDOW=""
+SSD_HOT_WINDOW="4096"
 SSD_WARM_WINDOW=""
-SSD_MAX_COLD=""
+SSD_MAX_COLD="32"
 SSD_PAGE_SIZE=""
+PROMPT_MAX="8"
+SSD_CHECKPOINTS="64"
+OVERRIDE_CHECKPOINT_EVERY=""
+OVERRIDE_CTX_CHECKPOINTS=""
+OVERRIDE_CACHE_RAM=""
+OVERRIDE_N_PARALLEL=""
 
 # Colors
 RED='\033[0;31m'
@@ -118,6 +124,11 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+
+log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+log_ok()    { echo -e "${GREEN}[OK]${NC}   $1"; }
+log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 # =============================================================================
 # Usage
@@ -181,8 +192,8 @@ assign_profile() {
     
     # Reset all variables to sensible defaults
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-    KV_CACHE_TYPE_K="q8_0"
-    KV_CACHE_TYPE_V="q8_0"
+    KV_CACHE_TYPE_K="f16"
+    KV_CACHE_TYPE_V="f16"
     GPU_LAYERS=99
     EXTRA_COMMON_ARGS=""
     EXTRA_SERVER_ARGS=""
@@ -206,20 +217,22 @@ assign_profile() {
     if [[ "$is_ssm" == true ]]; then
         # SSM/Mamba models: cache_reuse doesn't work, need different settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="f16"
+        KV_CACHE_TYPE_V="f16"
         GPU_LAYERS=99
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
         EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
         OVERRIDE_REASONING="on"
+        # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
+        SSD_PATH=""
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
         # MoE models: q8_0 KV cache for all sizes to ensure stable operation
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="f16"
+        KV_CACHE_TYPE_V="f16"
         # Smaller batch sizes to reduce KV cache fragmentation during generation
         OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
@@ -231,18 +244,13 @@ assign_profile() {
         # - Each checkpoint is ~63MB, so 4 per slot * 8 conversations = ~2GB
         # - 6GB cache limit prevents over-allocation
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
-        # SSD-backed KV cache for cross-session persistence
-        # Default: kv-cache directory, 64 checkpoints, 4096 hot window, 32 cold max
-        [[ -z "$SSD_PATH" ]] && SSD_PATH="$PROJECT_ROOT/kv-cache"
-        [[ -z "$SSD_CHECKPOINTS" ]] && SSD_CHECKPOINTS=64
-        [[ -z "$SSD_HOT_WINDOW" ]] && SSD_HOT_WINDOW=4096
-        [[ -z "$SSD_MAX_COLD" ]] && SSD_MAX_COLD=32
+        # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="f16"
+        KV_CACHE_TYPE_V="f16"
         OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.05 --presence-penalty 0.0"
@@ -254,15 +262,15 @@ assign_profile() {
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="f16"
+        KV_CACHE_TYPE_V="f16"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         profile_name="medium-dense"
     else
         # Small models (<10GB): full power
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="f16"
+        KV_CACHE_TYPE_V="f16"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
         profile_name="small-efficient"
     fi
@@ -715,8 +723,18 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-warm-window) SSD_WARM_WINDOW="$2"; shift 2 ;;
         --cache-ssd-max-cold) SSD_MAX_COLD="$2"; shift 2 ;;
         --cache-ssd-page-size) SSD_PAGE_SIZE="$2"; shift 2 ;;
+        --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
+        --checkpoint-every-n-tokens)
+            OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
+        --ctx-checkpoints)
+            OVERRIDE_CTX_CHECKPOINTS="$2"; shift 2 ;;
+        --cache-ram)
+            OVERRIDE_CACHE_RAM="$2"; shift 2 ;;
+        --np)
+            OVERRIDE_N_PARALLEL="$2"; shift 2 ;;
         --interactive|-i) INTERACTIVE=true; shift ;;
         --server|-s) SERVER_MODE=true; shift ;;
+        --print-profile) PRINT_PROFILE=true; shift ;;
         --port) PORT="$2"; shift 2 ;;
         --host) HOST="$2"; shift 2 ;;
         --list-models) list_models ;;
@@ -759,9 +777,37 @@ fi
 assign_profile "$MODEL"
 
 # =============================================================================
+
+if [[ "$PRINT_PROFILE" == true ]]; then
+    model_name=$(basename "$MODEL" .gguf)
+    model_bytes=$(stat -c%s "$MODEL" 2>/dev/null || echo 0)
+    # Suppress the "Auto profile:" line that assign_profile echo'd to stdout
+    cat <<PROFILE_EOF
+CTX_SIZE=$CTX_SIZE
+MODEL_PATH='$MODEL'
+MODEL_NAME=$model_name
+MODEL_BYTES=$model_bytes
+GPU_LAYERS=$GPU_LAYERS
+THREADS=$THREADS
+KV_CACHE_TYPE_K=$KV_CACHE_TYPE_K
+KV_CACHE_TYPE_V=$KV_CACHE_TYPE_V
+OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 -ub 512"}'
+OVERRIDE_REASONING='${OVERRIDE_REASONING:-off}'
+EXTRA_SERVER_ARGS='${EXTRA_SERVER_ARGS:-}'
+SSD_PATH='$SSD_PATH'
+SSD_CHECKPOINTS=$SSD_CHECKPOINTS
+SSD_HOT_WINDOW=$SSD_HOT_WINDOW
+SSD_WARM_WINDOW=$SSD_WARM_WINDOW
+SSD_MAX_COLD=$SSD_MAX_COLD
+SSD_PAGE_SIZE=$SSD_PAGE_SIZE
+PROFILE_EOF
+    exit 0
+fi
 # Setup backend
 # =============================================================================
 
+# Default SSD cache for all non-SSM models (respects user override)
+[[ -z "$SSD_PATH" ]] && SSD_PATH="$PROJECT_ROOT/kv-cache"
 setup_backend_env
 
 # Get binary paths
@@ -778,6 +824,7 @@ echo -e "${BLUE}Binary: ${GREEN}$LLAMA_SERVER${NC}"
 setup_performance
 
 MODEL_SIZE=$(du -h "$MODEL" 2>/dev/null | cut -f1)
+MODEL_BYTES=$(stat -c%s "$MODEL" 2>/dev/null || echo 0)
 MODEL_NAME=$(basename "$MODEL" .gguf)
 echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 
@@ -787,7 +834,15 @@ echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 
 COMMON_ARGS="-m '$MODEL'"
 [[ -n "$MODEL_ALIAS" ]] && COMMON_ARGS="$COMMON_ARGS -a '$MODEL_ALIAS'"
-COMMON_ARGS="$COMMON_ARGS -c $CTX_SIZE --threads $THREADS --threads-batch $THREADS --mlock"
+MODEL_BYTES=${MODEL_BYTES:-0}
+MEMLOCK_LIMIT_KB=$(ulimit -l 2>/dev/null || echo 0)
+MEMLOCK_LIMIT_BYTES=$((MEMLOCK_LIMIT_KB * 1024))
+if [[ "$MODEL_BYTES" -gt 0 && "$MODEL_BYTES" -gt "$MEMLOCK_LIMIT_BYTES" ]]; then
+    log_info "mlock disabled: model ($((MODEL_BYTES / 1048576)) MiB) larger than memlock limit ($((MEMLOCK_LIMIT_BYTES / 1048576)) MiB)"
+else
+    COMMON_ARGS="$COMMON_ARGS --mlock"
+fi
+COMMON_ARGS="$COMMON_ARGS -c $CTX_SIZE --threads $THREADS --threads-batch $THREADS"
 COMMON_ARGS="$COMMON_ARGS ${OVERRIDE_BATCH_SIZE:---batch-size 1024 -ub 512} -ngl $GPU_LAYERS"
 COMMON_ARGS="$COMMON_ARGS --cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
 [[ -n "$EXTRA_COMMON_ARGS" ]] && COMMON_ARGS="$COMMON_ARGS $EXTRA_COMMON_ARGS"
@@ -799,7 +854,7 @@ mkdir -p "$KV_CACHE_DIR"
 SERVER_ARGS="--host $HOST --port $PORT"
 SERVER_ARGS="$SERVER_ARGS -fa on --jinja"
 SERVER_ARGS="$SERVER_ARGS --reasoning ${OVERRIDE_REASONING:-off}"
-SERVER_ARGS="$SERVER_ARGS -np 1 --prio 3 --prio-batch 3 --metrics"
+SERVER_ARGS="$SERVER_ARGS -np ${OVERRIDE_N_PARALLEL:-1} --prio 3 --prio-batch 3 --metrics"
 # Checkpoint capacity
 SERVER_ARGS="$SERVER_ARGS -ctxcp 64"
 # RAM cache reuse threshold
@@ -808,6 +863,21 @@ SERVER_ARGS="$SERVER_ARGS --cache-reuse 512"
 SERVER_ARGS="$SERVER_ARGS --slot-save-path $KV_CACHE_DIR"
 # Higher similarity threshold for confident cache matches, unified KV
 SERVER_ARGS="$SERVER_ARGS --slot-prompt-similarity 0.20 --kv-unified"
+
+# Apply command-line overrides (strip from EXTRA_SERVER_ARGS and append fresh)
+if [[ -n "$OVERRIDE_CHECKPOINT_EVERY" ]]; then
+    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--checkpoint-every-n-tokens [0-9]+//g')
+    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --checkpoint-every-n-tokens $OVERRIDE_CHECKPOINT_EVERY"
+fi
+if [[ -n "$OVERRIDE_CTX_CHECKPOINTS" ]]; then
+    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--ctx-checkpoints [0-9]+//g')
+    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --ctx-checkpoints $OVERRIDE_CTX_CHECKPOINTS"
+fi
+if [[ -n "$OVERRIDE_CACHE_RAM" ]]; then
+    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--cache-ram [0-9]+//g')
+    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --cache-ram $OVERRIDE_CACHE_RAM"
+fi
+
 [[ -n "$EXTRA_SERVER_ARGS" ]] && SERVER_ARGS="$SERVER_ARGS $EXTRA_SERVER_ARGS"
 
 # SSD-backed KV cache
@@ -819,6 +889,7 @@ if [[ -n "$SSD_PATH" ]]; then
     [[ -n "$SSD_WARM_WINDOW" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-warm-window $SSD_WARM_WINDOW"
     [[ -n "$SSD_MAX_COLD" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-max-cold $SSD_MAX_COLD"
     [[ -n "$SSD_PAGE_SIZE" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-page-size $SSD_PAGE_SIZE"
+    [[ -n "$PROMPT_MAX" && "$PROMPT_MAX" != "0" ]] && SERVER_ARGS="$SERVER_ARGS --prompt-max $PROMPT_MAX"
 fi
 
 # =============================================================================

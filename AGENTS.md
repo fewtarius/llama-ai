@@ -32,15 +32,20 @@ llama-ai/
 ## Build
 
 ```bash
-# Full setup from fresh checkout (downloads ROCm SDK + builds both backends)
+# Full setup from fresh checkout (builds Vulkan backend by default)
 ./scripts/rebuild.sh
 
-# Full rebuild (wipe deps/, re-download SDK, rebuild)
-./scripts/rebuild.sh --rebuild
-
-# Build individual backends
+# Full rebuild with ROCm support (adds --rocm flag)
 ./scripts/rebuild.sh --rocm
-./scripts/rebuild.sh --vulkan
+
+# Build Vulkan only (default)
+./scripts/rebuild.sh
+
+# Build ROCm only (optional - ROCm has stability issues on RDNA3)
+./scripts/rebuild.sh --rocm
+
+# Build both backends
+./scripts/rebuild.sh --rocm  # (Vulkan is always built by default)
 ```
 
 Build scripts in `src/llama-cpp-rocm/build.sh` and `src/llama-cpp-vulkan/build.sh` reference `$PROJECT_ROOT/llama.cpp` for the source.
@@ -50,11 +55,11 @@ Build scripts in `src/llama-cpp-rocm/build.sh` and `src/llama-cpp-vulkan/build.s
 ## Environment
 
 ```bash
-# Required before using ROCm tools or running ROCm server
-source scripts/env.sh rocm
-
-# Or for Vulkan
+# Required before using Vulkan tools (default)
 source scripts/env.sh vulkan
+
+# Or for ROCm (optional - ROCm has stability issues on RDNA3)
+source scripts/env.sh rocm
 ```
 
 Sets `ROCM_PATH`, `HIP_PATH`, `LD_LIBRARY_PATH`, `PATH`.
@@ -99,8 +104,13 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 - Everything self-contained in this directory — no system ROCm
 - `deps/`, `models/`, `kv-cache/`, `build/` directories are gitignored
 - `llama.cpp/` is a git submodule — use `--recurse-submodules` when cloning
-- Target hardware: Ayaneo Flip KB (7840U / 780M / gfx1103 / 32GB RAM), Minisforum UM580 (5800H / gfx90c / 16GB RAM)
-- Vulkan (RADV) is generally faster than ROCm for inference on this GPU
+- **Vulkan (RADV) is the default backend** — ROCm has stability issues on RDNA3
+  (GLM-4.7-Flash/DeepSeek2 MLA produces zero generation tokens on ROCm)
+- **Target hardware: Ayaneo Flip KB** (AYANEO FLIP KB, AMD 7840U Phoenix / gfx1103,
+   Radeon 780M iGPU, 32GB physical RAM, 6GB VRAM carveout via amdgpu.vis_vramlimit=6144,
+   18GB GTT via amdgpu.gttsize=18432, ~26GB available to OS. ROCm sees combined
+   VRAM+GTT pool of ~24167 MiB free.)
+- **Secondary: Minisforum UM580 "zaphod"** (5800H / gfx90c / 16GB RAM)
 
 ## Patch management
 

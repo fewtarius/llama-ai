@@ -7,7 +7,6 @@ rocm/
 # Build output
 src/*/build/
 llama.cpp/build/
-llama.cpp/build_hip/
 
 # Llama.cpp source (managed as git submodules)
 
@@ -25,6 +24,7 @@ models/
 
 # Logs
 *.log
+!benchmarks/**/*.log
 wget-log*
 debug.log
 
