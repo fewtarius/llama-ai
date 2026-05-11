@@ -13,6 +13,8 @@
 # Usage:
 #   sudo ./scripts/apply-ttm-kernel-params.sh [GB]
 #   Default: auto-detected based on system RAM
+#   sudo ./scripts/apply-ttm-kernel-params.sh --remove|--reset
+#   Removes all TTM/GPU kernel params and resets amd-smi to defaults
 #
 # Kernel parameters set (all sizes in MB except ttm which uses 4KB pages):
 #   amdgpu.vis_vramlimit  - visible VRAM limit
@@ -135,6 +137,31 @@ try_amd_smi() {
 }
 
 # =============================================================================
+# amd-smi reset (revert GTT to system default)
+# =============================================================================
+
+reset_amd_smi() {
+    local amd_smi_path="$PROJECT_ROOT/deps/bin/amd-smi"
+    if [[ ! -x "$amd_smi_path" ]]; then
+        amd_smi_path=$(command -v amd-smi 2>/dev/null || true)
+    fi
+
+    if [[ -z "$amd_smi_path" ]]; then
+        log_warn "amd-smi not found, skipping reset"
+        return 1
+    fi
+
+    log_info "Resetting GTT to system default using amd-smi..."
+    if "$amd_smi_path" reset --gtt 2>&1; then
+        log_ok "GTT reset to system default via amd-smi"
+        return 0
+    else
+        log_warn "amd-smi reset failed"
+        return 1
+    fi
+}
+
+# =============================================================================
 # systemd-boot method (SteamFork 3.8+)
 # =============================================================================
 
@@ -248,6 +275,27 @@ apply_params_to_entry() {
 }
 
 # =============================================================================
+# Remove parameters from systemd-boot entry (restore to stock)
+# =============================================================================
+
+remove_params_from_entry() {
+    local entry="$1"
+
+    log_info "Target entry: $entry"
+
+    # Backup
+    local backup="${entry}.bak-$(date +%Y%m%d-%H%M%S)"
+    cp "$entry" "$backup"
+    log_info "Backed up to: $(basename "$backup")"
+
+    # Remove TTM/amdgpu params and clean up whitespace
+    sed -i 's/amdgpu\.vis_vramlimit=[0-9]*//g; s/amdgpu\.gttsize=[0-9]*//g; s/ttm\.pages_limit=[0-9]*//g; s/ttm\.page_pool_size=[0-9]*//g' "$entry"
+    sed -i 's/  */ /g; s/^ //; s/ $//' "$entry"
+
+    verify_removal "$entry"
+}
+
+# =============================================================================
 # Apply parameters to GRUB default
 # =============================================================================
 
@@ -275,6 +323,47 @@ apply_params_to_grub() {
 }
 
 # =============================================================================
+# Remove parameters from GRUB default (restore to stock)
+# =============================================================================
+
+remove_params_from_grub() {
+    local file="$1"
+
+    log_info "Target file: $file"
+
+    # Backup
+    local backup="${file}.bak-$(date +%Y%m%d-%H%M%S)"
+    cp "$file" "$backup"
+    log_info "Backed up to: $(basename "$backup")"
+
+    # Remove TTM/amdgpu params from GRUB_CMDLINE_LINUX_DEFAULT
+    local current_cmdline
+    current_cmdline=$(grep "^GRUB_CMDLINE_LINUX_DEFAULT=" "$file" | head -1 \
+        | sed 's/GRUB_CMDLINE_LINUX_DEFAULT=//;s/"//g')
+
+    local new_cmdline
+    new_cmdline=$(echo "$current_cmdline" \
+        | sed 's/amdgpu\.vis_vramlimit=[0-9]*//g; s/amdgpu\.gttsize=[0-9]*//g; s/ttm\.pages_limit=[0-9]*//g; s/ttm\.page_pool_size=[0-9]*//g' \
+        | sed 's/  */ /g; s/^ //; s/ $//')
+
+    sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${new_cmdline}\"|" "$file"
+
+    verify_removal "$file"
+
+    # Update GRUB
+    if command -v steamfork-grub-update &>/dev/null; then
+        log_info "Running steamfork-grub-update..."
+        steamfork-grub-update
+    elif command -v grub-mkconfig &>/dev/null; then
+        log_info "Running grub-mkconfig..."
+        grub-mkconfig -o /boot/grub/grub.cfg
+    else
+        log_warn "Could not update GRUB automatically"
+        log_info "Run: sudo grub-mkconfig -o /boot/grub/grub.cfg"
+    fi
+}
+
+# =============================================================================
 # Verify and report
 # =============================================================================
 
@@ -299,12 +388,120 @@ verify_and_report() {
 }
 
 # =============================================================================
+# Verify removal (params should be gone)
+# =============================================================================
+
+verify_removal() {
+    local file="$1"
+
+    if grep -qE "amdgpu\.(vis_vramlimit|gttsize)|ttm\.(pages_limit|page_pool_size)" "$file" 2>/dev/null; then
+        log_error "Failed to remove all GPU memory parameters"
+        echo "  Remaining params:"
+        grep -oE "amdgpu\.(vis_vramlimit|gttsize)=[0-9]+|ttm\.(pages_limit|page_pool_size)=[0-9]+" "$file" || true
+        log_error "Restoring backup..."
+        cp "${file}.bak-"* "$file" 2>/dev/null || true
+        return 1
+    else
+        log_ok "All GPU memory parameters removed"
+        echo ""
+        log_warn "Reboot required for changes to take effect"
+        log_warn "Run: sudo reboot"
+        return 0
+    fi
+}
+
+# =============================================================================
+# Remove from bootloader (dispatcher)
+# =============================================================================
+
+remove_from_bootloader() {
+    local boot_method
+    boot_method=$(detect_boot_method)
+    log_info "Detected boot method: $boot_method"
+
+    case "$boot_method" in
+        systemd-boot)
+            local efi_mount="/boot"
+            local efi_part
+            efi_part=$(findmnt -n -o SOURCE -t vfat /boot 2>/dev/null) \
+                || efi_part=$(findmnt -n -o SOURCE -t vfat /boot/efi 2>/dev/null) \
+                || efi_part=$(findmnt -n -o SOURCE -t vfat /efi 2>/dev/null) \
+                || true
+
+            if [[ -z "$efi_part" ]]; then
+                efi_part=$(lsblk -l -n -o NAME,FSTYPE,SIZE,MOUNTPOINT 2>/dev/null \
+                    | awk '$2=="vfat" && $3+0 < 1024 {print "/dev/"$1; exit}') \
+                    || true
+            fi
+
+            if [[ -z "$efi_part" ]]; then
+                log_error "Could not auto-detect EFI partition"
+                return 1
+            fi
+
+            if ! mountpoint -q "$efi_mount"; then
+                mkdir -p "$efi_mount"
+                mount "$efi_part" "$efi_mount"
+                trap "umount $efi_mount 2>/dev/null || true" EXIT
+            fi
+
+            local loader_entry=""
+            for dir in "$efi_mount/loader/entries" "$efi_mount/EFI/steamfork/loader/entries"; do
+                [[ -d "$dir" ]] || continue
+                for f in "$dir"/*.conf; do
+                    [[ -f "$f" ]] || continue
+                    local name=$(basename "$f")
+                    [[ "$name" =~ fallback|previous|verbose ]] && continue
+                    loader_entry="$f"
+                    break
+                done
+                [[ -n "$loader_entry" ]] && break
+            done
+
+            if [[ -z "$loader_entry" || ! -f "$loader_entry" ]]; then
+                log_error "Could not find systemd-boot loader entry"
+                return 1
+            fi
+
+            remove_params_from_entry "$loader_entry"
+            ;;
+        grub)
+            local grub_default="/etc/default/grub"
+            if [[ ! -f "$grub_default" ]]; then
+                log_error "/etc/default/grub not found"
+                return 1
+            fi
+            remove_params_from_grub "$grub_default"
+            ;;
+        *)
+            log_error "Unknown boot method"
+            log_info "Remove kernel params manually from bootloader config"
+            exit 1
+            ;;
+    esac
+}
+
+# =============================================================================
 # Main
 # =============================================================================
 
 if [[ $EUID -ne 0 ]]; then
     log_error "This script must be run as root (sudo)."
     exit 1
+fi
+
+# --remove/--reset flag: strip all GPU memory params and reset amd-smi to defaults
+if [[ "${1:-}" == "--remove" || "${1:-}" == "--reset" ]]; then
+    log_info "Removing GPU memory parameters..."
+    echo ""
+
+    # Reset amd-smi to default
+    reset_amd_smi || true
+
+    # Remove from bootloader
+    remove_from_bootloader
+
+    exit 0
 fi
 
 # Get requested size (or auto-detect)
