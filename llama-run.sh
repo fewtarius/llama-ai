@@ -94,8 +94,8 @@ CTX_SIZE=65536
 USER_CTX_SIZE=""  # set when user explicitly passes -c
 N_PREDICT=256
 GPU_LAYERS=99
-KV_CACHE_TYPE_K="f16"
-KV_CACHE_TYPE_V="f16"
+KV_CACHE_TYPE_K="bf16"
+KV_CACHE_TYPE_V="bf16"
 INTERACTIVE=false
 PRINT_PROFILE=false
 SERVER_MODE=false
@@ -192,8 +192,8 @@ assign_profile() {
     
     # Reset all variables to sensible defaults
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-    KV_CACHE_TYPE_K="f16"
-    KV_CACHE_TYPE_V="f16"
+    KV_CACHE_TYPE_K="bf16"
+    KV_CACHE_TYPE_V="bf16"
     GPU_LAYERS=99
     EXTRA_COMMON_ARGS=""
     EXTRA_SERVER_ARGS=""
@@ -217,13 +217,13 @@ assign_profile() {
     if [[ "$is_ssm" == true ]]; then
         # SSM/Mamba models: cache_reuse doesn't work, need different settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="f16"
-        KV_CACHE_TYPE_V="f16"
+        KV_CACHE_TYPE_K="bf16"
+        KV_CACHE_TYPE_V="bf16"
         GPU_LAYERS=99
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
+        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
-        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
+        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
         OVERRIDE_REASONING="on"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
         SSD_PATH=""
@@ -231,46 +231,51 @@ assign_profile() {
     elif [[ "$is_moe" == true ]]; then
         # MoE models: q8_0 KV cache for all sizes to ensure stable operation
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="f16"
-        KV_CACHE_TYPE_V="f16"
+        KV_CACHE_TYPE_K="bf16"
+        KV_CACHE_TYPE_V="bf16"
         # Smaller batch sizes to reduce KV cache fragmentation during generation
         OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.05 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
         # - 4096 tokens between checkpoints (fine-grained for incremental conversation growth)
         # - max 4 checkpoints per slot (balances cache hits vs memory)
         # - Each checkpoint is ~63MB, so 4 per slot * 8 conversations = ~2GB
         # - 6GB cache limit prevents over-allocation
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="f16"
-        KV_CACHE_TYPE_V="f16"
+        KV_CACHE_TYPE_K="bf16"
+        KV_CACHE_TYPE_V="bf16"
         OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.05 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
         OVERRIDE_REASONING="on"
         profile_name="large-dense"
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="f16"
-        KV_CACHE_TYPE_V="f16"
-        EXTRA_SERVER_ARGS+=" --cache-ram 4096"
+        KV_CACHE_TYPE_K="bf16"
+        KV_CACHE_TYPE_V="bf16"
+        OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
+        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --reasoning-format auto"
+        EXTRA_SERVER_ARGS+=" --cache-ram 4096 --chat-template-kwargs '{\"preserve_thinking\":true}'"
+        OVERRIDE_REASONING="on"
         profile_name="medium-dense"
     else
         # Small models (<10GB): full power
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="f16"
-        KV_CACHE_TYPE_V="f16"
+        KV_CACHE_TYPE_K="bf16"
+        KV_CACHE_TYPE_V="bf16"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
         profile_name="small-efficient"
     fi
