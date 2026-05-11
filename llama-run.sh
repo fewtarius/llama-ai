@@ -161,7 +161,7 @@ ${YELLOW}Options:${NC}
     --list-backends         List available backends
     --preserve-reasoning    Include reasoning/thinking in prior assistant messages
     --no-preserve-reasoning Strip reasoning from prior assistant messages (default)
-    --reasoning-budget N    Max thinking tokens per response (default: 4096)
+    --reasoning-budget N    Max thinking tokens per response (default: 2048)
     --no-reasoning-budget   Disable thinking token limit
     -h, --help              Show this help
 
@@ -231,7 +231,7 @@ assign_profile() {
         # No reasoning format - SSM models don't support it
         EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
         OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="4096"
+        OVERRIDE_REASONING_BUDGET="2048"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
         SSD_PATH=""
         profile_name="ssm-optimized"
@@ -253,7 +253,7 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="4096"
+        OVERRIDE_REASONING_BUDGET="2048"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -266,7 +266,7 @@ assign_profile() {
         # Checkpoint strategy for agentic workloads
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
         OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="4096"
+        OVERRIDE_REASONING_BUDGET="2048"
         profile_name="large-dense"
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
@@ -279,7 +279,7 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="4096"
+        OVERRIDE_REASONING_BUDGET="2048"
         profile_name="medium-dense"
     else
         # Small models (<10GB): full power
