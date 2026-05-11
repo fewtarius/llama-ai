@@ -115,6 +115,8 @@ SSD_CHECKPOINTS="64"
 OVERRIDE_CHECKPOINT_EVERY=""
 OVERRIDE_CTX_CHECKPOINTS=""
 OVERRIDE_CACHE_RAM=""
+OVERRIDE_REASONING_BUDGET=""
+PRESERVE_REASONING=""
 OVERRIDE_N_PARALLEL=""
 
 # Colors
@@ -157,6 +159,10 @@ ${YELLOW}Options:${NC}
     --host HOST             Server host (default: $HOST)
     --list-models           List available models
     --list-backends         List available backends
+    --preserve-reasoning    Include reasoning/thinking in prior assistant messages
+    --no-preserve-reasoning Strip reasoning from prior assistant messages (default)
+    --reasoning-budget N    Max thinking tokens per response (default: 4096)
+    --no-reasoning-budget   Disable thinking token limit
     -h, --help              Show this help
 
 ${YELLOW}Download Model:${NC}
@@ -223,8 +229,9 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
-        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
+        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
         OVERRIDE_REASONING="on"
+        OVERRIDE_REASONING_BUDGET="4096"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
         SSD_PATH=""
         profile_name="ssm-optimized"
@@ -243,9 +250,10 @@ assign_profile() {
         # - max 4 checkpoints per slot (balances cache hits vs memory)
         # - Each checkpoint is ~63MB, so 4 per slot * 8 conversations = ~2GB
         # - 6GB cache limit prevents over-allocation
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
+        OVERRIDE_REASONING_BUDGET="4096"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -256,8 +264,9 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144 --chat-template-kwargs '{\"preserve_thinking\":true}'"
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
         OVERRIDE_REASONING="on"
+        OVERRIDE_REASONING_BUDGET="4096"
         profile_name="large-dense"
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
@@ -268,8 +277,9 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        EXTRA_SERVER_ARGS+=" --cache-ram 4096 --chat-template-kwargs '{\"preserve_thinking\":true}'"
+        EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"
+        OVERRIDE_REASONING_BUDGET="4096"
         profile_name="medium-dense"
     else
         # Small models (<10GB): full power
@@ -737,6 +747,10 @@ while [[ $# -gt 0 ]]; do
             OVERRIDE_CACHE_RAM="$2"; shift 2 ;;
         --np)
             OVERRIDE_N_PARALLEL="$2"; shift 2 ;;
+        --preserve-reasoning) PRESERVE_REASONING="true"; shift ;;
+        --no-preserve-reasoning) PRESERVE_REASONING="false"; shift ;;
+        --reasoning-budget) OVERRIDE_REASONING_BUDGET="$2"; shift 2 ;;
+        --no-reasoning-budget) OVERRIDE_REASONING_BUDGET="0"; shift ;;
         --interactive|-i) INTERACTIVE=true; shift ;;
         --server|-s) SERVER_MODE=true; shift ;;
         --print-profile) PRINT_PROFILE=true; shift ;;
@@ -798,7 +812,9 @@ KV_CACHE_TYPE_K=$KV_CACHE_TYPE_K
 KV_CACHE_TYPE_V=$KV_CACHE_TYPE_V
 OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 -ub 512"}'
 OVERRIDE_REASONING='${OVERRIDE_REASONING:-off}'
+OVERRIDE_REASONING_BUDGET='${OVERRIDE_REASONING_BUDGET:-0}'
 EXTRA_SERVER_ARGS='${EXTRA_SERVER_ARGS:-}'
+PRESERVE_REASONING='${PRESERVE_REASONING:-false}'
 SSD_PATH='$SSD_PATH'
 SSD_CHECKPOINTS=$SSD_CHECKPOINTS
 SSD_HOT_WINDOW=$SSD_HOT_WINDOW
@@ -859,6 +875,8 @@ mkdir -p "$KV_CACHE_DIR"
 SERVER_ARGS="--host $HOST --port $PORT"
 SERVER_ARGS="$SERVER_ARGS -fa on --jinja"
 SERVER_ARGS="$SERVER_ARGS --reasoning ${OVERRIDE_REASONING:-off}"
+# Cap reasoning tokens to prevent think loops (disabled for SSM models that don't think)
+[[ -n "$OVERRIDE_REASONING_BUDGET" && "$OVERRIDE_REASONING_BUDGET" != "0" ]] && SERVER_ARGS="$SERVER_ARGS --reasoning-budget $OVERRIDE_REASONING_BUDGET"
 SERVER_ARGS="$SERVER_ARGS -np ${OVERRIDE_N_PARALLEL:-1} --prio 3 --prio-batch 3 --metrics"
 # Checkpoint capacity
 SERVER_ARGS="$SERVER_ARGS -ctxcp 64"
@@ -884,6 +902,14 @@ if [[ -n "$OVERRIDE_CACHE_RAM" ]]; then
 fi
 
 [[ -n "$EXTRA_SERVER_ARGS" ]] && SERVER_ARGS="$SERVER_ARGS $EXTRA_SERVER_ARGS"
+
+# Preserve reasoning/thinking in prior assistant messages
+# Default: off (the agentic harness preserves knowledge, reasoning in context is redundant)
+if [[ "$PRESERVE_REASONING" == "true" ]]; then
+    SERVER_ARGS="$SERVER_ARGS --chat-template-kwargs '{\"preserve_thinking\":true}'"
+fi
+
+
 
 # SSD-backed KV cache
 if [[ -n "$SSD_PATH" ]]; then
