@@ -35,7 +35,7 @@ PORT=9090
 CTX_SIZE=32768
 NGL=99
 MAX_TOKENS=128
-BENCH_TIMEOUT=600
+BENCH_TIMEOUT=900
 
 # Prompt sizes (bytes of Gutenberg text to use as prefix)
 # Approximate token mapping: 1 byte ~ 0.25 tokens for English prose

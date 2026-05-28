@@ -666,17 +666,24 @@ hf_find_gguf() {
     local quant_base="${quant_pattern#*-}"  # Remove prefix like "UD-"
     local quant_family="${quant_base%%_*}"  # Get base like "Q4"
     
+    # Convert to lowercase for case-insensitive matching (HF uses lowercase filenames)
+    local quant_lc="${quant_pattern,,}"
+    local quant_base_lc="${quant_base,,}"
+    local quant_family_lc="${quant_family,,}"
+    
     # Extract matching GGUF files
     local matches=()
     while IFS= read -r f; do
         [[ "$f" == *.gguf ]] || continue
+        # Convert filename to lowercase for comparison
+        local f_lc="${f,,}"
         # Match: Q4_K_M style OR unsloth UD-Q4_K_M style OR IQ4_NL style
         # Order matters - most specific first
-        if [[ "$f" =~ [-_]${quant_pattern}[-_.] ]] || \
-           [[ "$f" =~ [-_]${quant_pattern}$ ]] || \
-           [[ "$f" =~ [-_]${quant_base}[-_.] ]] || \
-           [[ "$f" =~ [-_]${quant_base}$ ]] || \
-           [[ "$f" =~ [-_]${quant_family}[-_] ]]; then
+        if [[ "$f_lc" =~ [-_]${quant_lc}[-_.] ]] || \
+           [[ "$f_lc" =~ [-_]${quant_lc}$ ]] || \
+           [[ "$f_lc" =~ [-_]${quant_base_lc}[-_.] ]] || \
+           [[ "$f_lc" =~ [-_]${quant_base_lc}$ ]] || \
+           [[ "$f_lc" =~ [-_]${quant_family_lc}[-_] ]]; then
             matches+=("$f")
         fi
     done <<< "$files"
@@ -773,102 +780,194 @@ download_model() {
     
     # Pick the best match for the requested quantization
     local selected=""
-    
+    local selected_base=""
+    local part_count=1
+    local total_parts=1
+    local quant_lc="${quant,,}"
+    local quant_family_lc="${quant%%_*},,"
+    local quant_base_lc="${quant#*-,,}"
+
     # Priority: exact quant match > same quant family > largest available
+    # Use case-insensitive matching since HF filenames are lowercase
     while IFS= read -r f; do
-        if [[ "$f" =~ [-_]${quant}[-_.] ]] || [[ "$f" =~ [-_]${quant}$ ]] || [[ "$f" == *"${quant}"*.gguf ]]; then
+        local f_lc="${f,,}"
+        if [[ "$f_lc" =~ [-_]${quant_lc}[-_.] ]] || [[ "$f_lc" =~ [-_]${quant_lc}$ ]] || [[ "$f_lc" == *"${quant_lc}"*.gguf ]]; then
             selected="$f"
             break
         fi
     done <<< "$candidates"
-    
+
     # Fallback: same quant family (e.g., Q4_K_M -> Q4_K_S)
     if [[ -z "$selected" ]]; then
-        local quant_family="${quant%%_*}"
         while IFS= read -r f; do
-            if [[ "$f" =~ [-_]${quant_family} ]]; then
+            local f_lc="${f,,}"
+            if [[ "$f_lc" =~ [-_]${quant_family_lc}[-_] ]]; then
                 selected="$f"
                 break
             fi
         done <<< "$candidates"
     fi
-    
+
     # Fallback: largest file
     if [[ -z "$selected" ]]; then
         selected=$(echo "$candidates" | head -1)
     fi
-    
-    filename="$selected"
-    
-    if [[ -z "$filename" ]]; then
+
+    if [[ -z "$selected" ]]; then
         echo -e "${RED}Could not determine filename${NC}"
         return 1
     fi
-    
+
+    # Detect multi-part files: base-00001-of-00003.gguf pattern
+    # Use non-greedy .*? to avoid consuming part numbers
+    if [[ "$selected" =~ ^(.*?)-([0-9]+)-of-([0-9]+)\.gguf$ ]]; then
+        selected_base="${BASH_REMATCH[1]}"
+        part_count="${BASH_REMATCH[2]}"
+        total_parts="${BASH_REMATCH[3]}"
+        echo -e "${BLUE}Detected multi-part file ($part_count of $total_parts)${NC}"
+    fi
+
+    # Collect all files to download
+    local all_files=()
+    all_files+=("$selected")
+
+    if [[ -n "$selected_base" ]]; then
+        while IFS= read -r f; do
+            [[ " ${all_files[*]} " == *" $f "* ]] && continue
+            # Use extended regex to handle the non-greedy base matching properly
+            # Escape special chars in base for regex use
+            local escaped_base="${selected_base//\//\\/}"
+            if [[ "$f" =~ ^${escaped_base}-[0-9]+-of-[0-9]+\.gguf$ ]]; then
+                all_files+=("$f")
+            fi
+        done <<< "$candidates"
+    fi
+
+    # Sort by part number
+    IFS=$'\n' sorted_files=($(sort -t'_' -k2 -V <<< "${all_files[*]}")); unset IFS
+
     mkdir -p "$target_dir"
-    
+
     echo -e "\n${BLUE}Model Download Information${NC}"
     echo ""
     echo -e "  ${GREEN}Repo:${NC}     $repo"
-    echo -e "  ${GREEN}File:${NC}     $filename"
+    echo -e "  ${GREEN}Parts:${NC}    ${#sorted_files[@]} file(s) to download"
+    for f in "${sorted_files[@]}"; do
+        echo -e "    - $f"
+    done
     echo -e "  ${GREEN}Quant:${NC}    $quant (requested)"
     echo -e "  ${GREEN}Target:${NC}   $target_dir"
     echo ""
-    
-    # Check if already cached
-    if [[ -f "$target_dir/$filename" ]]; then
-        echo -e "${GREEN}Model already exists: $target_dir/$filename${NC}"
+
+    # Check which files already exist
+    local files_to_download=()
+    for f in "${sorted_files[@]}"; do
+        if [[ -f "$target_dir/$f" ]]; then
+            echo -e "${GREEN}Already exists: $f${NC}"
+        else
+            files_to_download+=("$f")
+        fi
+    done
+
+    if [[ ${#files_to_download[@]} -eq 0 ]]; then
+        echo -e "${GREEN}All files already cached.${NC}"
         return 0
     fi
-    
-    # Download using available tools
-    local download_cmd=""
-    local download_args=()
+
+    echo -e "${BLUE}Downloading ${#files_to_download[@]} file(s)...${NC}"
+    echo ""
+
+    # Try hf (recommended) or huggingface-cli for downloads
+    local use_python=false
+    local download_tool=""
+    local idx=0
     
     if command -v hf &>/dev/null; then
-        download_cmd="hf"
-        download_args=(download "$repo" "$filename" --local-dir "$target_dir")
+        download_tool="hf"
     elif command -v huggingface-cli &>/dev/null; then
-        download_cmd="huggingface-cli"
-        download_args=(download "$repo" "$filename" --local-dir "$target_dir" --local-dir-use-symlinks False)
-    elif python3 -c "import huggingface_hub" 2>/dev/null; then
-        download_cmd="python3"
-        download_args=(-c "
-from huggingface_hub import hf_hub_download
-path = hf_hub_download(
-    repo_id='$repo',
-    filename='$filename',
-    local_dir='$target_dir',
-    local_dir_use_symlinks=False
-)
-print(f'Downloaded to: {path}')
-")
+        download_tool="huggingface-cli"
     else
-        echo -e "${YELLOW}huggingface-cli not found. Install it with:${NC}"
-        echo ""
-        echo -e "  ${CYAN}# Option 1: pip${NC}"
-        echo -e "  pip install huggingface_hub"
-        echo ""
-        echo -e "  ${CYAN}# Option 2: conda${NC}"
-        echo -e "  conda install -c conda-forge huggingface_hub"
-        echo ""
-        echo -e "  ${CYAN}# Option 3: Manual download${NC}"
-        echo -e "  1. Go to: https://huggingface.co/$repo"
-        echo -e "  2. Download: $filename"
-        echo -e "  3. Place in: $target_dir"
-        echo ""
-        echo -e "${BLUE}Quick download command (after installing):${NC}"
-        echo ""
-        echo -e "  ${CYAN}huggingface-cli download $repo $filename \\${NC}"
-        echo -e "  ${CYAN}    --local-dir $target_dir \\${NC}"
-        echo -e "  ${CYAN}    --local-dir-use-symlinks False${NC}"
-        echo ""
-        return 1
+        use_python=true
     fi
     
-    echo -e "${BLUE}Downloading with $download_cmd...${NC}"
-    "$download_cmd" "${download_args[@]}"
-    return $?
+    if [[ "$download_tool" == "hf" ]]; then
+        # hf is the recommended tool
+        for f in "${files_to_download[@]}"; do
+            idx=$((idx + 1))
+            echo -e "${BLUE}[$idx/${#files_to_download[@]}] $f${NC}"
+            if hf download "$repo" "$f" --local-dir "$target_dir" 2>&1; then
+                echo -e "${GREEN}  Downloaded: $f${NC}"
+            else
+                use_python=true
+                break
+            fi
+        done
+    elif [[ "$download_tool" == "huggingface-cli" ]]; then
+        echo -e "${YELLOW}Note: huggingface-cli is deprecated. Consider installing 'hf' instead.${NC}"
+        for f in "${files_to_download[@]}"; do
+            idx=$((idx + 1))
+            echo -e "${BLUE}[$idx/${#files_to_download[@]}] $f${NC}"
+            if huggingface-cli download "$repo" "$f" \
+                --local-dir "$target_dir" \
+                --local-dir-use-symlinks False 2>&1; then
+                echo -e "${GREEN}  Downloaded: $f${NC}"
+            else
+                use_python=true
+                break
+            fi
+        done
+    fi
+
+    # Fallback to Python API if huggingface-cli not available or failed
+    if [[ "$use_python" == "true" ]]; then
+        if ! python3 -c "import huggingface_hub" 2>/dev/null; then
+            echo -e "${RED}huggingface_hub not available. Cannot download.${NC}"
+            return 1
+        fi
+
+        local idx=0
+        for f in "${files_to_download[@]}"; do
+            idx=$((idx + 1))
+            echo -e "${BLUE}[$idx/${#files_to_download[@]}] $f${NC}"
+
+            if python3 << PYEOF
+from huggingface_hub import hf_hub_download
+try:
+    path = hf_hub_download(
+        repo_id='$repo',
+        filename='$f',
+        local_dir='$target_dir',
+        local_dir_use_symlinks=False
+    )
+    print(f'  Downloaded to: {path}')
+except Exception as e:
+    print(f'  Error: {e}')
+    exit(1)
+PYEOF
+            then
+                echo -e "${GREEN}  Downloaded: $f${NC}"
+            else
+                echo -e "${RED}  Failed: $f${NC}"
+            fi
+        done
+    fi
+
+    # Verify all files exist
+    local missing=0
+    for f in "${files_to_download[@]}"; do
+        if [[ ! -f "$target_dir/$f" ]]; then
+            echo -e "${RED}Missing: $f${NC}"
+            missing=1
+        fi
+    done
+
+    if [[ $missing -eq 0 ]]; then
+        echo ""
+        echo -e "${GREEN}All files downloaded successfully!${NC}"
+        return 0
+    else
+        return 1
+    fi
 }
 
 download_usage() {
