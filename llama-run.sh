@@ -156,6 +156,7 @@ ${YELLOW}Options:${NC}
     --interactive           Interactive chat mode
     --server                Run as API server
     --port PORT             Server port (default: $PORT)
+    --fit                   Auto-fit GPU layers to available VRAM (disables -ngl)
     --host HOST             Server host (default: $HOST)
     --list-models           List available models
     --list-backends         List available backends
@@ -206,7 +207,6 @@ assign_profile() {
     OVERRIDE_REASONING=""
     OVERRIDE_BATCH_SIZE=""
     EXTRA_SERVER_ARGS+=" --no-mmproj"
-    EXTRA_SERVER_ARGS+=" --fit on"
     
     # Detect model characteristics from filename
     local is_moe=false
@@ -751,6 +751,7 @@ while [[ $# -gt 0 ]]; do
         --no-reasoning-budget) OVERRIDE_REASONING_BUDGET="0"; shift ;;
         --interactive|-i) INTERACTIVE=true; shift ;;
         --server|-s) SERVER_MODE=true; shift ;;
+        --fit) OVERRIDE_FIT="on"; shift ;;
         --print-profile) PRINT_PROFILE=true; shift ;;
         --port) PORT="$2"; shift 2 ;;
         --host) HOST="$2"; shift 2 ;;
@@ -819,6 +820,7 @@ SSD_HOT_WINDOW=$SSD_HOT_WINDOW
 SSD_WARM_WINDOW=$SSD_WARM_WINDOW
 SSD_MAX_COLD=$SSD_MAX_COLD
 SSD_PAGE_SIZE=$SSD_PAGE_SIZE
+OVERRIDE_FIT='$OVERRIDE_FIT'
 PROFILE_EOF
     exit 0
 fi
@@ -848,6 +850,14 @@ MODEL_NAME=$(basename "$MODEL" .gguf)
 echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 
 # =============================================================================
+# Fit mode: auto-calculate GPU layers to fit available VRAM
+# =============================================================================
+
+if [[ "$OVERRIDE_FIT" == "on" ]]; then
+    GPU_LAYERS=-1
+    EXTRA_SERVER_ARGS+=" --fit on"
+fi
+
 # Build args
 # =============================================================================
 
