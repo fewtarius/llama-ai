@@ -104,8 +104,6 @@ setup_backend_env() {
         unset GGML_BACKEND
     else
         export GGML_BACKEND=vulkan
-        export GGML_VK_ALLOW_GRAPHICS_QUEUE=0
-        export GGML_VK_ASYNC_USE_TRANSFER_QUEUE=1
         unset ROCM_PATH HIP_PATH HSA_OVERRIDE_GFX_VERSION
         if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
             LD_LIBRARY_PATH="${LD_LIBRARY_PATH//$PROJECT_ROOT\/deps\/lib:/}"
