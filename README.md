@@ -246,67 +246,61 @@ A CLIO session consists of alternating tool call turns (the LLM decides what too
 
 Every turn includes the same static prefix: system prompt, tool definitions, project context. As the conversation grows, compressed summaries of earlier messages are appended. The static portion is ~20K tokens; the dynamic conversation portion grows from ~5K to ~12K.
 
-### Two-session workload
+### CLIO agentic workload
 
-Two CLIO sessions against Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan backend, Ayaneo Flip KB):
-
-- **Session 1** - Fresh server start. Read the README, investigated a code issue, committed a fix. 6 turns, 335s total.
-- **Session 2** - Server restart with existing SSD cache. Reviewed benchmark results, analyzed cache behavior, edited documentation. 28 turns, 179s (first workflow) + 503s (second workflow).
+A CLIO session against Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan backend, Ayaneo Flip KB). The session reviewed a project, investigated code, and committed changes - 11 turns, ~20 minutes total.
 
 #### Turn breakdown
 
-| Turn | Tokens In | Tokens Out | Duration | ttft | tps | Cache Source |
-|------|-----------|------------|----------|------|-----|-------------|
-| **Session 1 (cold start)** |
-| T0 - tool call | 19,967 | 139 | 175.0s | — | — | none (full eval) |
-| T1 - tool call | 25,347 | 111 | 60.5s | — | — | in-memory ckpt |
-| T2 - tool call | 25,813 | 134 | 14.4s | — | — | in-memory ckpt |
-| T3 - tool call | 26,756 | 80 | 16.8s | — | — | in-memory ckpt |
-| T4 - tool call | 25,720 | 80 | 8.3s | — | — | in-memory ckpt |
-| T5 - response | 27,981 | 756 | 58.7s | 25.75s | 12.9 | in-memory ckpt |
-| **Session 2 (SSD cold restore)** |
-| T0 - tool call | 28,572 | 11 | 17.4s | 11.45s | 0.6 | SSD restore |
-| T1 - tool call | 29,807 | 173 | 25.2s | — | — | SSD restore |
-| T2 - tool call | 29,452 | 11 | 22.0s | 15.49s | 0.5 | SSD restore |
-| T3 - tool call | 31,735 | 175 | 33.6s | — | — | SSD restore |
-| T4 - tool call | 31,019 | 79 | 20.9s | — | — | SSD restore |
-| T5 - tool call | 31,680 | 133 | 17.3s | — | — | SSD restore |
-| T6 - response | 28,265 | 727 | 40.7s | 8.20s | 17.9 | SSD restore |
+| Turn | Tokens In | New Tokens | Duration | Cache% | Speedup |
+|------|-----------|------------|----------|--------|---------|
+| T0 - cold start | 17,853 | 17,853 | 171.6s | 0% | 1.0x |
+| T1 - tool call | 18,533 | 464 | 25.3s | 97.5% | 21.6x |
+| T2 - tool call | 18,735 | 993 | 32.9s | 94.7% | 12.7x |
+| T3 - tool call | 25,464 | 6,371 | 89.6s | 75.0% | 3.1x |
+| T4 - tool call | 26,394 | 8,475 | 110.5s | 67.9% | 2.4x |
+| T5 - tool call | 24,157 | 6,179 | 83.6s | 74.4% | 3.0x |
+| T6 - tool call | 29,974 | 11,953 | 153.0s | 60.1% | 1.9x |
+| T7 - tool call | 29,829 | 11,842 | 152.6s | 60.3% | 1.9x |
+| T8 - tool call | 25,644 | 7,798 | 101.2s | 69.6% | 2.5x |
+| T9 - tool call | 27,001 | 9,155 | 115.0s | 66.1% | 2.2x |
+| T10 - response | 28,078 | 955 | 100.4s | 96.6% | 16.2x |
+
+Cache% = (total - new) / total. Speedup = (total * cold_ms_per_tok) / actual_eval_ms.
 
 Tool call TTFT is .s because the full response arrives in one chunk - the model streams the tool call JSON and it's all received before the first measurable break. Response TTFT is the wait before streaming begins.
 
 ### What the cache saves
 
-The static 20K-token prefix is the same in every turn. Without caching, it would be re-evaluated from scratch each time:
+The static ~17.8K-token prefix (system prompt + tool definitions) is the same in every turn. Without caching, it would be re-evaluated from scratch each time:
 
 | Without cache | With cache |
 |--------------|-----------|
-| Session 1 first turn: 20K tokens cold eval (~175s) | Session 1 first turn: 20K cold eval (~175s) |
-| Session 1 subsequent: 20K tokens re-evaluated each turn (~100-200s/turn) | Session 1 subsequent: cached, ~0-5K new tokens evaluated (~x-x/s/turn) |
-| Session 2 first turn: 20K tokens cold eval again (~175s) | Session 2 first turn: 20K restored from SSD (~12s for ~8K new tokens) |
-| Session 2 subsequent: same 20K re-evaluated | Session 2 subsequent: cached, same as session 1 |
+| Every turn: 17.8K tokens cold eval (~157s) | First turn: 17.8K cold eval (~157s) |
+| Every subsequent turn: full re-evaluation (~157-263s) | Subsequent turns: only new tokens evaluated |
 
-**Net impact on these two sessions:**
+**Net impact on this session:**
 
-- Session 1: avoided 5 cold re-evaluations of the static prefix. The 175s cold turn was followed by turns averaging ~23s for tool calls and ~59s for the response. Same workload without caching: every turn 175s+, totaling ~1050s vs 335s actual. **3x faster.**
-- Session 2: avoided a full cold restart. The first turn took 17s instead of 175s. The 28-turn workload shows tool call turns averaging 10-34s and response turns 40s. Same workload without caching: every turn 175s+ for prompt eval alone, totaling ~4900s vs 179s. **27x faster.**
+- T0 (cold start): 157s for 17,853 tokens. No cache available.
+- T1 (best cached): 7.6s for 464 new tokens. 97.5% cached. **21.6x faster** than cold eval.
+- T10 (response turn): 15.2s for 955 new tokens. 96.6% cached. **16.2x faster** than cold eval.
+- T6-T7 (worst cached): 140-141s for 11.8-12K new tokens. 60% cached. Still **1.9x faster** than cold eval.
 
-These speedups are smaller than the benchmark numbers because CLIO's prompt genuinely grows each turn (new conversation messages, updated tool counts). The cache restores the static prefix perfectly - but there's still 5-12K tokens of new content to evaluate each turn. The benchmark uses identical prompts, so the entire prompt is cached.
+The speedup varies because CLIO's prompt genuinely grows each turn (new conversation messages, updated tool counts). The cache restores the static prefix perfectly - but there's still 5-12K tokens of new content to evaluate each turn. The benchmark uses identical prompts, so the entire prompt is cached.
 
 ### Real-world cache behavior
 
-The server log shows exactly where the cache saves time. From session 2's first turn:
+The server log shows exactly where the cache saves time. From this session:
 
 ```
-slot update_slots: cache prefix divergence at token 20044: slot_token=271 input_token=198
-SSD cache: within-conv match checkpoint 18 conv=c8074e0e67da355d n_tokens=28568 lcp=4096
-slot update_slots: restored SSD checkpoint (n_tokens=28568)
-slot update_slots: prompt processing done, n_tokens = 29452, batch.n_tokens = 4
+slot update_slots: cache prefix divergence at token 18069: slot_token=3721 input_token=3913
+SSD cache: match checkpoint 2 conv=c8074e0e67da355d turn=0 n_tokens=17849 lcp=4096
+slot update_slots: prompt processing done, n_tokens = 18533, batch.n_tokens = 4
 ```
 
-The prompt diverges at token 20,044 (CLIO's tool usage stats differ between sessions). The cache finds checkpoint 18 at 28,568 tokens, restores it, and re-evaluates only ~900 tokens (29,452 total - 28,568 cached = 884 new). The first 28,568 tokens are the static system prompt, tool definitions, and compressed context - restored from disk in under a second.
+The prompt diverges at token 18,069 (CLIO's tool usage stats differ between turns). The cache finds checkpoint 2 at 17,849 tokens, restores it, and re-evaluates only 684 tokens (18,533 total - 17,849 cached = 684 new). The first 17,849 tokens are the static system prompt, tool definitions, and compressed context - restored from disk in under a second.
 
-Each subsequent turn in the session sees similar behavior: divergence at ~19,872-20,xx, cache restore of ~28K-30K tokens, and ~500-2,000 new tokens to evaluate. The dynamic portion (conversation history) is the only thing that changes between turns.
+Each subsequent turn in the session sees similar behavior: divergence at ~17,800-18,000, cache restore of ~17.8K-30K tokens, and 464-12K new tokens to evaluate. The dynamic portion (conversation history) is the only thing that changes between turns.
 
 ## Improvements over upstream
 
