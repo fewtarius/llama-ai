@@ -856,6 +856,8 @@ echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 if [[ "$OVERRIDE_FIT" == "on" ]]; then
     GPU_LAYERS=-1
     EXTRA_SERVER_ARGS+=" --fit on"
+else
+    EXTRA_SERVER_ARGS+=" --fit off"
 fi
 
 # Build args
