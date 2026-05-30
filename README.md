@@ -248,59 +248,42 @@ Every turn includes the same static prefix: system prompt, tool definitions, pro
 
 ### CLIO agentic workload
 
-A CLIO session against Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan backend, Ayaneo Flip KB). The session reviewed a project, investigated code, and committed changes - 11 turns, ~20 minutes total.
+A CLIO session against Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan backend, Ayaneo Flip KB). The session reviewed a project, investigated code, and committed changes - 14 turns, ~21 minutes total.
 
 #### Turn breakdown
 
-| Turn | Tokens In | New Tokens | Duration | Cache% | Speedup |
-|------|-----------|------------|----------|--------|---------|
-| T0 - cold start | 17,853 | 17,853 | 171.6s | 0% | 1.0x |
-| T1 - tool call | 18,533 | 464 | 25.3s | 97.5% | 21.6x |
-| T2 - tool call | 18,735 | 993 | 32.9s | 94.7% | 12.7x |
-| T3 - tool call | 25,464 | 6,371 | 89.6s | 75.0% | 3.1x |
-| T4 - tool call | 26,394 | 8,475 | 110.5s | 67.9% | 2.4x |
-| T5 - tool call | 24,157 | 6,179 | 83.6s | 74.4% | 3.0x |
-| T6 - tool call | 29,974 | 11,953 | 153.0s | 60.1% | 1.9x |
-| T7 - tool call | 29,829 | 11,842 | 152.6s | 60.3% | 1.9x |
-| T8 - tool call | 25,644 | 7,798 | 101.2s | 69.6% | 2.5x |
-| T9 - tool call | 27,001 | 9,155 | 115.0s | 66.1% | 2.2x |
-| T10 - response | 28,078 | 955 | 100.4s | 96.6% | 16.2x |
+| Turn | Tokens In | Cached | Cache% | New Toks | Prompt Eval | Speedup | TTFT |
+|------|-----------|-------|--------|----------|-------------|---------|------|
+| T0 - cold start | 17,802 | 0 | 0% | 17,802 | 156.1s | 1.0x | 158.5s |
+| T1 - tool call | 19,753 | 17,887 | 91% | 1,866 | 21.9s | 7.9x | 23.8s |
+| T2 - tool call | 19,976 | 17,691 | 89% | 2,285 | 26.9s | 6.5x | 29.1s |
+| T3 - tool call | 19,985 | 17,897 | 90% | 2,088 | 25.4s | 6.9x | 27.4s |
+| T4 - tool call | 26,346 | 20,311 | 77% | 6,035 | 70.0s | 3.3x | 71.8s |
+| T5 - tool call | 29,010 | 17,905 | 62% | 11,105 | 129.2s | 2.0x | - |
+| T6 - tool call | 25,374 | 17,914 | 71% | 7,460 | 85.3s | 2.6x | - |
+| T7 - tool call | 29,067 | 25,574 | 88% | 3,493 | 45.2s | 5.6x | - |
+| T8 - tool call | 27,365 | 17,955 | 66% | 9,410 | 109.5s | 2.2x | - |
+| T9 - tool call | 30,491 | 17,964 | 59% | 12,527 | 148.2s | 1.8x | - |
+| T10 - tool call | 30,933 | 30,583 | 99% | 350 | 7.4s | 36.6x | - |
+| T11 - tool call | 28,133 | 17,973 | 64% | 10,160 | 119.2s | 2.1x | - |
+| T12 - tool call | 28,652 | 28,220 | 98% | 432 | 9.6s | 26.1x | - |
+| T13 - response | 29,392 | 28,781 | 98% | 611 | 11.7s | 22.1x | 40.7s |
 
-Cache% = (total - new) / total. Speedup = (total * cold_ms_per_tok) / actual_eval_ms.
+Cache% = cached tokens / total tokens. Speedup = (total tokens * cold eval rate) / actual eval time. TTFT is blank for tool-call turns where the response arrives as a single chunk.
 
-Tool call TTFT is .s because the full response arrives in one chunk - the model streams the tool call JSON and it's all received before the first measurable break. Response TTFT is the wait before streaming begins.
+Generation speed: 17.5-18.9 t/s across all turns (unaffected by caching).
 
-### What the cache saves
+#### Cache behavior
 
-The static ~17.8K-token prefix (system prompt + tool definitions) is the same in every turn. Without caching, it would be re-evaluated from scratch each time:
+The in-memory checkpoint system restores ~17,900 tokens of static prefix (system prompt + tool definitions) on every turn. This is the common content shared across all turns of a CLIO session. Only the dynamic portion (conversation history, tool results) needs re-evaluation.
 
-| Without cache | With cache |
-|--------------|-----------|
-| Every turn: 17.8K tokens cold eval (~157s) | First turn: 17.8K cold eval (~157s) |
-| Every subsequent turn: full re-evaluation (~157-263s) | Subsequent turns: only new tokens evaluated |
+Two patterns emerge:
 
-**Net impact on this session:**
+1. **High cache hit (88-99%)**: Turns where the prompt is similar in size to the previous turn. The checkpoint from the previous turn covers most of the new prompt. Prompt eval drops to 7-26 seconds (7-36x faster than cold).
 
-- T0 (cold start): 157s for 17,853 tokens. No cache available.
-- T1 (best cached): 7.6s for 464 new tokens. 97.5% cached. **21.6x faster** than cold eval.
-- T10 (response turn): 15.2s for 955 new tokens. 96.6% cached. **16.2x faster** than cold eval.
-- T6-T7 (worst cached): 140-141s for 11.8-12K new tokens. 60% cached. Still **1.9x faster** than cold eval.
+2. **Moderate cache hit (59-71%)**: Turns where the prompt grew significantly (new tool results, context expansion). The checkpoint covers the static prefix but the dynamic portion needs full evaluation. Still 1.8-3.3x faster than cold.
 
-The speedup varies because CLIO's prompt genuinely grows each turn (new conversation messages, updated tool counts). The cache restores the static prefix perfectly - but there's still 5-12K tokens of new content to evaluate each turn. The benchmark uses identical prompts, so the entire prompt is cached.
-
-### Real-world cache behavior
-
-The server log shows exactly where the cache saves time. From this session:
-
-```
-slot update_slots: cache prefix divergence at token 18069: slot_token=3721 input_token=3913
-SSD cache: match checkpoint 2 conv=c8074e0e67da355d turn=0 n_tokens=17849 lcp=4096
-slot update_slots: prompt processing done, n_tokens = 18533, batch.n_tokens = 4
-```
-
-The prompt diverges at token 18,069 (CLIO's tool usage stats differ between turns). The cache finds checkpoint 2 at 17,849 tokens, restores it, and re-evaluates only 684 tokens (18,533 total - 17,849 cached = 684 new). The first 17,849 tokens are the static system prompt, tool definitions, and compressed context - restored from disk in under a second.
-
-Each subsequent turn in the session sees similar behavior: divergence at ~17,800-18,000, cache restore of ~17.8K-30K tokens, and 464-12K new tokens to evaluate. The dynamic portion (conversation history) is the only thing that changes between turns.
+The best results (T10, T12, T13) show 22-37x speedup when the prompt is nearly identical to the previous turn's checkpoint. Even the worst case (T9, 59% cache hit) is still 1.8x faster than cold evaluation.
 
 ## Improvements over upstream
 
