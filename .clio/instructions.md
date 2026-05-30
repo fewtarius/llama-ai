@@ -30,25 +30,17 @@ This project follows **The Unbroken Method** for human-AI collaboration. This is
 
 ## Submodule Safety Rules
 
-When working on the `llama.cpp` submodule, follow these rules to prevent data loss:
+We maintain `llama.cpp` directly as a fork. The git history in `llama.cpp/` is the canonical source of truth. The old `patches/` directory is deprecated and kept for historical reference only.
 
-### NEVER squash without extracting patches first
+### Before destructive operations on llama.cpp
 
-Squashing destroys git history. The incremental patches in `patches/` are the only backup of individual commits. If you squash before extracting patches, the commit history is lost forever.
+If you need to squash or rebase commits in `llama.cpp/`, ensure the git history is preserved by pushing to a backup branch first:
 
-**Before any squash or rebase:**
-1. Regenerate patches: `cd llama.cpp && git format-patch -N --start-number=1 -o ../patches/ <base>..HEAD`
-2. Regenerate consolidated patch: `git diff <base>..HEAD > ../patches/hybrid-model-full-fix.patch`
-3. Verify patches apply cleanly on a fresh checkout
-4. ONLY THEN proceed with the squash/rebase
-
-### Update patches after every commit
-
-After committing changes to `llama.cpp`, immediately regenerate the patch library as a local backup. Do not batch patch updates - do them after each commit. Patches are gitignored and kept for local convenience only.
-
-### The patch library is a local backup
-
-The `llama.cpp` submodule fork is the canonical source of truth. The patches in `patches/` are a gitignored local convenience for regeneration and review. The submodule's git history should be preserved through `git format-patch` before any destructive operations.
+```bash
+cd llama.cpp
+git branch backup-before-rebase
+# Then proceed with the rebase/squash
+```
 
 ---
 

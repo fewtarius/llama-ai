@@ -26,7 +26,7 @@ llama-ai/
 ├── kv-cache/                 # Persistent KV cache (gitignored)
 ├── ssd-cache/                # SSD-backed KV cache (gitignored)
 ├── scratch/                  # Transient working files (gitignored)
-└── patches/                  # llama.cpp patches (gitignored, generated locally)
+└── patches/                  # DEPRECATED - kept for historical reference only
 ```
 
 ## Build
@@ -51,6 +51,8 @@ llama-ai/
 Build scripts in `src/llama-cpp-rocm/build.sh` and `src/llama-cpp-vulkan/build.sh` reference `$PROJECT_ROOT/llama.cpp` for the source.
 
 `scripts/rebuild.sh` automatically applies patches from `patches/` to the submodule before building. Patches are checked for idempotency — if already applied, they're skipped.
+Note: patch application is deprecated since we now maintain llama.cpp directly.
+The `patches/` directory is kept for historical reference only.
 
 ## Environment
 
@@ -114,37 +116,11 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 
 ## Patch management
 
-The `patches/` directory contains custom patches applied to the `llama.cpp` submodule during builds. These patches are **gitignored** and kept locally for convenience - the canonical source of truth is the `llama.cpp` submodule fork itself, which is patched directly.
+The `patches/` directory is **deprecated**. We now maintain `llama.cpp` directly as a fork rather than applying patches to an upstream submodule. The git history in `llama.cpp/` is the canonical source of truth.
 
-### Directory structure
+### Historical reference
 
-```
-patches/
-├── 0001-*.patch              # Incremental patches (one per commit)
-├── 0002-*.patch
-├── ...
-└── hybrid-model-full-fix.patch  # Consolidated patch (all changes in one file)
-```
-
-- **Incremental patches**: One patch per commit, generated with `git format-patch`. Preserve full commit history.
-- **Consolidated patch**: A single diff of all changes from the upstream baseline. Used for quick application.
-
-### Critical rules
-
-1. **Regenerate patches after committing to llama.cpp** (for local backup only):
-
-   ```bash
-   cd llama.cpp
-   rm -f ../patches/000*.patch ../patches/hybrid-model-full-fix.patch
-   git format-patch -N --start-number=1 -o ../patches/ <upstream-base>..HEAD
-   git diff <upstream-base>..HEAD > ../patches/hybrid-model-full-fix.patch
-   ```
-
-   Replace `<upstream-base>` with the upstream commit the patches are based on (currently `d05fe1d7d`).
-
-### How rebuild.sh uses patches
-
-`scripts/rebuild.sh` applies patches from `patches/` to the submodule before building. It checks idempotency - if a patch is already applied (via `git am --check`), it's skipped. This means patches must be generated from a clean baseline that matches the submodule's upstream HEAD.
+The old patch workflow (generating incremental and consolidated patches after each commit) is no longer needed. All custom changes are committed directly to the `llama.cpp/` fork's git history.
 
 ## License
 
