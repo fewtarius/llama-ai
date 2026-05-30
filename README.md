@@ -161,41 +161,31 @@ Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1145 | 9.7s | 0.5s | 2.7x | 26.1 |
-| Medium | ~5237 | 55.9s | 1.8s | 7.4x | 19.6 |
-| Large | ~15.5K | 254.9s (4.2min) | 4.1s | 18.0x | 12.2 |
+| Small | ~1145 | 12.4s | 0.4s | 32.4x | 22.1 |
+| Medium | ~5237 | 116.5s | 1.3s | 89.6x | 15.1 |
+| Large | ~15.5K | 800.9s (13.3min) | 4.0s | 200.5x | 8.4 |
 
-Cold prompt eval: 61-118 t/s. Warm: 2474-3750 t/s. Cached: 15485/15489 tokens at large size.
-
-Server log from the large warm run - the server finds a checkpoint on disk with 15,485 matching tokens and restores it:
-
-```
-SSD cache: loaded 2 checkpoints from kv-cache/613096cdba128a01/
-SSD cache: same-conv match checkpoint 5 conv=613096cdba128a01 n_tokens=15485
-slot update_slots: id  0 | task 0 | cold-start restored SSD checkpoint (n_tokens=15485)
-```
-
-Only 4 new tokens need evaluation (15,489 total - 15,485 cached = 4 new). The rest is restored from disk in under a second.
+Cold prompt eval: 19-93 t/s. Warm: 2994-3878 t/s. Cached: 15485/15489 tokens at large size.
 
 #### Gemma 4 26B (Q5_K_M, 26B dense)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1413 | 10.2s | 1.3s | 2.0x | 18.2 |
-| Medium | ~6083 | 40.6s | 1.6s | 5.1x | 16.5 |
-| Large | ~17.3K | 123.4s (2.1min) | 2.5s | 10.8x | 13.7 |
+| Small | ~1413 | 10.5s | 1.2s | 8.7x | 17.4 |
+| Medium | ~6083 | 49.1s | 1.6s | 31.5x | 16.9 |
+| Large | ~17.3K | 191.7s (3.2min) | 2.4s | 81.2x | 15.8 |
 
-Cold prompt eval: 139-150 t/s. Warm: 1059-6980 t/s. Cached: 17343/17347 tokens at large size.
+Cold prompt eval: 90-134 t/s. Warm: 1164-7350 t/s. Cached: 17343/17347 tokens at large size.
 
 #### Qwen3.6-35B (Q4_K_XL, 35B MoE, hybrid)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1243 | 8.7s | 0.5s | 2.3x | 24.0 |
-| Medium | ~5409 | 38.8s | 0.8s | 6.8x | 23.0 |
-| Large | ~15.7K | 120.4s (2.0min) | 1.6s | 15.7x | 21.4 |
+| Small | ~1243 | 8.8s | 0.5s | 17.9x | 21.3 |
+| Medium | ~5409 | 39.6s | 0.7s | 53.7x | 20.8 |
+| Large | ~15.7K | 128.8s (2.1min) | 1.5s | 87.9x | 19.2 |
 
-Cold prompt eval: 130-142 t/s. Warm: 2380-9937 t/s. Cached: 15717/15721 tokens at large size.
+Cold prompt eval: 122-142 t/s. Warm: 2542-10731 t/s. Cached: 15717/15721 tokens at large size.
 35B parameters with only 3B active - the fastest model tested on the Flip. The SSD cache restores both attention KV state and recurrent state from disk. Only 4 new tokens need evaluation at large size.
 
 #### Summary
@@ -204,13 +194,13 @@ All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 
 | Model | Params | Large cold | Large warm | Speedup | Gen TPS | Type |
 |-------|--------|------------|------------|---------|---------|------|
-| GLM-4.7-Flash | 14B | 254.9s (4.2min) | 4.1s | 18.0x | 12.2 | Dense |
-| Gemma 4 26B | 26B | 123.4s (2.1min) | 2.5s | 10.8x | 13.7 | Dense |
-| Qwen3.6-35B | 35B | 120.4s (2.0min) | 1.6s | 15.7x | 21.4 | MoE hybrid |
+| GLM-4.7-Flash | 14B | 800.9s (13.3min) | 4.0s | 200.5x | 8.4 | Dense |
+| Gemma 4 26B | 26B | 191.7s (3.2min) | 2.4s | 81.2x | 15.8 | Dense |
+| Qwen3.6-35B | 35B | 128.8s (2.1min) | 1.5s | 87.9x | 19.2 | MoE hybrid |
 
-Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-4 minutes or 1-4 seconds before the model starts responding.
+Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-13 minutes or 1-4 seconds before the model starts responding.
 
-Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260510-1836/`](benchmarks/20260510-1836/)
+Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260530-1525/`](benchmarks/20260530-1525/)
 
 ### Running the benchmark
 
