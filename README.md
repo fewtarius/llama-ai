@@ -221,7 +221,7 @@ All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 
 Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-13 minutes or 1-4 seconds before the model starts responding.
 
-Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260530-1525/`](benchmarks/20260530-1525/)
+Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260601-1557/`](benchmarks/20260601-1557/)
 
 ### Running the benchmark
 
