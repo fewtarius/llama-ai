@@ -289,6 +289,32 @@ Cache% = tokens restored from cache / total tokens. Est. Cold TTFT = tokens / 11
 
 **Total: 7 minutes actual vs ~25 minutes estimated without cache.**
 
+#### Cloud comparison
+
+The same prompt evaluated against two cloud-hosted models:
+
+**MiniMax M2.7** - completed in 4 turns, ~42 seconds total:
+
+| Turn | Action | Tokens In | Tokens Out | Duration | Tool Calls |
+|------|--------|-----------|-----------|----------|------------|
+| T0 | Read README, list scripts | 17,129 | 115 | 6.1s | 2 |
+| T1 | Read llama-run.sh, git log | 22,088 | 116 | 5.3s | 2 |
+| T2 | Read more files | 23,847 | 176 | 5.7s | 2 |
+| T3 | Write final response | 26,214 | 455 | 25.3s | 0 |
+
+**Qwen3.5-35B-A3B via OpenRouter** - completed in 4 turns, ~39 seconds total:
+
+| Turn | Action | Tokens In | Tokens Out | TTFT | Duration | Tool Calls |
+|------|--------|-----------|-----------|------|----------|------------|
+| T0 | Read README, list dir | 17,880 | 194 | 3.4s | 3.4s | 3 |
+| T1 | Read llama-run.sh, scripts | 34,916 | 200 | - | 3.4s | 3 |
+| T2 | Read rebuild.sh, list scripts | 40,785 | 117 | - | 3.0s | 2 |
+| T3 | Write final response | 45,656 | 1,154 | 18.1s | 20.1s | 0 |
+
+**Qwen3.6-35B-A3B via OpenRouter** - failed to complete. The model produced thinking output but never issued tool calls, stalling after two attempts. The same model works correctly when run locally, suggesting this is an API/provider-specific issue rather than an architectural limitation.
+
+Cloud models have near-zero TTFT because the prompt is evaluated on clusters of GPUs. The local model with SSD cache achieves comparable per-turn latency on high-cache turns (15-23s) but takes longer on cache misses (71-161s). The tradeoff: local inference is private, offline-capable, and has no per-token cost.
+
 #### What happened at each turn
 
 **T0 - Cold start (126s TTFT).** Server just started. No in-memory cache. The SSD cache had a checkpoint from a previous conversation with 4,096 tokens of matching prefix (system prompt + tool definitions). The server restored those 4,096 tokens from disk and evaluated the remaining 13,784. Without any cache, all 17,880 tokens would need evaluation at ~111 t/s, taking ~161s. The partial SSD hit saved 35s.
