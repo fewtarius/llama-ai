@@ -152,8 +152,8 @@ CTX_SIZE=65536
 USER_CTX_SIZE=""  # set when user explicitly passes -c
 N_PREDICT=256
 GPU_LAYERS=99
-KV_CACHE_TYPE_K="bf16"
-KV_CACHE_TYPE_V="bf16"
+KV_CACHE_TYPE_K="q8_0"
+KV_CACHE_TYPE_V="q8_0"
 INTERACTIVE=false
 PRINT_PROFILE=false
 SERVER_MODE=false
@@ -300,8 +300,8 @@ assign_profile() {
     
     # Reset all variables to sensible defaults
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-    KV_CACHE_TYPE_K="bf16"
-    KV_CACHE_TYPE_V="bf16"
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
     GPU_LAYERS=99
     EXTRA_COMMON_ARGS=""
     EXTRA_SERVER_ARGS=""
@@ -324,9 +324,10 @@ assign_profile() {
     if [[ "$is_ssm" == true ]]; then
         # SSM/Mamba models: cache_reuse doesn't work, need different settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="bf16"
-        KV_CACHE_TYPE_V="bf16"
+        KV_CACHE_TYPE_K="q8_0"
+        KV_CACHE_TYPE_V="q8_0"
         GPU_LAYERS=99
+        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
@@ -337,12 +338,16 @@ assign_profile() {
         SSD_PATH=""
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
-        # MoE models: q8_0 KV cache for all sizes to ensure stable operation
+        # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="bf16"
-        KV_CACHE_TYPE_V="bf16"
-        # Smaller batch sizes to reduce KV cache fragmentation during generation
-        OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
+        KV_CACHE_TYPE_K="q8_0"
+        KV_CACHE_TYPE_V="q8_0"
+        # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
+        # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
+        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+        # Single parallel slot for MoE: 2x slots doubles KV cache memory,
+        # and agentic workloads use 1 slot at a time anyway
+        OVERRIDE_N_PARALLEL="1"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
@@ -358,9 +363,9 @@ assign_profile() {
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="bf16"
-        KV_CACHE_TYPE_V="bf16"
-        OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
+        KV_CACHE_TYPE_K="q8_0"
+        KV_CACHE_TYPE_V="q8_0"
+        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
@@ -372,9 +377,9 @@ assign_profile() {
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="bf16"
-        KV_CACHE_TYPE_V="bf16"
-        OVERRIDE_BATCH_SIZE="--batch-size 512 --ubatch-size 256"
+        KV_CACHE_TYPE_K="q8_0"
+        KV_CACHE_TYPE_V="q8_0"
+        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
@@ -385,8 +390,8 @@ assign_profile() {
     else
         # Small models (<10GB): full power
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="bf16"
-        KV_CACHE_TYPE_V="bf16"
+        KV_CACHE_TYPE_K="q8_0"
+        KV_CACHE_TYPE_V="q8_0"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
         profile_name="small-efficient"
     fi
@@ -537,16 +542,31 @@ setup_performance() {
         sudo cpupower frequency-set -g performance 2>/dev/null || true
     fi
     
-    # CPU energy performance preference (needs sudo, graceful fallback)
+    # CPU energy performance preference - use performance governor during inference
+    # balance_performance is too conservative for GPU-bound workloads where
+    # the CPU handles graph construction and scheduling
+    for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
+        echo performance | sudo tee "$p" 2>/dev/null || true
+    done
+    # Set GPU to auto (high causes near instant APU hangs)
+    for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
+        if [[ -f "$card" ]]; then
+            echo "auto" | sudo tee "$card" 2>/dev/null || true
+        fi
+    done
+}
+
+# Restore power settings to balanced/auto after inference
+restore_performance() {
     for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
         echo balance_performance | sudo tee "$p" 2>/dev/null || true
     done
-    
-    # GPU DPM (needs sudo, graceful fallback)
-    if [[ -f /sys/class/drm/card0/device/power_dpm_force_performance_level ]]; then
-        echo "auto" | sudo tee /sys/class/drm/card0/device/power_dpm_force_performance_level 2>/dev/null || true
-    fi
 }
+
+_cleanup() {
+    restore_performance
+}
+trap _cleanup EXIT
 
 setup_rocm_env() {
     export ROCM_PATH="$PROJECT_ROOT/deps"
@@ -559,6 +579,13 @@ setup_rocm_env() {
 
 setup_vulkan_env() {
     export LD_LIBRARY_PATH="${PROJECT_ROOT:-.}/deps/lib:${LD_LIBRARY_PATH:-}"
+    # Vulkan shader pipeline cache - larger cache reduces recompilation stalls
+    export MESA_SHADER_CACHE_MAX_SIZE="${MESA_SHADER_CACHE_MAX_SIZE:-2G}"
+    # Ensure cache directory exists and is persisted
+    export MESA_SHADER_CACHE_DIR="${MESA_SHADER_CACHE_DIR:-$HOME/.cache/mesa_shader_cache}"
+    mkdir -p "$MESA_SHADER_CACHE_DIR"
+    # RADV performance tuning for compute workloads
+    export RADV_PERFTEST="${RADV_PERFTEST:-gplp}"
 }
 
 setup_metal_env() {
@@ -997,7 +1024,7 @@ GPU_LAYERS=$GPU_LAYERS
 THREADS=$THREADS
 KV_CACHE_TYPE_K=$KV_CACHE_TYPE_K
 KV_CACHE_TYPE_V=$KV_CACHE_TYPE_V
-OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 -ub 512"}'
+OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 --ubatch-size 512"}'
 OVERRIDE_REASONING='${OVERRIDE_REASONING:-off}'
 OVERRIDE_REASONING_BUDGET='${OVERRIDE_REASONING_BUDGET:-0}'
 EXTRA_SERVER_ARGS='${EXTRA_SERVER_ARGS:-}'
@@ -1088,7 +1115,7 @@ else
     COMMON_ARGS="$COMMON_ARGS --mlock"
 fi
 COMMON_ARGS="$COMMON_ARGS -c $CTX_SIZE --threads $THREADS --threads-batch $THREADS"
-COMMON_ARGS="$COMMON_ARGS ${OVERRIDE_BATCH_SIZE:---batch-size 1024 -ub 512} -ngl $GPU_LAYERS"
+COMMON_ARGS="$COMMON_ARGS ${OVERRIDE_BATCH_SIZE:---batch-size 1024 --ubatch-size 512} -ngl $GPU_LAYERS"
 COMMON_ARGS="$COMMON_ARGS --cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
 [[ -n "$EXTRA_COMMON_ARGS" ]] && COMMON_ARGS="$COMMON_ARGS $EXTRA_COMMON_ARGS"
 
