@@ -267,44 +267,53 @@ A CLIO session consists of alternating tool call turns (the LLM decides what too
 
 Every turn includes the same static prefix: system prompt, tool definitions, project context. As the conversation grows, compressed summaries of earlier messages are appended. The static portion is ~20K tokens; the dynamic conversation portion grows from ~5K to ~12K.
 
-### CLIO agentic workload
+### Agentic workflow walkthrough
 
-A CLIO session against Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan backend, Ayaneo Flip KB). The session reviewed a project, investigated code, and committed changes - 14 turns, ~21 minutes total.
+A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Seven turns, 7 minutes total.
 
-#### Turn breakdown
+The model explores the project on its own: listing files, reading the README, checking git history, reading scripts, then writes a detailed evaluation. Each turn sends the full conversation context (17-29K tokens) to the API. The cache determines how much of that context needs re-evaluation.
 
-| Turn | Tokens In | Cached | Cache% | New Toks | Prompt Eval | Speedup | TTFT |
-|------|-----------|-------|--------|----------|-------------|---------|------|
-| T0 - cold start | 17,802 | 0 | 0% | 17,802 | 156.1s | 1.0x | 158.5s |
-| T1 - tool call | 19,753 | 17,887 | 91% | 1,866 | 21.9s | 7.9x | 23.8s |
-| T2 - tool call | 19,976 | 17,691 | 89% | 2,285 | 26.9s | 6.5x | 29.1s |
-| T3 - tool call | 19,985 | 17,897 | 90% | 2,088 | 25.4s | 6.9x | 27.4s |
-| T4 - tool call | 26,346 | 20,311 | 77% | 6,035 | 70.0s | 3.3x | 71.8s |
-| T5 - tool call | 29,010 | 17,905 | 62% | 11,105 | 129.2s | 2.0x | - |
-| T6 - tool call | 25,374 | 17,914 | 71% | 7,460 | 85.3s | 2.6x | - |
-| T7 - tool call | 29,067 | 25,574 | 88% | 3,493 | 45.2s | 5.6x | - |
-| T8 - tool call | 27,365 | 17,955 | 66% | 9,410 | 109.5s | 2.2x | - |
-| T9 - tool call | 30,491 | 17,964 | 59% | 12,527 | 148.2s | 1.8x | - |
-| T10 - tool call | 30,933 | 30,583 | 99% | 350 | 7.4s | 36.6x | - |
-| T11 - tool call | 28,133 | 17,973 | 64% | 10,160 | 119.2s | 2.1x | - |
-| T12 - tool call | 28,652 | 28,220 | 98% | 432 | 9.6s | 26.1x | - |
-| T13 - response | 29,392 | 28,781 | 98% | 611 | 11.7s | 22.1x | 40.7s |
+#### Turn-by-turn
 
-Cache% = cached tokens / total tokens. Speedup = (total tokens * cold eval rate) / actual eval time. TTFT is blank for tool-call turns where the response arrives as a single chunk.
+| Turn | Action | Tokens | Cached | Cache% | TTFT | Est. Cold TTFT | Speedup |
+|------|--------|--------|--------|--------|------|-----------------|---------|
+| T0 | Cold start, explore project | 17,880 | 4,096 | 23% | 126s | 161s | 1.3x |
+| T1 | Read files, git log | 18,851 | 17,965 | 95% | 15s | 170s | 11.6x |
+| T2 | Read more files | 19,017 | 17,779 | 93% | 0s | 171s | - |
+| T3 | Read + wc + git | 25,293 | 19,231 | 76% | 71s | 228s | 3.2x |
+| T4 | Read more files | 26,637 | 25,510 | 96% | 19s | 240s | 12.7x |
+| T5 | Read more files | 28,298 | 26,813 | 95% | 23s | 255s | 10.9x |
+| T6 | Write final response | 29,316 | 17,878 | 61% | 161s | 264s | 1.6x |
 
-Generation speed: 17.5-18.9 t/s across all turns (unaffected by caching).
+Cache% = tokens restored from cache / total tokens. Est. Cold TTFT = tokens / 111 t/s (measured cold rate from T0). Generation speed: 17.6-19.1 t/s (unaffected by caching).
 
-#### Cache behavior
+**Total: 7 minutes actual vs ~25 minutes estimated without cache.**
 
-The in-memory checkpoint system restores ~17,900 tokens of static prefix (system prompt + tool definitions) on every turn. This is the common content shared across all turns of a CLIO session. Only the dynamic portion (conversation history, tool results) needs re-evaluation.
+#### What happened at each turn
 
-Two patterns emerge:
+**T0 - Cold start (126s TTFT).** Server just started. No in-memory cache. The SSD cache had a checkpoint from a previous conversation with 4,096 tokens of matching prefix (system prompt + tool definitions). The server restored those 4,096 tokens from disk and evaluated the remaining 13,784. Without any cache, all 17,880 tokens would need evaluation at ~111 t/s, taking ~161s. The partial SSD hit saved 35s.
 
-1. **High cache hit (88-99%)**: Turns where the prompt is similar in size to the previous turn. The checkpoint from the previous turn covers most of the new prompt. Prompt eval drops to 7-26 seconds (7-36x faster than cold).
+**T1 - Read files, git log (15s TTFT, 11.6x speedup).** The in-memory checkpoint from T0 covers 17,880 tokens. T1's prompt shares the first 17,965 tokens with T0's context. Only 886 new tokens need evaluation. The cache divergence at token 17,965 was a minor difference (tool call format: `recursive` vs `False`). 11.6x faster than cold.
 
-2. **Moderate cache hit (59-71%)**: Turns where the prompt grew significantly (new tool results, context expansion). The checkpoint covers the static prefix but the dynamic portion needs full evaluation. Still 1.8-3.3x faster than cold.
+**T2 - Read more files (0s TTFT, 93% cache).** Similar to T1 - the in-memory checkpoint covers 93% of the prompt. Only 1,238 new tokens. The model produced 215 tokens of tool calls across 3 parallel tool invocations. TTFT was effectively instant because the prompt was almost entirely cached.
 
-The best results (T10, T12, T13) show 22-37x speedup when the prompt is nearly identical to the previous turn's checkpoint. Even the worst case (T9, 59% cache hit) is still 1.8x faster than cold evaluation.
+**T3 - Read + wc + git (71s TTFT, 3.2x speedup).** The conversation grew significantly - tool results from T2 added ~6K tokens. The in-memory checkpoint diverged at token 17,878 (the boundary between the static prefix and the dynamic conversation). Only 19,231 of 25,293 tokens were cached. Still 3.2x faster than the estimated 228s cold time.
+
+**T4 - Read more files (19s TTFT, 12.7x speedup).** The checkpoint from T3 covers most of T4's prompt. Only 1,127 new tokens need evaluation. 12.7x faster than cold.
+
+**T5 - Read more files (23s TTFT, 10.9x speedup).** Similar to T4. The conversation grew slightly. 1,485 new tokens. 10.9x faster than cold.
+
+**T6 - Write final response (161s TTFT, 1.6x speedup).** The model wrote a 1,007-token evaluation. The conversation context diverged from the previous checkpoint at token 17,878 (same boundary as T3 - the static/dynamic split). Only 17,878 of 29,316 tokens were cached, leaving 11,438 to evaluate. Still 1.6x faster than the estimated 264s cold time.
+
+#### Cache behavior patterns
+
+Three patterns emerge across the seven turns:
+
+1. **High cache hit (93-96%, T1/T2/T4/T5)**: The prompt is nearly identical to the previous turn. The checkpoint covers the static prefix plus most of the conversation. Only 886-1,485 new tokens need evaluation. TTFT drops to 0-23 seconds (10-12x faster than cold). This is the common case for tool-call turns where the model reads files and the conversation grows by a small amount.
+
+2. **Moderate cache hit (76%, T3)**: The conversation grew significantly (tool results added ~6K tokens). The checkpoint covers the static prefix but the dynamic portion needs full evaluation. Still 3.2x faster than cold.
+
+3. **Low cache hit (23-61%, T0/T6)**: Cold start (T0) or context divergence at the static/dynamic boundary (T6). The cache still saves 35-103 seconds compared to full cold evaluation, but the majority of tokens need re-evaluation.
 
 ## User isolation
 
