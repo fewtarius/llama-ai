@@ -546,12 +546,12 @@ setup_performance() {
     # balance_performance is too conservative for GPU-bound workloads where
     # the CPU handles graph construction and scheduling
     for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
-        echo performance | sudo tee "$p" 2>/dev/null || true
+        echo performance | sudo tee "$p" >/dev/null 2>&1 || true
     done
     # Set GPU to auto (high causes near instant APU hangs)
     for card in /sys/class/drm/card*/device/power_dpm_force_performance_level; do
         if [[ -f "$card" ]]; then
-            echo "auto" | sudo tee "$card" 2>/dev/null || true
+            echo "auto" | sudo tee "$card" >/dev/null 2>&1 || true
         fi
     done
 }
@@ -559,7 +559,7 @@ setup_performance() {
 # Restore power settings to balanced/auto after inference
 restore_performance() {
     for p in /sys/devices/system/cpu/cpufreq/policy*/energy_performance_preference; do
-        echo balance_performance | sudo tee "$p" 2>/dev/null || true
+        echo balance_performance | sudo tee "$p" >/dev/null 2>&1 || true
     done
 }
 

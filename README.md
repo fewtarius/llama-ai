@@ -182,31 +182,31 @@ Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1145 | 12.4s | 0.4s | 32.4x | 22.1 |
-| Medium | ~5237 | 116.5s | 1.3s | 89.6x | 15.1 |
-| Large | ~15.5K | 800.9s (13.3min) | 4.0s | 200.5x | 8.4 |
+| Small | ~1145 | 9.1s | 0.4s | 22.2x | 20.3 |
+| Medium | ~5237 | 66.6s (1.1min) | 1.1s | 59.3x | 12.5 |
+| Large | ~15.5K | 419.5s (7.0min) | 2.8s | 148.8x | 6.3 |
 
-Cold prompt eval: 19-93 t/s. Warm: 2994-3878 t/s. Cached: 15485/15489 tokens at large size.
+Cold prompt eval: 36.9-126.3 t/s. Warm: 2802-5493 t/s. Cached: 15485/15489 tokens at large size.
 
 #### Gemma 4 26B (Q5_K_M, 26B dense)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1413 | 10.5s | 1.2s | 8.7x | 17.4 |
-| Medium | ~6083 | 49.1s | 1.6s | 31.5x | 16.9 |
-| Large | ~17.3K | 191.7s (3.2min) | 2.4s | 81.2x | 15.8 |
+| Small | ~1413 | 8.1s | 0.8s | 10.7x | 16.5 |
+| Medium | ~6083 | 34.3s | 1.0s | 32.8x | 15.8 |
+| Large | ~17.3K | 114.8s (1.9min) | 1.5s | 79.1x | 14.5 |
 
-Cold prompt eval: 90-134 t/s. Warm: 1164-7350 t/s. Cached: 17343/17347 tokens at large size.
+Cold prompt eval: 151-174 t/s. Warm: 1855-11955 t/s. Cached: 17343/17347 tokens at large size.
 
 #### Qwen3.6-35B (Q4_K_XL, 35B MoE, hybrid)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1243 | 8.8s | 0.5s | 17.9x | 21.3 |
-| Medium | ~5409 | 39.6s | 0.7s | 53.7x | 20.8 |
-| Large | ~15.7K | 128.8s (2.1min) | 1.5s | 87.9x | 19.2 |
+| Small | ~1243 | 8.8s | 0.4s | 20.1x | 21.4 |
+| Medium | ~5409 | 39.1s | 0.6s | 61.9x | 20.7 |
+| Large | ~15.7K | 125.1s (2.1min) | 1.1s | 117.8x | 19.0 |
 
-Cold prompt eval: 122-142 t/s. Warm: 2542-10731 t/s. Cached: 15717/15721 tokens at large size.
+Cold prompt eval: 126-142 t/s. Warm: 2851-14808 t/s. Cached: 15717/15721 tokens at large size.
 35B parameters with only 3B active - the fastest model tested on the Flip. The SSD cache restores both attention KV state and recurrent state from disk. Only 4 new tokens need evaluation at large size.
 
 #### Summary
@@ -215,13 +215,13 @@ All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 
 | Model | Params | Large cold | Large warm | Speedup | Gen TPS | Type |
 |-------|--------|------------|------------|---------|---------|------|
-| GLM-4.7-Flash | 14B | 800.9s (13.3min) | 4.0s | 200.5x | 8.4 | Dense |
-| Gemma 4 26B | 26B | 191.7s (3.2min) | 2.4s | 81.2x | 15.8 | Dense |
-| Qwen3.6-35B | 35B | 128.8s (2.1min) | 1.5s | 87.9x | 19.2 | MoE hybrid |
+| GLM-4.7-Flash | 14B | 419.5s (7.0min) | 2.8s | 148.8x | 6.3 | Dense |
+| Gemma 4 26B | 26B | 114.8s (1.9min) | 1.5s | 79.1x | 14.5 | Dense |
+| Qwen3.6-35B | 35B | 125.1s (2.1min) | 1.1s | 117.8x | 19.0 | MoE hybrid |
 
-Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-13 minutes or 1-4 seconds before the model starts responding.
+Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-7 minutes or 1-3 seconds before the model starts responding.
 
-Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260601-1557/`](benchmarks/20260601-1557/)
+Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260602-0852/`](benchmarks/20260602-0852/)
 
 ### Running the benchmark
 
