@@ -20,6 +20,18 @@ THREADS="${LLAMA_THREADS:-$(nproc)}"
 # Build paths - backend specific
 # =============================================================================
 
+# Platform detection (macOS needs different memory budgeting than Linux)
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    IS_DARWIN=true
+    IS_DARWIN_ARM=false
+    if [[ "$(uname -m)" == "arm64" ]]; then
+        IS_DARWIN_ARM=true
+    fi
+else
+    IS_DARWIN=false
+    IS_DARWIN_ARM=false
+fi
+
 MODEL_DIR="$PROJECT_ROOT/models"
 
 get_backend_binary() {
@@ -31,12 +43,17 @@ get_backend_binary() {
         vulkan)
             echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
             ;;
+        metal)
+            echo "$PROJECT_ROOT/src/llama-cpp-metal/build"
+            ;;
         cpu)
             echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
             ;;
         auto)
             # Check which is available
-            if [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
+            if [[ -x "$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server" ]]; then
+                echo "$PROJECT_ROOT/src/llama-cpp-metal/build"
+            elif [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
                 echo "$PROJECT_ROOT/src/llama-cpp-rocm/build"
             elif [[ -x "$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server" ]]; then
                 echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
@@ -58,21 +75,31 @@ detect_backend() {
     if [[ "$BACKEND" != "auto" ]]; then
         return 0
     fi
-    
+
+    # macOS: prefer Metal (only Apple Silicon has GPU acceleration)
+    if [[ "$(uname -s)" == "Darwin" ]] && [[ -x "$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server" ]]; then
+        BACKEND="metal"
+        return 0
+    fi
+
     # Check for Vulkan first (default backend - best stability on RDNA3)
     if [[ -x "$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server" ]]; then
         BACKEND="vulkan"
         return 0
     fi
-    
+
     # Check for ROCm (optional backend - known issues with some archs)
     if [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
         BACKEND="rocm"
         return 0
     fi
-    
+
     # Fallback
-    BACKEND="vulkan"
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        BACKEND="metal"
+    else
+        BACKEND="vulkan"
+    fi
 }
 
 setup_backend_env() {
@@ -85,6 +112,37 @@ get_llama_binary() {
     local cmd="$1"  # server or cli
     local build_dir=$(get_backend_binary "$BACKEND")
     echo "$build_dir/bin/llama-$cmd"
+}
+
+# Returns total physical RAM in bytes (macOS / Linux compatible)
+get_total_memory_bytes() {
+    if [[ "$IS_DARWIN" == true ]]; then
+        # hw.memsize returns bytes on macOS
+        local bytes
+        bytes=$(sysctl -n hw.memsize 2>/dev/null || echo 0)
+        echo "$bytes"
+    else
+        # /proc/meminfo on Linux
+        awk '/^MemTotal:/ {print $2 * 1024; exit}' /proc/meminfo 2>/dev/null || echo 0
+    fi
+}
+
+# Returns roughly available memory in bytes (free + inactive on macOS,
+# MemAvailable on Linux). Conservative estimate.
+get_available_memory_bytes() {
+    if [[ "$IS_DARWIN" == true ]]; then
+        local page_size free_pages inactive_pages
+        page_size=$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)
+        local vmstat_out
+        vmstat_out=$(vm_stat 2>/dev/null)
+        free_pages=$(echo "$vmstat_out" | awk "/Pages free/ {gsub(/\\./, \"\", \$3); print \$3}")
+        inactive_pages=$(echo "$vmstat_out" | awk "/Pages inactive/ {gsub(/\\./, \"\", \$3); print \$3}")
+        free_pages="${free_pages:-0}"
+        inactive_pages="${inactive_pages:-0}"
+        echo $(( (free_pages + inactive_pages) * page_size ))
+    else
+        awk '/^MemAvailable:/ {print $2 * 1024; exit}' /proc/meminfo 2>/dev/null || echo 0
+    fi
 }
 
 BACKEND="auto"
@@ -138,14 +196,14 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 
 usage() {
     cat << USAGE
-${BLUE}Llama.cpp Runner${NC} - Unified runner for Vulkan, ROCm, and CPU
+${BLUE}Llama.cpp Runner - Unified runner for Metal (macOS), Vulkan, ROCm, and CPU
 
 ${YELLOW}Usage:${NC}
     $0 [options] [model_or_file] [-- server options]
     $0 --download MODEL [--quant QUANT]
 
 ${YELLOW}Options:${NC}
-    -b, --backend BACKEND    Backend: auto, rocm, vulkan, cpu
+    -b, --backend BACKEND    Backend: auto, rocm, vulkan, metal, cpu
     -m, --model MODEL       Model file or alias
     -a, --alias NAME        API model alias
     -t, --threads N         CPU threads (default: $THREADS)
@@ -191,10 +249,53 @@ USAGE
 # Global profile name for logging
 profile_name=""
 
+# Auto-scale --cache-ram to available memory. Models mmap the full
+# file but only resident pages matter; on macOS unified memory, the OS will
+# page out model pages under pressure. Still, we want a sane upper bound
+# so the server doesn't fight the OS.
+# Args: $1 = desired cache-ram in MiB (from profile), echoes adjusted value
+adjust_cache_ram_for_memory() {
+    local desired_mib="$1"
+    local model_bytes="${MODEL_BYTES:-0}"
+    local avail_bytes
+    avail_bytes=$(get_available_memory_bytes)
+    if [[ "$avail_bytes" -le 0 ]]; then
+        echo "$desired_mib"
+        return
+    fi
+    # Reserve: 4 GB for system overhead, plus resident model footprint.
+    # For MoE models the resident footprint is much smaller than the file
+    # size, but we conservatively assume half the file is resident.
+    local reserve_bytes=$((4 * 1024 * 1024 * 1024))
+    local model_resident_bytes=0
+    if [[ "$model_bytes" -gt 0 ]]; then
+        local total_bytes half_total
+        total_bytes=$(get_total_memory_bytes)
+        half_total=$((total_bytes / 2))
+        if [[ "$model_bytes" -lt "$half_total" ]]; then
+            model_resident_bytes=$model_bytes
+        else
+            model_resident_bytes=$half_total
+        fi
+    fi
+    local max_cache_bytes=$((avail_bytes - reserve_bytes - model_resident_bytes))
+    if [[ "$max_cache_bytes" -le 0 ]]; then
+        echo 0
+        return
+    fi
+    local max_cache_mib=$((max_cache_bytes / 1024 / 1024))
+    if [[ "$desired_mib" -gt "$max_cache_mib" ]]; then
+        echo "$max_cache_mib"
+    else
+        echo "$desired_mib"
+    fi
+}
+
 assign_profile() {
     local model_path="$1"
     local filename=$(basename "$model_path")
-    local size_bytes=$(stat -c%s "$model_path" 2>/dev/null || echo 0)
+    local size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    MODEL_BYTES="$size_bytes"
     local size_gb=$((size_bytes / 1024 / 1024 / 1024))
     
     # Reset all variables to sensible defaults
@@ -290,6 +391,23 @@ assign_profile() {
         profile_name="small-efficient"
     fi
     
+    # Adjust --cache-ram to available memory on memory-constrained systems
+    # (e.g. 24 GB macOS laptops running 20+ GB MoE models)
+    if [[ "${LLAMA_ADJUST_CACHE:-1}" == "1" ]]; then
+        local _orig_cache_ram _new_cache_ram
+        _orig_cache_ram=$(echo "$EXTRA_SERVER_ARGS" | sed -nE 's/.*--cache-ram ([0-9]+).*/\1/p')
+        if [[ -n "$_orig_cache_ram" ]]; then
+            _new_cache_ram=$(adjust_cache_ram_for_memory "$_orig_cache_ram")
+            if [[ "$_new_cache_ram" -le 0 ]]; then
+                EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/ --cache-ram [0-9]+//')
+                log_info "cache-ram disabled (insufficient memory headroom); SSD cache remains"
+            elif [[ "$_new_cache_ram" -lt "$_orig_cache_ram" ]]; then
+                EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E "s/--cache-ram [0-9]+/--cache-ram $_new_cache_ram/")
+                log_info "cache-ram reduced: ${_orig_cache_ram} MiB -> ${_new_cache_ram} MiB (memory-constrained)"
+            fi
+        fi
+    fi
+
     echo -e "${CYAN}Auto profile: ${GREEN}$profile_name${NC} (${size_gb}GB, MoE=$is_moe, SSM=$is_ssm)"
 }
 
@@ -297,21 +415,25 @@ assign_profile() {
 # Auto-discover models from ./models directory
 # =============================================================================
 
-declare -A MODELS
+# Lightweight model registry. Use parallel MODELS_NAME[] / MODELS_PATH[] arrays
+# (macOS ships bash 3.2 which lacks associative arrays).
+declare -a MODELS_NAME=()
+declare -a MODELS_PATH=()
 
 scan_models() {
+    MODELS_NAME=()
+    MODELS_PATH=()
     if [[ ! -d "$MODEL_DIR" ]]; then
         echo -e "${YELLOW}Warning: Models directory not found: $MODEL_DIR${NC}"
         return
     fi
 
-    # Scan for .gguf files - use original filenames as keys
+    # Scan for .gguf files in top-level of models dir
     while IFS= read -r -d '' file; do
-        # Get filename without path and extension
+        local basename
         basename=$(basename "$file" .gguf)
-        
-        # Store with original basename as key
-        MODELS["$basename"]="$file"
+        MODELS_NAME+=("$basename")
+        MODELS_PATH+=("$file")
     done < <(find "$MODEL_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null)
 }
 
@@ -329,9 +451,12 @@ list_models() {
     
     local found=0
     # Sort output for consistent ordering
-    for name in $(printf '%s\n' "${!MODELS[@]}" | sort); do
-        model="${MODELS[$name]}"
+    local i
+    for i in $(printf '%s\n' "${!MODELS_NAME[@]}" | sort -n); do
+        local name="${MODELS_NAME[$i]}"
+        local model="${MODELS_PATH[$i]}"
         if [[ -f "$model" ]]; then
+            local size
             size=$(du -h "$model" 2>/dev/null | cut -f1)
             echo -e "  ${GREEN}$name${NC}  - $size"
             found=1
@@ -351,7 +476,11 @@ list_backends() {
     export LD_LIBRARY_PATH="${PROJECT_ROOT:-.}/deps/lib:${LD_LIBRARY_PATH:-}"
     export PATH="$ROCM_PATH/bin:$PATH"
     echo -e "${BLUE}Available Backends:${NC}"
-    local binary="$LLAMA_BUILD/bin/llama-cli"
+    local binary="${LLAMA_BUILD:-}/bin/llama-cli"
+    if [[ -z "${LLAMA_BUILD:-}" ]]; then
+        # Fallback to vulkan build dir when called early
+        binary="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-cli"
+    fi
     if [[ -x "$binary" ]]; then
         if [[ -n "$LLAMA_GPU_NAME" ]]; then
             echo -e "  ${GREEN}[*] ROCm/HIP${NC}   - $LLAMA_GPU_NAME ($LLAMA_GFX_ARCH)"
@@ -361,10 +490,42 @@ list_backends() {
     else
         echo -e "  ${YELLOW}[ ] ROCm/HIP${NC}   - not built"
     fi
-    if [[ -x "$LLAMA_BUILD/bin/llama-cli" ]]; then
+    if [[ -x "${LLAMA_BUILD:-$PROJECT_ROOT/src/llama-cpp-vulkan/build}/bin/llama-cli" ]]; then
         echo -e "  ${GREEN}[*] Vulkan${NC}      - available"
     else
         echo -e "  ${YELLOW}[ ] Vulkan${NC}      - not built"
+    fi
+    echo -e "  ${GREEN}[*] CPU${NC}         - always available"
+    exit 0
+}
+
+list_backends_v2() {
+    echo -e "${BLUE}Available Backends:${NC}"
+    local binary_rocm="$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-cli"
+    local binary_vulkan="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-cli"
+    local binary_metal="$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-cli"
+    if [[ -x "$binary_rocm" ]]; then
+        if [[ -n "$LLAMA_GPU_NAME" ]]; then
+            echo -e "  ${GREEN}[*] ROCm/HIP${NC}   - $LLAMA_GPU_NAME ($LLAMA_GFX_ARCH)"
+        else
+            echo -e "  ${CYAN}[ ] ROCm/HIP${NC}   - installed (GPU not in detection map)"
+        fi
+    else
+        echo -e "  ${YELLOW}[ ] ROCm/HIP${NC}   - not built"
+    fi
+    if [[ -x "$binary_vulkan" ]]; then
+        echo -e "  ${GREEN}[*] Vulkan${NC}      - available"
+    else
+        echo -e "  ${YELLOW}[ ] Vulkan${NC}      - not built"
+    fi
+    if [[ -x "$binary_metal" ]]; then
+        if [[ -n "$LLAMA_GPU_NAME" ]]; then
+            echo -e "  ${GREEN}[*] Metal${NC}       - $LLAMA_GPU_NAME"
+        else
+            echo -e "  ${GREEN}[*] Metal${NC}       - available (Apple Silicon)"
+        fi
+    else
+        echo -e "  ${YELLOW}[ ] Metal${NC}       - not built (macOS only)"
     fi
     echo -e "  ${GREEN}[*] CPU${NC}         - always available"
     exit 0
@@ -398,6 +559,21 @@ setup_rocm_env() {
 
 setup_vulkan_env() {
     export LD_LIBRARY_PATH="${PROJECT_ROOT:-.}/deps/lib:${LD_LIBRARY_PATH:-}"
+}
+
+setup_metal_env() {
+    # Metal uses no special runtime env; unified memory is automatic on Apple Silicon.
+    # Setting GPU_HONEST_CELLS=1 can help on devices with binned/inactive GPU cores
+    # but is harmless on healthy hardware.
+    export GGML_METAL_DEVICE_DEBUG=0
+}
+
+apply_backend_env() {
+    case "$BACKEND" in
+        rocm)   setup_rocm_env ;;
+        vulkan) setup_vulkan_env ;;
+        metal)  setup_metal_env ;;
+    esac
 }
 
 # =============================================================================
@@ -756,7 +932,7 @@ while [[ $# -gt 0 ]]; do
         --port) PORT="$2"; shift 2 ;;
         --host) HOST="$2"; shift 2 ;;
         --list-models) list_models ;;
-        --list-backends) list_backends ;;
+        --list-backends) list_backends_v2 ;;
         --download-help) download_usage ;;
         -h|--help) usage ;;
         --) shift; break ;;
@@ -775,8 +951,20 @@ PROMPT="$*"
 if [[ -f "$MODEL" ]]; then
     MODEL="$(realpath "$MODEL")"
 # If MODEL matches an alias or basename, resolve it
-elif [[ -n "$MODEL" ]] && [[ -v MODELS["$MODEL"] ]]; then
-    MODEL="${MODELS["$MODEL"]}"
+elif [[ -n "$MODEL" ]]; then
+    RESOLVE_IDX=0
+    RESOLVE_FOUND=-1
+    for entry in "${MODELS_NAME[@]}"; do
+        if [[ "$entry" == "$MODEL" ]]; then
+            RESOLVE_FOUND=$RESOLVE_IDX
+            break
+        fi
+        RESOLVE_IDX=$((RESOLVE_IDX + 1))
+    done
+    if [[ $RESOLVE_FOUND -ge 0 ]]; then
+        MODEL="${MODELS_PATH[$RESOLVE_FOUND]}"
+    fi
+    unset RESOLVE_IDX RESOLVE_FOUND
 fi
 
 if [[ -z "$MODEL" ]]; then
@@ -788,7 +976,7 @@ if [[ ! -f "$MODEL" ]]; then
 fi
 
 if [[ "$BACKEND" == "auto" ]]; then
-    BACKEND=$(detect_backend)
+    detect_backend  # Sets BACKEND in current shell (not a subshell)
 fi
 
 # All models use dynamic profiling based on file characteristics
@@ -798,7 +986,7 @@ assign_profile "$MODEL"
 
 if [[ "$PRINT_PROFILE" == true ]]; then
     model_name=$(basename "$MODEL" .gguf)
-    model_bytes=$(stat -c%s "$MODEL" 2>/dev/null || echo 0)
+    model_bytes=$(stat -c%s "$MODEL" 2>/dev/null || stat -f%z "$MODEL" 2>/dev/null || echo 0)
     # Suppress the "Auto profile:" line that assign_profile echo'd to stdout
     cat <<PROFILE_EOF
 CTX_SIZE=$CTX_SIZE
@@ -842,10 +1030,32 @@ fi
 echo -e "${BLUE}Using backend: ${GREEN}${BACKEND}${NC}"
 echo -e "${BLUE}Binary: ${GREEN}$LLAMA_SERVER${NC}"
 
+# Pre-launch memory sanity check. The model file is mmap'd lazily so the
+# virtual size is mostly free, but the resident footprint depends on access
+# patterns. For dense models it's the full file; for MoE models it's a
+# fraction (active experts only). We warn if the model is clearly too large.
+_total_mem_bytes=$(get_total_memory_bytes)
+_total_mem_gb=$((_total_mem_bytes / 1024 / 1024 / 1024))
+_model_size_gb=$((MODEL_BYTES / 1024 / 1024 / 1024))
+if [[ "$_model_size_gb" -gt $((_total_mem_gb - 2)) ]]; then
+    # Model is more than ~92% of total RAM. Even mmap is risky on a busy system.
+    echo -e "${YELLOW}Warning: model (${_model_size_gb}GB) is close to total RAM (${_total_mem_gb}GB).${NC}"
+    if echo "$(basename "$MODEL" .gguf)" | grep -qiE "moe|a3b|a8b"; then
+        echo -e "${YELLOW}         This is a MoE model: resident footprint is much smaller than file size.${NC}"
+        echo -e "${YELLOW}         Only active experts are loaded; cold/expert pages stay on disk.${NC}"
+    else
+        echo -e "${YELLOW}         Dense model: full file will be resident. OOM is likely.${NC}"
+        echo -e "${YELLOW}         Use a smaller quant (Q4 or Q3) or a smaller model.${NC}"
+    fi
+fi
+
+# Apply backend-specific env (HSA override for ROCm, Metal debug, etc.)
+apply_backend_env
+
 setup_performance
 
 MODEL_SIZE=$(du -h "$MODEL" 2>/dev/null | cut -f1)
-MODEL_BYTES=$(stat -c%s "$MODEL" 2>/dev/null || echo 0)
+MODEL_BYTES=$(stat -c%s "$MODEL" 2>/dev/null || stat -f%z "$MODEL" 2>/dev/null || echo 0)
 MODEL_NAME=$(basename "$MODEL" .gguf)
 echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 
@@ -866,7 +1076,11 @@ fi
 COMMON_ARGS="-m '$MODEL'"
 [[ -n "$MODEL_ALIAS" ]] && COMMON_ARGS="$COMMON_ARGS -a '$MODEL_ALIAS'"
 MODEL_BYTES=${MODEL_BYTES:-0}
-MEMLOCK_LIMIT_KB=$(ulimit -l 2>/dev/null || echo 0)
+MEMLOCK_LIMIT_KB=$(ulimit -l 2>/dev/null || true)
+if [[ "$MEMLOCK_LIMIT_KB" == "unlimited" || -z "$MEMLOCK_LIMIT_KB" ]]; then
+    # mlock not enforced; treat as 0 so we don't mlock
+    MEMLOCK_LIMIT_KB=0
+fi
 MEMLOCK_LIMIT_BYTES=$((MEMLOCK_LIMIT_KB * 1024))
 if [[ "$MODEL_BYTES" -gt 0 && "$MODEL_BYTES" -gt "$MEMLOCK_LIMIT_BYTES" ]]; then
     log_info "mlock disabled: model ($((MODEL_BYTES / 1048576)) MiB) larger than memlock limit ($((MEMLOCK_LIMIT_BYTES / 1048576)) MiB)"
@@ -941,8 +1155,14 @@ kill_existing_server() {
     local port="$1"
     # Kill any llama-server processes (including ones bound to this port)
     pkill -9 llama-server 2>/dev/null || true
-    # Also kill any process holding our port
-    fuser -k "${port}/tcp" 2>/dev/null || true
+    # Also kill any process holding our port (lsof works on macOS + Linux)
+    if command -v lsof &>/dev/null; then
+        local pids
+        pids=$(lsof -ti tcp:"$port" 2>/dev/null) || true
+        if [[ -n "$pids" ]]; then
+            echo "$pids" | xargs kill -9 2>/dev/null || true
+        fi
+    fi
     sleep 1
 }
 
@@ -956,6 +1176,9 @@ if [[ "$BACKEND" == "rocm" ]]; then
     EXEC_ENV="ROCM_PATH='$ROCM_PATH' HIP_PATH='$HIP_PATH' HIP_VISIBLE_DEVICES=0 HSA_OVERRIDE_GFX_VERSION='$HSA_OVERRIDE_GFX_VERSION' LD_LIBRARY_PATH='$LD_LIBRARY_PATH'"
 elif [[ "$BACKEND" == "vulkan" ]]; then
     EXEC_ENV="LD_LIBRARY_PATH='$LD_LIBRARY_PATH'"
+elif [[ "$BACKEND" == "metal" ]]; then
+    # Metal needs no env vars at runtime; env is set in-process above
+    EXEC_ENV=""
 fi
 
 if [[ "$SERVER_MODE" == true ]]; then

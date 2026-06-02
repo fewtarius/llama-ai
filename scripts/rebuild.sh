@@ -5,16 +5,17 @@
 # Rebuild Script - Downloads ROCm SDK + Builds llama.cpp
 # =============================================================================
 # Handles full setup from a fresh checkout:
-#   1. Auto-detects AMD GPU via PCI ID
-#   2. Downloads correct ROCm SDK from AMD nightlies
-#   3. Builds llama.cpp with ROCm and/or Vulkan backends
+#   Linux + AMD:  Vulkan (default) or ROCm/HIP - downloads ROCm SDK
+#   macOS (Apple Silicon): Metal backend - uses Xcode toolchain
 #
 # Usage:
-#   ./scripts/rebuild.sh           # Build both backends (downloads SDK if needed)
-#   ./scripts/rebuild.sh --rebuild # Full rebuild (wipe deps/, re-download SDK)
-#   ./scripts/rebuild.sh --rocm    # Build ROCm backend only
-#   ./scripts/rebuild.sh --vulkan  # Build Vulkan backend only
-#   ./scripts/rebuild.sh --help    # Show help
+#   ./scripts/rebuild.sh             # Default backend for this platform
+#   ./scripts/rebuild.sh --rebuild   # Full rebuild (wipe deps/, re-download SDK)
+#   ./scripts/rebuild.sh --rocm      # Build ROCm backend only (Linux)
+#   ./scripts/rebuild.sh --vulkan    # Build Vulkan backend only (Linux)
+#   ./scripts/rebuild.sh --metal     # Build Metal backend (macOS)
+#   ./scripts/rebuild.sh --both      # Build both ROCm and Vulkan (Linux)
+#   ./scripts/rebuild.sh --help      # Show help
 
 set -euo pipefail
 
@@ -46,12 +47,15 @@ usage() {
     cat << EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Download ROCm SDK and build llama.cpp with ROCm and/or Vulkan backends.
+Build llama.cpp with the appropriate backend for the host platform.
+  - Linux + AMD: downloads ROCm SDK, builds ROCm and/or Vulkan
+  - macOS (Apple Silicon): builds Metal backend
 
 OPTIONS:
-    --rocm          Build ROCm/HIP backend only
-    --vulkan        Build Vulkan backend only
-    --both          Build both backends (default)
+    --rocm          Build ROCm/HIP backend only (Linux + AMD)
+    --vulkan        Build Vulkan backend only (Linux + AMD)
+    --metal         Build Metal backend (macOS)
+    --both          Build both ROCm and Vulkan (Linux, default)
     --rebuild       Full rebuild (wipe deps/, re-download SDK)
     --clean         Clean build directories only (keep deps)
     -h, --help      Show this help
@@ -60,18 +64,34 @@ ENVIRONMENT:
     ROCM_VERSION    ROCm SDK version to download (default: $ROCM_VERSION)
 
 EXAMPLES:
-    $(basename "$0")                    # Build both backends
+    $(basename "$0")                    # Build default backend for this platform
     $(basename "$0") --rebuild          # Full rebuild from scratch
-    $(basename "$0") --rocm             # Build ROCm only
-    $(basename "$0") --vulkan           # Build Vulkan only
+    $(basename "$0") --rocm             # Build ROCm only (Linux)
+    $(basename "$0") --vulkan           # Build Vulkan only (Linux)
+    $(basename "$0") --metal            # Build Metal (macOS)
 
 EOF
     exit 0
 }
 
-# Parse arguments
-BUILD_ROCM=false
-BUILD_VULKAN=true
+# =============================================================================
+# Parse arguments and set platform-appropriate defaults
+# =============================================================================
+
+# Platform defaults: macOS -> Metal only; Linux -> Vulkan only.
+case "$(uname -s)" in
+    Darwin)
+        BUILD_ROCM=false
+        BUILD_VULKAN=false
+        BUILD_METAL=true
+        ;;
+    *)
+        BUILD_ROCM=false
+        BUILD_VULKAN=true
+        BUILD_METAL=false
+        ;;
+esac
+
 CLEAN=false
 REBUILD=false
 
@@ -79,15 +99,26 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --rocm)
             BUILD_VULKAN=false
+            BUILD_METAL=false
+            BUILD_ROCM=true
             shift
             ;;
         --vulkan)
             BUILD_ROCM=false
+            BUILD_METAL=false
+            BUILD_VULKAN=true
+            shift
+            ;;
+        --metal)
+            BUILD_ROCM=false
+            BUILD_VULKAN=false
+            BUILD_METAL=true
             shift
             ;;
         --both)
             BUILD_ROCM=true
             BUILD_VULKAN=true
+            BUILD_METAL=false
             shift
             ;;
         --rebuild)
@@ -128,9 +159,12 @@ check_prereqs() {
         missing+=("cmake")
     fi
 
-    # make: required by cmake's Makefile generator
-    if ! command -v make &>/dev/null; then
-        missing+=("make")
+    # make: required by cmake's Makefile generator (Linux only)
+    # macOS uses ninja or the default Xcode generator; ninja is checked later
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        if ! command -v make &>/dev/null; then
+            missing+=("make")
+        fi
     fi
 
     # curl, git: used for downloading and submodule management
@@ -141,8 +175,8 @@ check_prereqs() {
     done
 
     # --- C/C++ compiler ---
-    # Priority: ROCm bundled clang > system clang > system gcc
-    # After env.sh is sourced or PATH is set, ROCm's clang will be on PATH
+    # Priority: ROCm bundled clang > system clang > system gcc (Linux)
+    # On macOS, prefer Apple's clang (from Xcode Command Line Tools)
     local has_compiler=false
     for compiler in clang++ g++; do
         if command -v "$compiler" &>/dev/null; then
@@ -162,6 +196,26 @@ check_prereqs() {
         fi
     fi
 
+    # --- Metal-specific (macOS) ---
+    if [[ "$BUILD_METAL" == true ]]; then
+        if ! command -v xcrun &>/dev/null; then
+            missing+=("xcrun (Xcode Command Line Tools)")
+        fi
+    fi
+
+    # Report any missing prerequisites
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        log_error "Missing required tools:"
+        for m in "${missing[@]}"; do
+            echo "  - $m"
+        done
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            echo ""
+            echo "Install Xcode Command Line Tools:"
+            echo "  xcode-select --install"
+        fi
+        exit 1
+    fi
 }
 
 # =============================================================================
@@ -170,18 +224,23 @@ check_prereqs() {
 
 source "$SCRIPT_DIR/detect-gpu.sh"
 
-if [[ -z "$LLAMA_ROCM_VARIANT" ]]; then
-    log_warn "GPU not in detection map. Defaulting to gfx110X."
-    log_warn "Set LLAMA_ROCM_VARIANT in your environment if this is wrong."
-    LLAMA_ROCM_VARIANT="gfx110X"
+# Show the detected platform/GPU
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    log_info "Platform: macOS (${LLAMA_GPU_NAME:-unknown})"
+    log_info "Metal acceleration enabled via Apple Silicon GPU"
+else
+    if [[ -z "$LLAMA_ROCM_VARIANT" ]]; then
+        log_warn "GPU not in detection map. Defaulting to gfx110X."
+        log_warn "Set LLAMA_ROCM_VARIANT in your environment if this is wrong."
+        LLAMA_ROCM_VARIANT="gfx110X"
+    fi
+    log_info "GPU: ${LLAMA_GPU_NAME:-unknown} ($LLAMA_GPU_PCI_ID)"
+    log_info "GFX: $LLAMA_GFX_ARCH ($LLAMA_GFX_VERSION)"
+    log_info "SDK variant: $LLAMA_ROCM_VARIANT"
 fi
 
-log_info "GPU: ${LLAMA_GPU_NAME:-unknown} ($LLAMA_GPU_PCI_ID)"
-log_info "GFX: $LLAMA_GFX_ARCH ($LLAMA_GFX_VERSION)"
-log_info "SDK variant: $LLAMA_ROCM_VARIANT"
-
 # =============================================================================
-# Download ROCm SDK
+# Download ROCm SDK (Linux only)
 # =============================================================================
 
 download_rocm() {
@@ -337,6 +396,7 @@ build_rocm() {
         -DGGML_VULKAN=OFF \
         -DGGML_CPU=ON \
         -DGGML_NATIVE=OFF \
+        $LLAMA_CMAKE_CPU_FLAGS \
         -DLLAMA_BUILD_SERVER=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=ON \
@@ -346,6 +406,7 @@ build_rocm() {
     cmake --build . --config Release -j$(nproc)
 
     log_ok "ROCm build complete: $build_dir/bin/llama-server"
+    log_info "CPU ISA level: $LLAMA_CPU_ISA"
 }
 
 build_vulkan() {
@@ -371,6 +432,7 @@ build_vulkan() {
         -DGGML_VULKAN=ON \
         -DGGML_CPU=ON \
         -DGGML_NATIVE=OFF \
+        $LLAMA_CMAKE_CPU_FLAGS \
         -DLLAMA_BUILD_SERVER=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=ON \
@@ -380,6 +442,48 @@ build_vulkan() {
     cmake --build . --config Release -j$(nproc)
 
     log_ok "Vulkan build complete: $build_dir/bin/llama-server"
+    log_info "CPU ISA level: $LLAMA_CPU_ISA"
+}
+
+build_metal() {
+    log_info "Building Metal backend (macOS)..."
+
+    local build_dir="$PROJECT_ROOT/src/llama-cpp-metal/build"
+
+    # Clean if requested
+    [[ "$CLEAN" == true || "$REBUILD" == true ]] && rm -rf "$build_dir"
+    mkdir -p "$build_dir"
+
+    # Apply patches to submodule
+    apply_patches
+
+    # Configure
+    cd "$build_dir"
+
+    # Use Apple clang. GGML_METAL defaults to ON on Apple platforms in llama.cpp,
+    # so we set it explicitly to be safe.
+    cmake "$LLAMA_DIR" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=clang \
+        -DCMAKE_CXX_COMPILER=clang++ \
+        -DGGML_METAL=ON \
+        -DGGML_METAL_NDEBUG=ON \
+        -DGGML_HIP=OFF \
+        -DGGML_HIPBLAS=OFF \
+        -DGGML_VULKAN=OFF \
+        -DGGML_CPU=ON \
+        -DGGML_NATIVE=ON \
+        -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_TESTS=OFF \
+        -DLLAMA_BUILD_EXAMPLES=ON \
+        2>&1 | tail -5
+
+    # Build with the detected logical core count
+    local jobs
+    jobs=$(sysctl -n hw.logicalcpu 2>/dev/null || echo "$(nproc)")
+    cmake --build . --config Release -j"$jobs"
+
+    log_ok "Metal build complete: $build_dir/bin/llama-server"
 }
 
 # =============================================================================
@@ -388,23 +492,30 @@ build_vulkan() {
 
 echo ""
 echo -e "${CYAN}=== Llama.cpp Build Script ===${NC}"
+echo -e "${CYAN}  Platform: $(uname -s) $(uname -m)${NC}"
 echo -e "${CYAN}  GPU: ${LLAMA_GPU_NAME:-unknown} (${LLAMA_GFX_ARCH:-?})${NC}"
-echo -e "${CYAN}  ROCm: ${ROCM_VERSION}${NC}"
+echo -e "${CYAN}  CPU ISA: ${LLAMA_CPU_ISA:-unknown}${NC}"
+echo -e "${CYAN}  CMake CPU flags: ${LLAMA_CMAKE_CPU_FLAGS:-none}${NC}"
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    echo -e "${CYAN}  ROCm: ${ROCM_VERSION}${NC}"
+fi
 echo ""
 
 # Step 1: Initialize submodule
 init_submodule
 
-# Step 2: Download ROCm SDK (if building ROCm backend)
+# Step 2: Download ROCm SDK (Linux ROCm builds only)
 download_rocm
 
-# Step 3: Source environment so ROCm tools (clang, etc.) are on PATH
-if [[ "$BUILD_ROCM" == true || "$BUILD_VULKAN" == true ]]; then
-    if [[ "$BUILD_ROCM" == true ]]; then
-        source "$PROJECT_ROOT/scripts/env.sh" rocm
-    else
-        # Vulkan builds still need ROCm's bundled clang/lld for compilation
-        export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
+# Step 3: Source environment so ROCm tools (clang, etc.) are on PATH (Linux only)
+if [[ "$(uname -s)" != "Darwin" ]]; then
+    if [[ "$BUILD_ROCM" == true || "$BUILD_VULKAN" == true ]]; then
+        if [[ "$BUILD_ROCM" == true ]]; then
+            source "$PROJECT_ROOT/scripts/env.sh" rocm
+        else
+            # Vulkan builds still need ROCm's bundled clang/lld for compilation
+            export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
+        fi
     fi
 fi
 
@@ -412,15 +523,17 @@ fi
 check_prereqs
 
 # Step 5: Build requested backends
-[[ "$BUILD_ROCM" == true ]] && build_rocm
+[[ "$BUILD_ROCM" == true ]]   && build_rocm
 [[ "$BUILD_VULKAN" == true ]] && build_vulkan
+[[ "$BUILD_METAL" == true ]]  && build_metal
 
 echo ""
 echo -e "${GREEN}=== Build Complete ===${NC}"
 echo ""
 echo "Binaries:"
-[[ "$BUILD_ROCM" == true ]] && echo "  ROCm:   $PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server"
+[[ "$BUILD_ROCM" == true ]]   && echo "  ROCm:   $PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server"
 [[ "$BUILD_VULKAN" == true ]] && echo "  Vulkan: $PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server"
+[[ "$BUILD_METAL" == true ]]  && echo "  Metal:  $PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server"
 echo ""
 echo "Next: drop a GGUF model in models/ and run ./llama-run.sh --server"
 echo ""

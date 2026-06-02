@@ -16,11 +16,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # Parse backend argument (default: rocm)
 BACKEND="${1:-rocm}"
-BACKEND="${BACKEND,,}"  # lowercase
+BACKEND=$(echo "$BACKEND" | tr "[:upper:]" "[:lower:]")  # lowercase (POSIX-safe)
 
 # Validate backend
-if [[ "$BACKEND" != "rocm" && "$BACKEND" != "vulkan" ]]; then
-    echo "ERROR: Invalid backend '$BACKEND'. Use 'rocm' or 'vulkan'"
+if [[ "$BACKEND" != "rocm" && "$BACKEND" != "vulkan" && "$BACKEND" != "metal" ]]; then
+    echo "ERROR: Invalid backend '$BACKEND'. Use 'rocm', 'vulkan', or 'metal'"
     return 1 2>/dev/null || exit 1
 fi
 
@@ -76,21 +76,37 @@ if [[ "$BACKEND" == "rocm" ]]; then
     echo "  LLAMA_BIN=$LLAMA_BIN"
     echo "  HSA_OVERRIDE_GFX_VERSION=$HSA_OVERRIDE_GFX_VERSION"
     
-else  # vulkan
+elif [[ "$BACKEND" == "vulkan" ]]; then
     # Vulkan doesn't need ROCm paths
     export LLAMA_BIN="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin"
     export PATH="$LLAMA_BIN:$PATH"
-    
+
     # Set Vulkan backend env var
     export GGML_BACKEND=vulkan
-    
+
     # Ensure LD_LIBRARY_PATH is defined (required by llama-run.sh set -u)
     export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
-    
+
     echo "Vulkan environment loaded:"
     echo "  BACKEND=$BACKEND"
     echo "  LLAMA_BIN=$LLAMA_BIN"
     echo "  GGML_BACKEND=$GGML_BACKEND"
+
+elif [[ "$BACKEND" == "metal" ]]; then
+    # Metal uses macOS system frameworks; nothing to set besides LLAMA_BIN
+    export LLAMA_BIN="$PROJECT_ROOT/src/llama-cpp-metal/build/bin"
+    export PATH="$LLAMA_BIN:$PATH"
+
+    # Metal uses unified memory automatically on Apple Silicon
+    export GGML_METAL_DEVICE_DEBUG=0
+
+    # Ensure LD_LIBRARY_PATH is defined (required by llama-run.sh set -u)
+    export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+
+    echo "Metal environment loaded:"
+    echo "  BACKEND=$BACKEND"
+    echo "  LLAMA_BIN=$LLAMA_BIN"
+    echo "  GGML_METAL_DEVICE_DEBUG=$GGML_METAL_DEVICE_DEBUG"
 fi
 
 # Alias for convenience

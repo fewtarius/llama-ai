@@ -16,12 +16,15 @@
 #   LLAMA_THREADS       - Recommended thread count
 #   LLAMA_TOTAL_RAM_GB  - Total system RAM in GB
 #   LLAMA_RECOMMENDED_GTT_GB - Recommended GTT size in GB
+#   LLAMA_CPU_ISA       - CPU ISA level for cmake (e.g. "avx512_bf16", "avx2")
+#   LLAMA_CMAKE_CPU_FLAGS - CMake flags for CPU features (e.g. "-DGGML_AVX512=ON ...")
 #
 # User overrides via environment:
 #   LLAMA_GFX_VERSION=11.0.3  (skip detection, use this value)
 #   LLAMA_GFX_ARCH=gfx1103    (skip detection, use this value)
 #   LLAMA_THREADS=16          (override auto-detected thread count)
 #   LLAMA_GTT_SIZE=18         (override recommended GTT size)
+#   LLAMA_CPU_ISA=avx512_bf16 (skip detection, use this ISA level)
 #
 # Detection priority:
 #   1. Environment variable overrides (LLAMA_GFX_VERSION_OVERRIDE, etc.)
@@ -87,6 +90,32 @@ GPU_MAP=(
 # =============================================================================
 # Detection functions
 # =============================================================================
+
+# Detect Apple Silicon GPU/chip on macOS
+# Sets: LLAMA_GPU_NAME (e.g. "Apple M4 Pro"), LLAMA_GFX_ARCH ("metal"),
+#        LLAMA_TOTAL_RAM_GB
+# On non-macOS systems, returns 1 and leaves vars unchanged.
+_detect_macos_gpu() {
+    [[ "$(uname -s)" != "Darwin" ]] && return 1
+
+    # Use sysctl for the chip brand string (always present, no dependencies)
+    local chip=""
+    chip=$(sysctl -n machdep.cpu.brand_string 2>/dev/null) || return 1
+
+    # Only Apple Silicon has the brand string starting with "Apple"
+    if [[ "$chip" != Apple* ]]; then
+        echo "[WARN] darwin: non-Apple CPU detected ($chip); macOS GPU acceleration requires Apple Silicon" >&2
+        return 1
+    fi
+
+    LLAMA_GPU_NAME="$chip"
+    # No GFX arch in the AMD sense - Metal is the unified GPU API
+    LLAMA_GFX_ARCH="metal"
+    LLAMA_GFX_VERSION=""
+    LLAMA_GPU_PCI_ID=""
+    LLAMA_ROCM_VARIANT=""
+    return 0
+}
 
 # Get the AMD GPU PCI device ID
 _detect_gpu_pci_id() {
@@ -220,9 +249,18 @@ _lookup_gpu() {
 
 # Detect total system RAM in GB
 _detect_total_ram_gb() {
-    local ram_kb
-    ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-    echo $((ram_kb / 1024 / 1024))
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        # macOS: hw.memsize reports physical RAM in bytes
+        local ram_bytes
+        ram_bytes=$(sysctl -n hw.memsize 2>/dev/null)
+        [[ -z "$ram_bytes" ]] && { echo 0; return; }
+        echo $(( ram_bytes / 1024 / 1024 / 1024 ))
+    else
+        # Linux: /proc/meminfo reports in kB
+        local ram_kb
+        ram_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+        echo $((ram_kb / 1024 / 1024))
+    fi
 }
 
 # Recommend GTT size based on total RAM
@@ -238,12 +276,154 @@ _recommend_gtt_gb() {
 }
 
 # =============================================================================
+# CPU ISA Detection
+# =============================================================================
+# Detects the highest x86 ISA level supported by the CPU and generates
+# the corresponding CMake flags for ggml-cpu.
+#
+# ISA levels (in order of preference):
+#   avx512_bf16  - AVX-512 with BF16 + VNNI (Zen 4, Sapphire Rapids, etc.)
+#   avx512_vnni  - AVX-512 with VNNI but no BF16
+#   avx512       - Base AVX-512 (F, CD, VL, DQ, BW)
+#   avx2          - AVX2 + FMA + F16C + BMI2
+#   avx           - AVX without AVX2
+#   sse42         - SSE4.2 baseline
+#
+# The detection reads /proc/cpuinfo on Linux and uses sysctl on macOS.
+# On macOS (Apple Silicon), we skip x86 detection entirely.
+#
+# Output variables:
+#   LLAMA_CPU_ISA         - Highest ISA level string (e.g. "avx512_bf16")
+#   LLAMA_CMAKE_CPU_FLAGS - CMake flags string (e.g. "-DGGML_AVX512=ON -DGGML_AVX512_BF16=ON ...")
+
+_detect_cpu_isa() {
+    # macOS Apple Silicon: no x86 SIMD detection needed
+    if [[ "$LLAMA_PLATFORM" == "macos" ]]; then
+        LLAMA_CPU_ISA="apple_silicon"
+        LLAMA_CMAKE_CPU_FLAGS=""
+        return 0
+    fi
+
+    # Linux: read CPU flags from /proc/cpuinfo
+    local cpuflags=""
+    cpuflags=$(grep -m1 "^flags" /proc/cpuinfo 2>/dev/null | cut -d: -f2)
+
+    if [[ -z "$cpuflags" ]]; then
+        # Fallback: assume AVX2 (safe for any modern x86-64 CPU)
+        LLAMA_CPU_ISA="avx2"
+        LLAMA_CMAKE_CPU_FLAGS="-DGGML_AVX2=ON -DGGML_AVX=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON -DGGML_SSE42=ON"
+        return 0
+    fi
+
+    # Check ISA levels from highest to lowest
+    # AVX-512 BF16 requires: avx512f, avx512bw, avx512cd, avx512dq, avx512vl, avx512_bf16
+    local has_avx512f=0 has_avx512bw=0 has_avx512cd=0 has_avx512dq=0 has_avx512vl=0
+    local has_avx512_bf16=0 has_avx512_vnni=0 has_avx512_vbmi=0
+    local has_avx2=0 has_avx=0 has_fma=0 has_f16c=0 has_bmi2=0 has_sse42=0
+
+    # Parse flags
+    for flag in $cpuflags; do
+        case "$flag" in
+            avx512f)      has_avx512f=1 ;;
+            avx512bw)     has_avx512bw=1 ;;
+            avx512cd)     has_avx512cd=1 ;;
+            avx512dq)     has_avx512dq=1 ;;
+            avx512vl)     has_avx512vl=1 ;;
+            avx512_bf16)  has_avx512_bf16=1 ;;
+            avx512_vnni)  has_avx512_vnni=1 ;;
+            avx512vbmi)   has_avx512_vbmi=1 ;;
+            avx2)         has_avx2=1 ;;
+            avx)          has_avx=1 ;;
+            fma)          has_fma=1 ;;
+            f16c)         has_f16c=1 ;;
+            bmi2)         has_bmi2=1 ;;
+            sse4_2)       has_sse42=1 ;;
+        esac
+    done
+
+    # Determine highest ISA level and build CMake flags
+    local flags=""
+
+    # Always include baseline
+    if [[ "$has_sse42" -eq 1 ]]; then
+        flags="-DGGML_SSE42=ON"
+    fi
+    if [[ "$has_avx" -eq 1 ]]; then
+        flags="$flags -DGGML_AVX=ON"
+    fi
+    if [[ "$has_fma" -eq 1 ]]; then
+        flags="$flags -DGGML_FMA=ON"
+    fi
+    if [[ "$has_f16c" -eq 1 ]]; then
+        flags="$flags -DGGML_F16C=ON"
+    fi
+    if [[ "$has_bmi2" -eq 1 ]]; then
+        flags="$flags -DGGML_BMI2=ON"
+    fi
+    if [[ "$has_avx2" -eq 1 ]]; then
+        flags="$flags -DGGML_AVX2=ON"
+    fi
+
+    # AVX-512 base: requires F, CD, VL, DQ, BW
+    local has_avx512_base=0
+    if [[ "$has_avx512f" -eq 1 && "$has_avx512cd" -eq 1 && \
+          "$has_avx512vl" -eq 1 && "$has_avx512dq" -eq 1 && \
+          "$has_avx512bw" -eq 1 ]]; then
+        has_avx512_base=1
+        flags="$flags -DGGML_AVX512=ON"
+    fi
+
+    # AVX-512 extensions (only meaningful if base AVX-512 is present)
+    if [[ "$has_avx512_base" -eq 1 ]]; then
+        if [[ "$has_avx512_vbmi" -eq 1 ]]; then
+            flags="$flags -DGGML_AVX512_VBMI=ON"
+        fi
+        if [[ "$has_avx512_vnni" -eq 1 ]]; then
+            flags="$flags -DGGML_AVX512_VNNI=ON"
+        fi
+        if [[ "$has_avx512_bf16" -eq 1 ]]; then
+            flags="$flags -DGGML_AVX512_BF16=ON"
+        fi
+    fi
+
+    # Determine ISA level string (highest first)
+    if [[ "$has_avx512_base" -eq 1 && "$has_avx512_bf16" -eq 1 ]]; then
+        LLAMA_CPU_ISA="avx512_bf16"
+    elif [[ "$has_avx512_base" -eq 1 && "$has_avx512_vnni" -eq 1 ]]; then
+        LLAMA_CPU_ISA="avx512_vnni"
+    elif [[ "$has_avx512_base" -eq 1 ]]; then
+        LLAMA_CPU_ISA="avx512"
+    elif [[ "$has_avx2" -eq 1 ]]; then
+        LLAMA_CPU_ISA="avx2"
+    elif [[ "$has_avx" -eq 1 ]]; then
+        LLAMA_CPU_ISA="avx"
+    else
+        LLAMA_CPU_ISA="sse42"
+    fi
+
+    # Strip leading space
+    flags="${flags# }"
+    LLAMA_CMAKE_CPU_FLAGS="$flags"
+}
+
+# =============================================================================
 # Main detection (runs on source)
 # =============================================================================
 
 # Store project root for amd-smi lookup
 _LLAMA_PROJECT_ROOT="${_LLAMA_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)}"
 
+# Platform identifier: "macos" on Darwin, "linux" elsewhere.
+# Downstream scripts branch on this rather than calling uname repeatedly.
+case "$(uname -s)" in
+    Darwin) LLAMA_PLATFORM="macos" ;;
+    *)      LLAMA_PLATFORM="linux" ;;
+esac
+
+# macOS path: short-circuit AMD detection, set Apple Silicon identifiers
+if _detect_macos_gpu; then
+    : # values already set by _detect_macos_gpu
+else
 # Detect PCI ID
 LLAMA_GPU_PCI_ID="$(_detect_gpu_pci_id)"
 
@@ -276,15 +456,20 @@ if [[ -n "$_detected_gfx" ]]; then
         LLAMA_GPU_NAME="AMD GPU ($_detected_gfx)"
     fi
 fi
+fi  # end macOS/AMD branch
 
 # Detect system resources
 LLAMA_TOTAL_RAM_GB="$(_detect_total_ram_gb)"
 LLAMA_RECOMMENDED_GTT_GB="$(_recommend_gtt_gb "$LLAMA_TOTAL_RAM_GB")"
 
+# Detect CPU ISA features (x86 SIMD level for cmake build flags)
+_detect_cpu_isa
+
 # Thread count: use nproc by default
 LLAMA_THREADS=$(nproc 2>/dev/null || echo 4)
 # On handheld APUs with <=16GB RAM, halve thread count to leave RAM for GPU
-if [[ "$LLAMA_TOTAL_RAM_GB" -le 16 ]]; then
+# macOS Apple Silicon uses unified memory - no need to throttle unless truly starved
+if [[ "$LLAMA_TOTAL_RAM_GB" -le 16 && "$(uname -s)" != "Darwin" ]]; then
     LLAMA_THREADS=$(( LLAMA_THREADS / 2 ))
     (( LLAMA_THREADS < 2 )) && LLAMA_THREADS=2
 fi
@@ -309,12 +494,18 @@ if [[ -n "${LLAMA_GTT_SIZE:-}" ]]; then
     LLAMA_RECOMMENDED_GTT_GB="$LLAMA_GTT_SIZE"
 fi
 
+if [[ -n "${LLAMA_CPU_ISA_OVERRIDE:-}" ]]; then
+    LLAMA_CPU_ISA="$LLAMA_CPU_ISA_OVERRIDE"
+fi
+
 # =============================================================================
 # Export for use by other scripts
 # =============================================================================
 
 export LLAMA_GFX_VERSION LLAMA_GFX_ARCH LLAMA_GPU_NAME LLAMA_GPU_PCI_ID LLAMA_ROCM_VARIANT
 export LLAMA_THREADS LLAMA_TOTAL_RAM_GB LLAMA_RECOMMENDED_GTT_GB
+export LLAMA_CPU_ISA LLAMA_CMAKE_CPU_FLAGS
+export LLAMA_PLATFORM
 
 # Unset locals
 unset _map_entry _detected_gfx _LLAMA_DETECT_GPU_LOADED
