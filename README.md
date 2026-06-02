@@ -61,8 +61,25 @@ Override detection:
 LLAMA_GFX_VERSION_OVERRIDE=11.0.3 ./llama-run.sh --server
 ```
 
+### CPU ISA detection
+
+`detect-gpu.sh` also detects the CPU ISA level and generates optimal cmake flags:
+
+| CPU | ISA Level | CMake Flags |
+|-----|-----------|-------------|
+| Zen 4 (7840U) | avx512_bf16 | `-DGGML_AVX512=ON -DGGML_AVX512_BF16=ON -DGGML_AVX512_VNNI=ON` |
+| Zen 3 (5800H) | avx2 | `-DGGML_AVX2=ON -DGGML_AVX=ON -DGGML_FMA=ON` |
+| Apple Silicon | apple_silicon | (none - ARM NEON auto-detected) |
+
+Previously, the Vulkan build was compiled with `GGML_NATIVE=OFF` and `GGML_AVX512=OFF`, leaving AVX-512 code paths compiled out on Zen 4 hardware that supports them. This cost 5-15% generation speed on Vulkan and 30-100% on CPU-offloaded layers. Now `rebuild.sh` uses `$LLAMA_CMAKE_CPU_FLAGS` to enable the right ISA level.
+
+Override:
+```bash
+LLAMA_CPU_ISA_OVERRIDE=avx2 ./scripts/rebuild.sh
+```
+
 ## Usage
- 
+
 ```bash
 # List models found in models/
 ./llama-run.sh --list-models
@@ -127,6 +144,10 @@ Every checkpoint carries:
 - `compat_hash` - Model configuration hash (architecture, dimensions, cache types). Checkpoints with mismatched compat hashes are rejected, preventing silent corruption when switching between models.
 - `token_prefix` - First 4096 tokens for cold-start prefix matching
 - `turn_id` - Tracks when the checkpoint was last accessed for tier management
+
+#### Kernel readahead
+
+When a cold checkpoint is identified for loading, the server issues `posix_fadvise(POSIX_FADV_WILLNEED)` on Linux (or `readahead()` on macOS) to trigger kernel page cache prefetch. This overlaps SSD I/O with CPU work (token matching, state restoration setup) and reduces cold TTFT by ~0.5-0.75s for typical checkpoint sizes.
 
 #### What happens on cache hit
 
@@ -285,6 +306,103 @@ Two patterns emerge:
 
 The best results (T10, T12, T13) show 22-37x speedup when the prompt is nearly identical to the previous turn's checkpoint. Even the worst case (T9, 59% cache hit) is still 1.8x faster than cold evaluation.
 
+## User isolation
+
+Multi-tenant deployments need isolation between users sharing the same server. This fork adds three dimensions of isolation:
+
+### Identity
+
+The `user_id` field is a first-class request parameter. Pass it in the request body:
+
+```json
+{
+  "model": "...",
+  "messages": [...],
+  "llama_user_id": "tenant-42-user-7"
+}
+```
+
+OpenAI SDK callers pass it through `extra_body`:
+
+```python
+client.chat.completions.create(
+    model="...",
+    messages=[...],
+    extra_body={"llama_user_id": "tenant-42-user-7"},
+)
+```
+
+Validated to `^[a-zA-Z0-9\-_]+$` with a 512-char ceiling. Empty string is valid (anonymous bucket).
+
+### KV cache routing
+
+When `user_id` is present, the SSD page manager routes checkpoints to a separate `u/` namespace on disk:
+
+```
+{ssd_path}/{hash_hex}/    # anonymous (conv_hash)
+{ssd_path}/u/{hash_hex}/  # user-scoped (fnv1a(user_id))
+```
+
+Cross-user lookup is disabled for user-scoped requests. A user can only access their own cached state, never another user's directory.
+
+### Scheduling isolation
+
+`--max-concurrent-per-user N` caps the number of simultaneous slots a single user_id can occupy. When the cap is hit, the server returns HTTP 429 with a `rate_limit_error` type:
+
+```json
+{
+  "error": {
+    "code": 429,
+    "message": "User 'tenant-42-user-7' has reached the concurrent request limit (2)",
+    "type": "rate_limit_error"
+  }
+}
+```
+
+Slot allocation also prefers slots already owned by the requesting user (cache affinity). An empty slot (post-release) is fair game for any user.
+
+Default: 0 (unlimited). Set to 1 for strict one-at-a-time, or 2-3 for concurrent with backpressure.
+
+Design rationale: [`docs/development/user-isolation-design.md`](llama.cpp/docs/development/user-isolation-design.md)
+
+## MoE expert tracking
+
+MoE models (Qwen3.5/3.6, DeepSeek, Mixtral) activate only a subset of experts per token. This fork adds real-time expert activation tracking via two HTTP endpoints:
+
+### GET /expert-stats
+
+Returns per-layer expert activation counts, frequencies, and token counts:
+
+```json
+{
+  "n_expert": 256,
+  "n_expert_used": 8,
+  "total_tokens": 1500,
+  "tracking_enabled": true,
+  "layers": [
+    {
+      "layer": 0,
+      "activations": [
+        {"expert": 42, "count": 150, "frequency": 0.0125},
+        {"expert": 7, "count": 148, "frequency": 0.0123},
+        ...
+      ]
+    },
+    ...
+  ]
+}
+```
+
+### POST /expert-tracking
+
+Enable/disable tracking and optionally reset counters:
+
+```json
+{"enabled": true, "reset": true}
+```
+
+This is Phase 1 of the MoE expert tiering design - instrumentation only, no compute changes. Future phases will use this data to reorder experts for cache locality and offload cold experts to RAM/SSD.
+
 ## Improvements over upstream
 
 This fork maintains patches on top of [llama.cpp](https://github.com/ggml-org/llama.cpp) that improve performance of agentic AI workloads with hybrid MoE models on AMD APU hardware.
@@ -298,6 +416,7 @@ Persistent cross-session KV cache that survives server restarts. Hot/warm/cold t
 - **Cold tier**: On-disk checkpoints with token prefixes for cross-session matching
 - **Ring buffer eviction**: Per-conversation ring buffer prevents unbounded disk growth. Oldest checkpoints are evicted when space is needed.
 - **Three-tier search**: Same-conversation match by conversation hash, shared-prefix match by n_past, and cold-start token prefix comparison with chain/safe phases
+- **Kernel readahead**: `posix_fadvise(POSIX_FADV_WILLNEED)` on Linux, `readahead()` on macOS. Overlaps SSD I/O with CPU work for ~0.5-0.75s TTFT reduction on cold cache hits.
 - **Checkpoint overflow prevention**: Same-conversation checkpoints are accepted regardless of size (recurrent state is content-accurate) and capped in the restore layer. Cross-conversation oversized checkpoints are skipped at the search layer. Prevents "no tokens to decode" crashes.
 - **Turn-based tiering**: Checkpoints track turn activity across server restarts for accurate promotion/demotion
 - **Cold start recovery**: On server restart, automatically searches SSD cache by token prefix match. Same-conversation checkpoints are restored even if larger than the current task - `n_past` is capped with overflow margin instead of falling through to full reprocessing.
@@ -319,6 +438,20 @@ Hybrid models (Qwen3.5/3.6 MoE) combine transformer attention with recurrent sta
 - **QWEN35MOE architecture filter**: Correctly identifies which layers are attention vs. recurrent for state management
 - **Checkpoint search condition**: Hybrid checkpoint restore uses `n_tokens <= n_past` to prevent restoring recurrent state from stale (diverged) conversation content. The previous `>=` condition allowed checkpoints past the cache divergence point, causing degraded output on multi-turn conversations
 
+### User isolation
+
+- **Per-user concurrency cap**: `--max-concurrent-per-user N` limits simultaneous slots per user. Returns HTTP 429 when the cap is hit.
+- **User-scoped KV cache**: `user_id` routes checkpoints to `u/` namespace on disk, preventing cross-user cache contamination
+- **Slot affinity**: Slot allocation prefers slots already owned by the requesting user for cache locality
+- **Request threading**: `user_id` is threaded from the HTTP request body through `server_task` to slot allocation and cache routing
+
+### MoE expert activation tracking
+
+- **GET /expert-stats**: Per-layer expert activation counts, frequencies, and token counts
+- **POST /expert-tracking**: Enable/disable tracking and reset counters
+- **C API**: `llama_expert_tracking_enable()`, `llama_expert_stats_get()`, `llama_model_n_expert()`, `llama_model_n_expert_used()`
+- Reads `ffn_moe_argsort` tensors from the compute graph after each decode to track which experts are activated per token
+
 ### Cache optimizations
 
 - **Scoring-based prompt cache eviction**: Replaced FIFO eviction with scoring by age, size, and task token overlap. Conversations with long common prefixes stay cached longer
@@ -331,6 +464,7 @@ Hybrid models (Qwen3.5/3.6 MoE) combine transformer attention with recurrent sta
 - **CLIO integration**: [CLIO](https://github.com/SyntheticAutonomicMind/CLIO) serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context sent on every API call are cached and persisted to disk.
 - **Auto-mlock tuning**: `llama-run.sh` compares model size against `RLIMIT_MEMLOCK` and disables `--mlock` when the limit is too small, eliminating startup warnings
 - **SSD cache defaults**: Enabled by default for all non-SSM models in `llama-run.sh`. The `--cache-ssd-max-conversations` flag (default: 16) controls how many conversation directories are tracked simultaneously.
+- **CPU ISA auto-detection**: `detect-gpu.sh` reads `/proc/cpuinfo` and generates optimal cmake flags for the detected CPU (AVX-512 BF16 on Zen 4, AVX2 on Zen 3, etc.). Previously, the Vulkan build was compiled with `GGML_NATIVE=OFF` and `GGML_AVX512=OFF`, leaving AVX-512 code paths disabled on hardware that supports them.
 
 ## Structure
 
@@ -340,13 +474,12 @@ Hybrid models (Qwen3.5/3.6 MoE) combine transformer attention with recurrent sta
 ├── scripts/
 │   ├── rebuild.sh            # Build script (Vulkan default, optional ROCm)
 │   ├── env.sh                # Environment setup (source before using tools)
-│   ├── detect-gpu.sh         # GPU/APU auto-detection library
+│   ├── detect-gpu.sh         # GPU/APU and CPU ISA auto-detection library
 │   ├── benchmark.sh          # Prompt cache performance testing
 │   └── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
 ├── src/
 │   ├── llama-cpp-rocm/       # ROCm build output + build.sh
 │   └── llama-cpp-vulkan/     # Vulkan build output + build.sh
-├── patches/                  # Patches applied to llama.cpp during build
 ├── deps/                     # ROCm SDK (downloaded by rebuild.sh)
 ├── models/                   # GGUF files
 ├── kv-cache/                 # SSD-backed KV cache (per-conversation directories)
