@@ -168,6 +168,8 @@ SSD_HOT_WINDOW="4096"
 SSD_WARM_WINDOW=""
 SSD_MAX_COLD="32"
 SSD_PAGE_SIZE=""
+SSD_HOT_RAM=""
+SSD_WARM_RAM=""
 PROMPT_MAX="8"
 SSD_CHECKPOINTS="64"
 OVERRIDE_CHECKPOINT_EVERY=""
@@ -339,7 +341,7 @@ assign_profile() {
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
         # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
         KV_CACHE_TYPE_K="q8_0"
         KV_CACHE_TYPE_V="q8_0"
         # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
@@ -352,11 +354,20 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
-        # - 4096 tokens between checkpoints (fine-grained for incremental conversation growth)
-        # - max 4 checkpoints per slot (balances cache hits vs memory)
-        # - Each checkpoint is ~63MB, so 4 per slot * 8 conversations = ~2GB
-        # - 6GB cache limit prevents over-allocation
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
+        # - 1024 tokens between checkpoints (fine-grained for incremental conversation growth)
+        # - 16 context checkpoints per slot (covers 16k tokens of rollback)
+        # - Each context checkpoint is ~63MB, 16 per slot = ~1GB
+        # - Reduced cache-ram to 4096 MiB to make room for SSD cache warm tier
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 1024 --ctx-checkpoints 16 --cache-ram 4096"
+        # SSD cache: 8 hot + 12 warm checkpoints in RAM, 32 cold on disk
+        # Hot tier: 1920 MiB RAM budget (~8 checkpoints, always in RAM)
+        # Warm tier: 2880 MiB RAM budget (~12 checkpoints, in RAM but lower priority)
+        # Cold tier: 32 checkpoints on SSD only
+        SSD_HOT_WINDOW="4096"
+        SSD_WARM_WINDOW="8192"
+        SSD_HOT_RAM="1920"
+        SSD_WARM_RAM="2880"
+        SSD_MAX_COLD="32"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
@@ -939,6 +950,8 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-warm-window) SSD_WARM_WINDOW="$2"; shift 2 ;;
         --cache-ssd-max-cold) SSD_MAX_COLD="$2"; shift 2 ;;
         --cache-ssd-page-size) SSD_PAGE_SIZE="$2"; shift 2 ;;
+        --cache-ssd-hot-ram) SSD_HOT_RAM="$2"; shift 2 ;;
+        --cache-ssd-warm-ram) SSD_WARM_RAM="$2"; shift 2 ;;
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
         --checkpoint-every-n-tokens)
             OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
@@ -1035,6 +1048,8 @@ SSD_HOT_WINDOW=$SSD_HOT_WINDOW
 SSD_WARM_WINDOW=$SSD_WARM_WINDOW
 SSD_MAX_COLD=$SSD_MAX_COLD
 SSD_PAGE_SIZE=$SSD_PAGE_SIZE
+SSD_HOT_RAM=$SSD_HOT_RAM
+SSD_WARM_RAM=$SSD_WARM_RAM
 OVERRIDE_FIT='$OVERRIDE_FIT'
 PROFILE_EOF
     exit 0
@@ -1171,6 +1186,8 @@ if [[ -n "$SSD_PATH" ]]; then
     [[ -n "$SSD_WARM_WINDOW" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-warm-window $SSD_WARM_WINDOW"
     [[ -n "$SSD_MAX_COLD" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-max-cold $SSD_MAX_COLD"
     [[ -n "$SSD_PAGE_SIZE" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-page-size $SSD_PAGE_SIZE"
+    [[ -n "$SSD_HOT_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-hot-ram $SSD_HOT_RAM"
+    [[ -n "$SSD_WARM_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-warm-ram $SSD_WARM_RAM"
     [[ -n "$PROMPT_MAX" && "$PROMPT_MAX" != "0" ]] && SERVER_ARGS="$SERVER_ARGS --prompt-max $PROMPT_MAX"
 fi
 
