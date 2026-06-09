@@ -1,0 +1,46 @@
+{
+  "size_label": "large",
+  "size_bytes": 61440,
+  "cold": {
+    "error": "failed"
+  },
+  "warm": {
+    "prompt_tokens": 15489,
+    "completion_tokens": 128,
+    "cached_tokens": 15229,
+    "prompt_ms": 93555.6,
+    "generation_ms": 39195.1,
+    "total_ms": 132750.8,
+    "ttft_ms": 93555.6,
+    "wall_ttft_ms": 133042,
+    "tps": 3.3,
+    "prompt_tps": 165.6,
+    "prompt_per_token_ms": 359.8,
+    "predicted_per_token_ms": 306.2,
+    "wall_ms": 133042
+  },
+  "cache_cold": {
+    "cache_state": "miss",
+    "ssd_stored": 1,
+    "divergences": 0,
+    "total_checkpoints": 1
+  },
+  "cache_warm": {
+    "cache_state": "ssd_cold",
+    "ssd_stored": 2,
+    "divergences": 0,
+    "total_checkpoints": 7
+  },
+  "prompt_eval_speedup": 0,
+  "ttft_speedup": 0,
+  "cold_prompt_tps": 0,
+  "warm_prompt_tps": 165.6,
+  "cold_ppt_ms": 0,
+  "warm_ppt_ms": 359.8,
+  "cold_gen_ppt_ms": 0,
+  "warm_gen_ppt_ms": 306.2,
+  "cold_ttft_ms": 0,
+  "warm_ttft_ms": 93555.6,
+  "cold_wall_ttft_ms": 0,
+  "warm_wall_ttft_ms": 133042
+}

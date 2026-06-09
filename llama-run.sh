@@ -178,6 +178,7 @@ OVERRIDE_CACHE_RAM=""
 OVERRIDE_REASONING_BUDGET=""
 PRESERVE_REASONING=""
 OVERRIDE_N_PARALLEL=""
+OVERRIDE_UBATCH_SIZE=""
 
 # Colors
 RED='\033[0;31m'
@@ -1058,6 +1059,8 @@ while [[ $# -gt 0 ]]; do
             OVERRIDE_CTX_CHECKPOINTS="$2"; shift 2 ;;
         --cache-ram)
             OVERRIDE_CACHE_RAM="$2"; shift 2 ;;
+        --ubatch-size)
+            OVERRIDE_UBATCH_SIZE="$2"; shift 2 ;;
         --np)
             OVERRIDE_N_PARALLEL="$2"; shift 2 ;;
         --preserve-reasoning) PRESERVE_REASONING="true"; shift ;;
@@ -1079,6 +1082,7 @@ while [[ $# -gt 0 ]]; do
         *) [[ -z "$MODEL" ]] && MODEL="$1"; shift ;;
     esac
 done
+
 
 PROMPT="$*"
 
@@ -1230,6 +1234,9 @@ else
 fi
 COMMON_ARGS="$COMMON_ARGS -c $CTX_SIZE --threads $THREADS --threads-batch $THREADS"
 COMMON_ARGS="$COMMON_ARGS ${OVERRIDE_BATCH_SIZE:---batch-size 1024 --ubatch-size 512} -ngl $GPU_LAYERS"
+if [[ -n "$OVERRIDE_UBATCH_SIZE" ]]; then
+    COMMON_ARGS=$(echo "$COMMON_ARGS" | sed -E 's/--ubatch-size [0-9]+/--ubatch-size '"$OVERRIDE_UBATCH_SIZE"'/')
+fi
 COMMON_ARGS="$COMMON_ARGS --cache-type-k $KV_CACHE_TYPE_K --cache-type-v $KV_CACHE_TYPE_V"
 [[ -n "$EXTRA_COMMON_ARGS" ]] && COMMON_ARGS="$COMMON_ARGS $EXTRA_COMMON_ARGS"
 
