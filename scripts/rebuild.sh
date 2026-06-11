@@ -188,7 +188,19 @@ check_prereqs() {
         missing+=("clang++ or g++ (C++ compiler)")
     fi
 
-    # --- Vulkan-specific ---
+    # --- GCC runtime libraries (Linux ROCm builds) ---
+    # The ROCm SDK's bundled clang links against system libgcc/libstdc++.
+    # On minimal distros (SteamOS, etc.) GCC may not be installed.
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        if ! command -v gcc &>/dev/null; then
+            # Check if libgcc is available (some distros ship libgcc_s without gcc)
+            if ! ldconfig -p 2>/dev/null | grep -q libgcc; then
+                missing+=("gcc (provides libgcc/libstdc++ needed by ROCm clang linker)")
+            fi
+        fi
+    fi
+
+   # --- Vulkan-specific ---
     if [[ "$BUILD_VULKAN" == true ]]; then
         # Vulkan shader compilation needs glslc or glslangValidator
         if ! command -v glslc &>/dev/null && ! command -v glslangValidator &>/dev/null; then
@@ -385,12 +397,12 @@ build_rocm() {
     log_info "HIP target architecture: $hip_arch"
 
     cmake "$LLAMA_DIR" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DCMAKE_HIP_PLATFORM=amd \
-        -DCMAKE_HIP_ARCHITECTURES="$hip_arch" \
-        -DGGML_HIP=ON \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_C_COMPILER=clang \
+       -DCMAKE_CXX_COMPILER=clang++ \
+      -DCMAKE_HIP_PLATFORM=amd \
+      -DCMAKE_HIP_ARCHITECTURES="$hip_arch" \
+       -DGGML_HIP=ON \
         -DGGML_HIPBLAS=ON \
         -DGGML_HIP_NO_VMM=OFF \
         -DGGML_VULKAN=OFF \
@@ -424,11 +436,11 @@ build_vulkan() {
     # Configure
     cd "$build_dir"
     cmake "$LLAMA_DIR" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=clang \
-        -DCMAKE_CXX_COMPILER=clang++ \
-        -DGGML_HIP=OFF \
-        -DGGML_HIPBLAS=OFF \
+       -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_C_COMPILER=clang \
+       -DCMAKE_CXX_COMPILER=clang++ \
+      -DGGML_HIP=OFF \
+       -DGGML_HIPBLAS=OFF \
         -DGGML_VULKAN=ON \
         -DGGML_CPU=ON \
         -DGGML_NATIVE=OFF \
