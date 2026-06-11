@@ -267,11 +267,11 @@ adjust_cache_ram_for_memory() {
         return
     fi
     # Reserve: 4 GB for system overhead, plus resident model footprint.
-    # For MoE models the resident footprint is much smaller than the file
-    # size, but we conservatively assume half the file is resident.
+    # When all layers are GPU-offloaded (-ngl >= 99), the model lives in VRAM/GTT
+    # and doesn't consume system RAM. Only subtract model_resident for CPU models.
     local reserve_bytes=$((4 * 1024 * 1024 * 1024))
     local model_resident_bytes=0
-    if [[ "$model_bytes" -gt 0 ]]; then
+    if [[ "$model_bytes" -gt 0 ]] && [[ "${GPU_LAYERS:-0}" -lt 99 ]]; then
         local total_bytes half_total
         total_bytes=$(get_total_memory_bytes)
         half_total=$((total_bytes / 2))
@@ -331,7 +331,7 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         GPU_LAYERS=99
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
         EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
@@ -351,23 +351,27 @@ assign_profile() {
         # Single parallel slot for MoE: 2x slots doubles KV cache memory,
         # and agentic workloads use 1 slot at a time anyway
         OVERRIDE_N_PARALLEL="1"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
+       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        # General tasks sampling (Unsloth recommended for Qwen 3.6):
+        # temp=1.0 + presence_penalty=1.5 = diverse exploration without looping
+        # The old temp=0.6 + presence=0.0 (precise coding mode) was too deterministic
+        # for agentic exploration and caused repetitive tool call loops.
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
-        # - 1024 tokens between checkpoints (fine-grained for incremental conversation growth)
-        # - 16 context checkpoints per slot (covers 16k tokens of rollback)
-        # - Each context checkpoint is ~63MB, 16 per slot = ~1GB
-        # - Reduced cache-ram to 4096 MiB to make room for SSD cache warm tier
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 1024 --ctx-checkpoints 16 --cache-ram 4096"
-        # SSD cache: 8 hot + 12 warm checkpoints in RAM, 32 cold on disk
-        # Hot tier: 1920 MiB RAM budget (~8 checkpoints, always in RAM)
-        # Warm tier: 2880 MiB RAM budget (~12 checkpoints, in RAM but lower priority)
+        # - 4096 tokens between checkpoints (balances coverage vs overhead)
+        # - 8 context checkpoints per slot (covers 32K tokens of rollback)
+        # - Each context checkpoint is ~63MB, 8 per slot = ~504 MiB
+        # - cache-ram at 6144 MiB with checkpoint savings
+        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 6144"
+        # SSD cache: reduced RAM budgets (fewer checkpoints at 4096-token intervals)
+        # Hot tier: 960 MiB RAM budget (~4 checkpoints, always in RAM)
+        # Warm tier: 1440 MiB RAM budget (~6 checkpoints, in RAM but lower priority)
         # Cold tier: 32 checkpoints on SSD only
         SSD_HOT_WINDOW="4096"
         SSD_WARM_WINDOW="8192"
-        SSD_HOT_RAM="1920"
-        SSD_WARM_RAM="2880"
+        SSD_HOT_RAM="960"
+        SSD_WARM_RAM="1440"
         SSD_MAX_COLD="32"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
@@ -378,8 +382,8 @@ assign_profile() {
         KV_CACHE_TYPE_K="q8_0"
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
+       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
@@ -392,8 +396,8 @@ assign_profile() {
         KV_CACHE_TYPE_K="q8_0"
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-        EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
+       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"

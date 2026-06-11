@@ -113,7 +113,7 @@ SSD-backed KV cache persists conversation state across server restarts. Enabled 
 
 The bottleneck in agentic AI isn't generation speed (the model produces tokens as fast as the GPU allows). The bottleneck is **prompt evaluation** - reprocessing the entire prompt before the model can generate its first token.
 
-Every API call in an agentic workflow sends static content: system prompt, tool definitions, compressed conversation context. Without caching, this content is re-evaluated from scratch on every single call. A 15K-token prompt means 2-4 minutes before the model starts responding. With SSD cache, the same prompt evaluates in 1-4 seconds.
+Every API call in an agentic workflow sends static content: system prompt, tool definitions, prior conversation context. Without caching, this content is re-evaluated from scratch on every single call. An 18-30K-token prompt means it could be several minutes before the model starts responding on an APU like the 780M. With SSD cache and a 17,800-token prefix hit, only the divergent tail of the prompt is evaluated - typically a few seconds when only the latest tool result is new.
 
 ### How the cache works
 
@@ -151,7 +151,7 @@ When a cold checkpoint is identified for loading, the server issues `posix_fadvi
 
 #### What happens on cache hit
 
-The KV cache (attention state) and recurrent state (for hybrid MoE models) are restored from the checkpoint. Only tokens beyond the checkpoint's coverage need evaluation. A 15K-token prompt might need just a handful of new tokens evaluated - the rest is restored from disk in under a second.
+The KV cache (attention state) and recurrent state (for hybrid MoE models) are restored from the checkpoint. Only tokens beyond the checkpoint's coverage need evaluation. A 18-30K-token prompt might need just a handful of new tokens evaluated - the rest is restored from disk in 1-5 seconds depending on checkpoint size.
 
 The cache is persisted automatically after each turn. No manual management needed.
 
@@ -176,52 +176,52 @@ The key metric is **TTFT** (Time To First Token) - how long before the model sta
 
 ### Results
 
-Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 32768, all GPU layers.
+Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 32768, all GPU layers. All three sizes use SSD cold cache (server restart with checkpoint restored from disk).
 
 #### GLM-4.7-Flash (Q4_K_M, 14B dense)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1145 | 9.1s | 0.4s | 22.2x | 20.3 |
-| Medium | ~5237 | 66.6s (1.1min) | 1.1s | 59.3x | 12.5 |
-| Large | ~15.5K | 419.5s (7.0min) | 2.8s | 148.8x | 6.3 |
+| Small | ~1,145 | 9.7s | 0.34s | 28.4x | 20.2 |
+| Medium | ~5,237 | 74.2s (1.2min) | 1.0s | 72.7x | 12.1 |
+| Large | ~15.5K | 467.6s (7.8min) | 2.7s | 174.1x | 5.7 |
 
-Cold prompt eval: 36.9-126.3 t/s. Warm: 2802-5493 t/s. Cached: 15485/15489 tokens at large size.
+Cold prompt eval: 33.1-117.6 t/s. Cached: 15,485/15,489 tokens at large size (4 tokens evaluated on warm).
 
-#### Gemma 4 26B (Q5_K_M, 26B dense)
-
-| Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
-|------|--------|-----------|-----------|---------|---------|
-| Small | ~1413 | 8.1s | 0.8s | 10.7x | 16.5 |
-| Medium | ~6083 | 34.3s | 1.0s | 32.8x | 15.8 |
-| Large | ~17.3K | 114.8s (1.9min) | 1.5s | 79.1x | 14.5 |
-
-Cold prompt eval: 151-174 t/s. Warm: 1855-11955 t/s. Cached: 17343/17347 tokens at large size.
-
-#### Qwen3.6-35B (Q4_K_XL, 35B MoE, hybrid)
+#### Gemma 4 26B (Q5_K_M, 26B MoE, 4B active)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
-| Small | ~1243 | 8.8s | 0.4s | 20.1x | 21.4 |
-| Medium | ~5409 | 39.1s | 0.6s | 61.9x | 20.7 |
-| Large | ~15.7K | 125.1s (2.1min) | 1.1s | 117.8x | 19.0 |
+| Small | ~1,413 | 8.5s | 0.71s | 12.0x | 16.2 |
+| Medium | ~6,083 | 38.0s | 0.97s | 39.2x | 15.3 |
+| Large | ~17.3K | 130.9s (2.2min) | 1.4s | 92.9x | 13.8 |
 
-Cold prompt eval: 126-142 t/s. Warm: 2851-14808 t/s. Cached: 15717/15721 tokens at large size.
-35B parameters with only 3B active - the fastest model tested on the Flip. The SSD cache restores both attention KV state and recurrent state from disk. Only 4 new tokens need evaluation at large size.
+Cold prompt eval: 132.6-165.6 t/s. Cached: 17,343/17,347 tokens at large size (4 tokens evaluated on warm).
+
+#### Qwen3.6-35B (Q4_K_XL, 35B MoE hybrid, 3B active)
+
+| Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
+|------|--------|-----------|-----------|---------|---------|
+| Small | ~1,243 | 9.3s | 0.41s | 23.0x | 21.7 |
+| Medium | ~5,409 | 43.3s | 0.57s | 76.2x | 20.5 |
+| Large | ~15.7K | 143.1s (2.4min) | 0.99s | 144.5x | 18.6 |
+
+Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4 tokens evaluated on warm).
+35B parameters with only 3B active keeps the eval rate high. The SSD cache restores both attention KV state and recurrent state from disk — the hybrid architecture's Mamba layers are checkpoint-aware and restore correctly across restarts.
 
 #### Summary
 
 All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 
-| Model | Params | Large cold | Large warm | Speedup | Gen TPS | Type |
-|-------|--------|------------|------------|---------|---------|------|
-| GLM-4.7-Flash | 14B | 419.5s (7.0min) | 2.8s | 148.8x | 6.3 | Dense |
-| Gemma 4 26B | 26B | 114.8s (1.9min) | 1.5s | 79.1x | 14.5 | Dense |
-| Qwen3.6-35B | 35B | 125.1s (2.1min) | 1.1s | 117.8x | 19.0 | MoE hybrid |
+| Model | Params | Active | Large cold | Large warm | Speedup | Gen TPS |
+|-------|--------|--------|------------|------------|---------|---------|
+| GLM-4.7-Flash | 14B | 14B | 467.6s (7.8min) | 2.7s | 174.1x | 5.7 |
+| Gemma 4 26B | 26B | 4B | 130.9s (2.2min) | 1.4s | 92.9x | 13.8 |
+| Qwen3.6-35B | 35B | 3B | 143.1s (2.4min) | 1.0s | 144.5x | 18.6 |
 
-Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 2-7 minutes or 1-3 seconds before the model starts responding.
+Generation speed (t/s) is unaffected by caching — the speedup is entirely in prompt evaluation. What caching changes is whether you wait 3-5 minutes or 1-4 seconds before the model starts responding. MoE models trade parameter count for active headroom: Qwen loads 35B weights but only evaluates 3B per token, giving it the best generation speed of the three.
 
-Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260602-0852/`](benchmarks/20260602-0852/)
+Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260611-0656/`](benchmarks/20260611-0656/)
 
 ### Running the benchmark
 
@@ -259,87 +259,66 @@ benchmarks/YYYYMMDD-HHMM/
 
 ## Real-world CLIO performance
 
-This cache was built for [CLIO](https://github.com/SyntheticAutonomicMind/CLIO), an AI coding assistant that sends 20-32K tokens of system prompt, tool definitions, and compressed conversation context on every API call. Without caching, every turn would re-evaluate all 20K+ tokens from scratch.
+This cache was built for [CLIO](https://github.com/SyntheticAutonomicMind/CLIO), an AI coding assistant that sends 18-30K tokens of system prompt, tool definitions, and prior conversation context on every API call. Without caching, every turn would re-evaluate all 18K+ tokens from scratch.
 
 ### Workload profile
 
 A CLIO session consists of alternating tool call turns (the LLM decides what tool to run) and response turns (the LLM generates a user-visible message). Tool call turns are short - the model outputs a tool call JSON (~30-150 tokens). Response turns are longer - the model generates commands, code, and explanations.
 
-Every turn includes the same static prefix: system prompt, tool definitions, project context. As the conversation grows, compressed summaries of earlier messages are appended. The static portion is ~20K tokens; the dynamic conversation portion grows from ~5K to ~12K.
+Every turn includes the same static prefix: system prompt, tool definitions, the initial user message, and all prior conversation messages. As the conversation grows, new tool results get appended to the end. The static prefix that never changes across turns is ~18K tokens (system prompt + tool definitions + initial user message + assistant turn 0 + tool results 0). The dynamic tail grows from ~0 to ~12K tokens as new tool results accumulate.
 
 ### Agentic workflow walkthrough
 
-A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Seven turns, 7 minutes total.
+A single prompt — "Please evaluate this project and share your opinion of it." — sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Ten turns, 18 minutes 10 seconds.
 
-The model explores the project on its own: listing files, reading the README, checking git history, reading scripts, then writes a detailed evaluation. Each turn sends the full conversation context (17-29K tokens) to the API. The cache determines how much of that context needs re-evaluation.
+The model explores the project autonomously: it lists directories, reads source files, checks git history, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-30K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation.
 
 #### Turn-by-turn
 
-| Turn | Action | Tokens | Cached | Cache% | TTFT | Est. Cold TTFT | Speedup |
-|------|--------|--------|--------|--------|------|-----------------|---------|
-| T0 | Cold start, explore project | 17,880 | 4,096 | 23% | 126s | 161s | 1.3x |
-| T1 | Read files, git log | 18,851 | 17,965 | 95% | 15s | 170s | 11.6x |
-| T2 | Read more files | 19,017 | 17,779 | 93% | 0s | 171s | - |
-| T3 | Read + wc + git | 25,293 | 19,231 | 76% | 71s | 228s | 3.2x |
-| T4 | Read more files | 26,637 | 25,510 | 96% | 19s | 240s | 12.7x |
-| T5 | Read more files | 28,298 | 26,813 | 95% | 23s | 255s | 10.9x |
-| T6 | Write final response | 29,316 | 17,878 | 61% | 161s | 264s | 1.6x |
+Tools per turn: `list_dir`, `read_file`, `version_control/log`. T9 has no tool calls — it writes the final evaluation message directly.
 
-Cache% = tokens restored from cache / total tokens. Est. Cold TTFT = tokens / 111 t/s (measured cold rate from T0). Generation speed: 17.6-19.1 t/s (unaffected by caching).
+| Turn | Model action | Tokens | Cached | Cache% | TTFT | Gen t/s |
+|------|-------------|--------|--------|--------|------|---------|
+| T0 | List project root, read `llama-run.sh` and `benchmark.sh` | 17,984 | 0 | 0% | 172s | 19.0 |
+| T1 | Recursive directory listing, git log | 18,148 | 17,882 | 98.5% | 5.3s | 18.9 |
+| T2 | Re-read `llama-run.sh` and `benchmark.sh`, list project root | 28,557 | 18,239 | 63.9% | 128s | 17.4 |
+| T3 | Re-read `llama-run.sh`, list `scripts/` and `src/` | 28,565 | 18,029 | 63.1% | 132s | 17.4 |
+| T4 | Read `detect-gpu.sh` | 23,429 | 18,037 | 77.0% | 66s | 17.6 |
+| T5 | Re-read `detect-gpu.sh` | 23,462 | 18,045 | 76.9% | 68s | 17.5 |
+| T6 | Read `llama-run.sh:200-400`, `detect-gpu.sh:1-100`, `benchmark.sh:1-100` | 23,471 | 18,078 | 77.0% | 68s | 17.6 |
+| T7 | Read `detect-gpu.sh:1-100`, `rebuild.sh:1-80`, git log | 29,460 | 23,725 | 80.5% | 78s | 16.8 |
+| T8 | Read `README.md:1-80`, `env.sh` | 29,340 | 18,086 | 61.6% | 144s | 16.9 |
+| T9 | Write project evaluation (no tool calls) | 25,724 | 18,119 | 70.4% | 96s | 17.2 |
 
-**Total: 7 minutes actual vs ~25 minutes estimated without cache.**
+TTFT = time to first token (server-side prompt evaluation time per turn). Gen t/s = generation tokens per second (gen time = turn duration minus prompt eval). Cold eval rate at T0: 105 t/s. Cached eval rate for later turns: 74-82 t/s.
 
-#### Cloud comparison
+**Total: 18 minutes 10 seconds actual vs ~42 minutes estimated without any cache.**
 
-The same prompt evaluated against two cloud-hosted models:
+#### What the model explored
 
-**MiniMax M2.7** - completed in 4 turns, ~42 seconds total:
+Over nine tool-calling turns the model read six unique files — `llama-run.sh`, `benchmark.sh`, `detect-gpu.sh`, `rebuild.sh`, `env.sh`, `README.md` (with multiple line ranges and re-reads) — listed the project root, `scripts/`, and `src/`, and called `git log` twice. The exploration was broad rather than fixated: each turn targeted different files or different sections within those files.
 
-| Turn | Action | Tokens In | Tokens Out | Duration | Tool Calls |
-|------|--------|-----------|-----------|----------|------------|
-| T0 | Read README, list scripts | 17,129 | 115 | 6.1s | 2 |
-| T1 | Read llama-run.sh, git log | 22,088 | 116 | 5.3s | 2 |
-| T2 | Read more files | 23,847 | 176 | 5.7s | 2 |
-| T3 | Write final response | 26,214 | 455 | 25.3s | 0 |
+The model's final evaluation called out five standout areas: the GPU detection system ("genuinely thorough," covering GCN5 through RDNA3.5 across 20+ device variants), the SSD cache work ("real systems-level expertise"), clean bash scripting (`set -euo pipefail`, `SCRIPT_DIR`/`PROJECT_ROOT`, color-coded logging), the multi-backend architecture (Vulkan default, ROCm optional, Metal for macOS), and the kernel parameter management for GTT/VRAM carveout (writing GRUB/systemd-boot config, verifying via `/proc/cmdline`).
 
-**Qwen3.5-35B-A3B via OpenRouter** - completed in 4 turns, ~39 seconds total:
+#### How the cache performed
 
-| Turn | Action | Tokens In | Tokens Out | TTFT | Duration | Tool Calls |
-|------|--------|-----------|-----------|------|----------|------------|
-| T0 | Read README, list dir | 17,880 | 194 | 3.4s | 3.4s | 3 |
-| T1 | Read llama-run.sh, scripts | 34,916 | 200 | - | 3.4s | 3 |
-| T2 | Read rebuild.sh, list scripts | 40,785 | 117 | - | 3.0s | 2 |
-| T3 | Write final response | 45,656 | 1,154 | 18.1s | 20.1s | 0 |
+The ~18K-token static prefix — system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange — is cached after T0 and never re-evaluated. Every turn reuses these tokens from an in-memory or SSD checkpoint. The LCP between consecutive turns is consistently 17,882-23,725 tokens depending on how much of the prior conversation the next turn's input shares.
 
-**Qwen3.6-35B-A3B via OpenRouter** - failed to complete. The model produced thinking output but never issued tool calls, stalling after two attempts. The same model works correctly when run locally, suggesting this is an API/provider-specific issue rather than an architectural limitation.
+Cache hit rates range from 61.6% to 98.5% depending on how much the conversation has diverged:
 
-Cloud models have near-zero TTFT because the prompt is evaluated on clusters of GPUs. The local model with SSD cache achieves comparable per-turn latency on high-cache turns (15-23s) but takes longer on cache misses (71-161s). The tradeoff: local inference is private, offline-capable, and has no per-token cost.
+- **Near-perfect (98.5%, T1):** T1's input starts with the same 17,882 tokens T0 ended with — system prompt, tools, user message, T0's assistant turn, T0's tool results. Only 266 new tokens evaluated (the model's new tool call and the streaming chunk header). In-memory checkpoint restored in milliseconds.
 
-#### What happened at each turn
+- **Typical tool turns (63-77%, T2-T7):** The model explores different files and the conversation context grows organically. The static prefix is always cached; the dynamic conversation content varies with model choices. 5,392-11,254 new tokens evaluated per turn at 74-82 t/s.
 
-**T0 - Cold start (126s TTFT).** Server just started. No in-memory cache. The SSD cache had a checkpoint from a previous conversation with 4,096 tokens of matching prefix (system prompt + tool definitions). The server restored those 4,096 tokens from disk and evaluated the remaining 13,784. Without any cache, all 17,880 tokens would need evaluation at ~111 t/s, taking ~161s. The partial SSD hit saved 35s.
+- **Deep exploration (61.6%, T8):** The model's input at T8 diverges from the prior in-memory checkpoint at token 18,086 (T7 took a different path through the conversation). More tokens need fresh evaluation than other turns, but 18,086 are still restored from cache — 11,254 fresh tokens at 78 t/s.
 
-**T1 - Read files, git log (15s TTFT, 11.6x speedup).** The in-memory checkpoint from T0 covers 17,880 tokens. T1's prompt shares the first 17,965 tokens with T0's context. Only 886 new tokens need evaluation. The cache divergence at token 17,965 was a minor difference (tool call format: `recursive` vs `False`). 11.6x faster than cold.
+- **Evaluation output (70.4%, T9):** The model writes a 632-token assessment with no tool calls. 18,119 tokens from cache, 7,605 fresh. The evaluation turn is generation-bound (37s of output at 17.2 t/s) rather than evaluation-bound.
 
-**T2 - Read more files (0s TTFT, 93% cache).** Similar to T1 - the in-memory checkpoint covers 93% of the prompt. Only 1,238 new tokens. The model produced 215 tokens of tool calls across 3 parallel tool invocations. TTFT was effectively instant because the prompt was almost entirely cached.
+#### What the numbers mean
 
-**T3 - Read + wc + git (71s TTFT, 3.2x speedup).** The conversation grew significantly - tool results from T2 added ~6K tokens. The in-memory checkpoint diverged at token 17,878 (the boundary between the static prefix and the dynamic conversation). Only 19,231 of 25,293 tokens were cached. Still 3.2x faster than the estimated 228s cold time.
+Without caching, every turn would process all 18-30K tokens from scratch at 105 t/s — 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: a 10-turn exploration session drops from ~42 minutes (estimated cold) to 18 minutes (cached).
 
-**T4 - Read more files (19s TTFT, 12.7x speedup).** The checkpoint from T3 covers most of T4's prompt. Only 1,127 new tokens need evaluation. 12.7x faster than cold.
-
-**T5 - Read more files (23s TTFT, 10.9x speedup).** Similar to T4. The conversation grew slightly. 1,485 new tokens. 10.9x faster than cold.
-
-**T6 - Write final response (161s TTFT, 1.6x speedup).** The model wrote a 1,007-token evaluation. The conversation context diverged from the previous checkpoint at token 17,878 (same boundary as T3 - the static/dynamic split). Only 17,878 of 29,316 tokens were cached, leaving 11,438 to evaluate. Still 1.6x faster than the estimated 264s cold time.
-
-#### Cache behavior patterns
-
-Three patterns emerge across the seven turns:
-
-1. **High cache hit (93-96%, T1/T2/T4/T5)**: The prompt is nearly identical to the previous turn. The checkpoint covers the static prefix plus most of the conversation. Only 886-1,485 new tokens need evaluation. TTFT drops to 0-23 seconds (10-12x faster than cold). This is the common case for tool-call turns where the model reads files and the conversation grows by a small amount.
-
-2. **Moderate cache hit (76%, T3)**: The conversation grew significantly (tool results added ~6K tokens). The checkpoint covers the static prefix but the dynamic portion needs full evaluation. Still 3.2x faster than cold.
-
-3. **Low cache hit (23-61%, T0/T6)**: Cold start (T0) or context divergence at the static/dynamic boundary (T6). The cache still saves 35-103 seconds compared to full cold evaluation, but the majority of tokens need re-evaluation.
+The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 5-144 seconds. Local inference is private, offline-capable, and has no per-token cost.
 
 ## User isolation
 
