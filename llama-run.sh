@@ -352,7 +352,7 @@ assign_profile() {
         # and agentic workloads use 1 slot at a time anyway
         OVERRIDE_N_PARALLEL="1"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
         # - 1024 tokens between checkpoints (fine-grained for incremental conversation growth)
@@ -379,7 +379,7 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
@@ -393,7 +393,7 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
         EXTRA_SERVER_ARGS+=" --temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.1 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"
