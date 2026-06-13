@@ -6,6 +6,10 @@ Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggm
 
 The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
 
+<p align="center">
+  <img src=".images/flip.png" alt="Ayaneo Flip KB" width="400">
+</p>
+
 [CLIO](https://github.com/SyntheticAutonomicMind/CLIO) is optimized for this implementation. It serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context - the static content sent on every API call - are cached and persisted to disk so they're available immediately on the next request.
 
 ## Quick start
@@ -178,7 +182,7 @@ The key metric is **TTFT** (Time To First Token) - how long before the model sta
 
 Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 32768, all GPU layers. All three sizes use SSD cold cache (server restart with checkpoint restored from disk).
 
-#### GLM-4.7-Flash (Q4_K_M, 14B dense)
+#### GLM-4.7-Flash (Q4_K_M)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
@@ -215,7 +219,7 @@ All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 
 | Model | Params | Active | Large cold | Large warm | Speedup | Gen TPS |
 |-------|--------|--------|------------|------------|---------|---------|
-| GLM-4.7-Flash | 14B | 14B | 467.6s (7.8min) | 2.7s | 174.1x | 5.7 |
+| GLM-4.7-Flash | 30B | 3B | 467.6s (7.8min) | 2.7s | 174.1x | 5.7 |
 | Gemma 4 26B | 26B | 4B | 130.9s (2.2min) | 1.4s | 92.9x | 13.8 |
 | Qwen3.6-35B | 35B | 3B | 143.1s (2.4min) | 1.0s | 144.5x | 18.6 |
 
