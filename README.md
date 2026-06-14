@@ -31,6 +31,7 @@ Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggm
 - [Real-world CLIO performance](#real-world-clio-performance)
   - [Workload profile](#workload-profile)
   - [Agentic workflow walkthrough](#agentic-workflow-walkthrough)
+  - [Cold vs warm start](#cold-vs-warm-start)
 - [Improvements over upstream](#improvements-over-upstream)
 - [Structure](#structure)
 - [License](#license)
@@ -474,6 +475,30 @@ Cache hit rates range from 61.6% to 98.5% depending on how much the conversation
 Without caching, every turn would process all 18-30K tokens from scratch at 105 t/s - 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: a 10-turn exploration session drops from ~42 minutes (estimated cold) to 18 minutes (cached).
 
 The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 5-144 seconds. Local inference is private, offline-capable, and has no per-token cost.
+
+### Cold vs warm start
+
+The same workload run twice on the same machine: once after a fresh server start (cold) and once after a server restart with the SSD cache and system prompt cache populated (warm). The warm run does NOT restart the OS or clear the cache directory between runs.
+
+| Turn | Cold TTFT | Cold prompt tok | Warm TTFT | Warm prompt tok | Speedup |
+|------|-----------|-----------------|-----------|-----------------|---------|
+| T0 | 183.4s | 18,762 | 3.4s | 101 | 54x |
+| T1 | 84.6s | 7,001 | 19.5s | 1,555 | 4.3x |
+| T2 | 91.7s | 7,613 | 25.0s | 1,947 | 3.7x |
+| T3 | 86.6s | 7,115 | 23.1s | 1,767 | 3.7x |
+| T4 | 69.2s | 5,784 | 64.5s | 5,380 | 1.1x |
+| T5 | 10.1s | 649 | 43.0s | 3,044 | 0.2x |
+| **Total** | **11:55 (715s)** | | **5:44 (344s)** | | **2.1x** |
+
+The T0 row is where the system prompt cache fix shows up: warm T0 processes only 101 tokens because the 18,661-token system prompt is restored from the global cache, while cold T0 has to re-evaluate the entire 18,762-token prompt from scratch. The 54x T0 speedup translates to 180 seconds saved on the very first request of every server restart.
+
+The T1+ rows show SSD cache reuse: the in-memory and SSD checkpoint layers restore 80-90% of the conversation context, leaving only the new tool result and assistant response to evaluate. Speedup drops from 4.3x on T1 to ~1x on T4+ as the conversations diverge - the SSD cache hit rate falls when the model explores new branches.
+
+T5 is the inverse: the warm run generated 3,044 tokens of fresh content (a longer final response) while the cold run only added 649 (a short one). Generation time dominates, making the warm run slower for that turn. The same shape would appear in any conversation that branches late.
+
+Total wall time: cold 11:55, warm 5:44. The 2.1x speedup is conservative - on longer sessions or with more repeated tool calls, the SSD cache hit rate stays high and the speedup grows toward 5-10x.
+
+Source logs (project root, not committed): `cold-start-server.log`, `clio-cold-start.log`, `clio-cold-start-debug.log`, `warm-start-server.log`, `clio-warm-start.log`, `clio-warm-start-debug.log`.
 
 ## Improvements over upstream
 
