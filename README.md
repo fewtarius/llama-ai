@@ -1,9 +1,53 @@
-# llama-ai
+Local LLM inference on AMD APU hardware. Built around
+[CachyLLama](https://github.com/fewtarius/CachyLLama), our fork of
+[llama.cpp](https://github.com/ggml-org/llama.cpp), with an SSD-backed
+KV cache, agentic workflow tuning, and tight
+[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) integration.
+Self-contained - no system ROCm install required. Vulkan (RADV) is the
+default backend for best stability on RDNA3 iGPUs.
 
-Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggml-org/llama.cpp). Self-contained - no system ROCm install required. Vulkan (RADV) is the default backend for best stability on RDNA3 iGPUs.
+## Introduction
+
+llama-ai is a deployment of CachyLLama aimed at running hybrid MoE
+models on low-spec AMD APUs. The development headliner is the
+[Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U,
+Radeon 780M, 32GB). It also runs on the Minisforum UM580 (5800H,
+16GB) and similar Zen 2/3/4 APUs using the same build pipeline.
+
+The fork exists so performance work on hybrid architectures (Qwen3.5/3.6,
+GLM-4.7, Gemma 4) lives as code in the
+[CachyLLama](https://github.com/fewtarius/CachyLLama) git history rather
+than as patches layered on releases. The submodule in this repo points
+at the fork, not at ggml-org/llama.cpp.
+
+On top of CachyLLama, llama-ai adds:
+
+- SSD-backed KV cache that survives reboots and power outages, with
+  hot/warm/cold tiering and a global system prompt cache
+- CLIO integration tuned for cache reuse across agentic turns
+  (deterministic JSON serialization, slot affinity, per-user isolation)
+- Auto GPU and CPU ISA detection for AMD APUs across generations
+- A benchmarking harness for measuring prompt-eval speedup
+- Auto-profile model selection and a runner that strips reasoning
+  blocks to keep prompt tokens small
+
+The goal: usable agentic AI on a handheld with no network and no
+per-token cost. Cached state survives power outages (the Flip has a
+battery) so an interrupted session picks up where it left off.
+
+## Why
+
+The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
+
+<p align="center">
+  <img src=".images/flip.webp" alt="Ayaneo Flip KB" width="800">
+</p>
+
+[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) is optimized for this implementation. It serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context - the static content sent on every API call - are cached and persisted to disk so they're available immediately on the next request.
 
 ## Table of contents
 
+- [Introduction](#introduction)
 - [Why](#why)
 - [Quick start](#quick-start)
 - [Backends](#backends)
@@ -32,19 +76,9 @@ Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggm
   - [Workload profile](#workload-profile)
   - [Agentic workflow walkthrough](#agentic-workflow-walkthrough)
   - [Cold vs warm start](#cold-vs-warm-start)
-- [Improvements over upstream](#improvements-over-upstream)
+- [What CachyLLama adds](#what-cachyllama-adds)
 - [Structure](#structure)
 - [License](#license)
-
-## Why
-
-The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
-
-<p align="center">
-  <img src=".images/flip.png" alt="Ayaneo Flip KB" width="600">
-</p>
-
-[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) is optimized for this implementation. It serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context - the static content sent on every API call - are cached and persisted to disk so they're available immediately on the next request.
 
 ## Quick start
 
@@ -495,9 +529,16 @@ Total wall time: cold 11:55, warm 5:44. The 2.1x speedup is conservative - on lo
 
 Source logs (project root, not committed): `cold-start-server.log`, `clio-cold-start.log`, `clio-cold-start-debug.log`, `warm-start-server.log`, `clio-warm-start.log`, `clio-warm-start-debug.log`.
 
-## Improvements over upstream
+## What CachyLLama adds
 
-This fork maintains patches on top of [llama.cpp](https://github.com/ggml-org/llama.cpp) that improve performance of agentic AI workloads with hybrid MoE models on AMD APU hardware. The full design lives in [KV cache](#kv-cache), [User isolation](#user-isolation), and [MoE expert tracking](#moe-expert-tracking). The high-level changes:
+CachyLLama is a fork of [llama.cpp](https://github.com/ggml-org/llama.cpp)
+maintained as a standalone repo
+([fewtarius/CachyLLama](https://github.com/fewtarius/CachyLLama)). All
+custom changes - performance work, agentic workflow tuning, AMD APU
+optimizations - are committed directly to that repo's git history. The
+full design lives in [KV cache](#kv-cache), [User
+isolation](#user-isolation), and [MoE expert tracking](#moe-expert-tracking).
+The high-level changes:
 
 ### SSD-backed KV cache
 
@@ -509,9 +550,9 @@ CLI flags: `--cache-ssd`, `--cache-ssd-checkpoints`, `--cache-ssd-hot-window`, `
 
 Global cross-conversation cache for the system section of any prompt. First eval writes the state, subsequent requests skip the system prompt re-eval entirely. Works for both standard transformer and hybrid MoE/SSM models - the per-position recurrent state in the state file means a state saved after the full prompt can be restored with `n_past` capped to the system prompt boundary. Default: 8 entries per model, 30 days unused before expiry.
 
-### Hybrid MoE model fixes (Qwen3.5/3.6)
+### Hybrid MoE support (Qwen3.5/3.6, GLM-4.7, Gemma 4)
 
-Upstream checkpoint restore was broken for hybrid architectures, causing silent KV cache exhaustion and `no tokens to decode` crashes after 2-3 conversation turns. Fixes:
+Hybrid architectures mix attention and recurrent (Mamba) layers, which need different checkpoint handling than dense transformers. CachyLLama adds the right primitives for this:
 
 - **KV cache shifting**: Hybrid models need different position tracking than dense models - pos_min/pos_max don't capture recurrent state coverage
 - **Checkpoint erasure**: When conversation content diverges, only attention cells are cleared, preserving recurrent state for reuse
@@ -546,13 +587,13 @@ Upstream checkpoint restore was broken for hybrid architectures, causing silent 
 - **CLIO integration**: [CLIO](https://github.com/SyntheticAutonomicMind/CLIO) serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context sent on every API call are cached and persisted to disk.
 - **Auto-mlock tuning**: `llama-run.sh` compares model size against `RLIMIT_MEMLOCK` and disables `--mlock` when the limit is too small, eliminating startup warnings
 - **SSD cache defaults**: Enabled by default for all non-SSM models in `llama-run.sh`. The `--cache-ssd-max-conversations` flag (default: 16) controls how many conversation directories are tracked simultaneously.
-- **CPU ISA auto-detection**: `detect-gpu.sh` reads `/proc/cpuinfo` and generates optimal cmake flags for the detected CPU (AVX-512 BF16 on Zen 4, AVX2 on Zen 3, etc.). Previously, the Vulkan build was compiled with `GGML_NATIVE=OFF` and `GGML_AVX512=OFF`, leaving AVX-512 code paths disabled on hardware that supports them.
+- **CPU ISA auto-detection**: `detect-gpu.sh` reads `/proc/cpuinfo` and generates optimal cmake flags for the detected CPU (AVX-512 BF16 on Zen 4, AVX2 on Zen 3, etc.), so AVX-512 code paths are enabled on hardware that supports them.
 
 ## Structure
 
 ```
 ├── llama-run.sh              # Main entry point
-├── CachyLLama/               # Submodule - fork of ggml-org/llama.cpp
+├── CachyLLama/               # Submodule - our fork of llama.cpp
 ├── scripts/
 │   ├── rebuild.sh            # Build script (Vulkan default, optional ROCm)
 │   ├── env.sh                # Environment setup (source before using tools)
@@ -561,7 +602,8 @@ Upstream checkpoint restore was broken for hybrid architectures, causing silent 
 │   └── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
 ├── src/
 │   ├── cachy-llama-rocm/     # ROCm build output + build.sh
-│   └── cachy-llama-vulkan/   # Vulkan build output + build.sh
+│   ├── cachy-llama-vulkan/   # Vulkan build output + build.sh
+│   └── cachy-llama-metal/    # Metal build output + build.sh (macOS)
 ├── deps/                     # ROCm SDK (downloaded by rebuild.sh)
 ├── models/                   # GGUF files
 ├── kv-cache/                 # SSD-backed KV cache (per-conversation directories)
@@ -569,7 +611,7 @@ Upstream checkpoint restore was broken for hybrid architectures, causing silent 
 └── benchmarks/               # Benchmark results with full server logs
 ```
 
-See [AGENTS.md](AGENTS.md) for the technical reference (directory structure, build commands, code style, patch workflow).
+See [AGENTS.md](AGENTS.md) for the technical reference (directory structure, build commands, code style).
 
 ## License
 
