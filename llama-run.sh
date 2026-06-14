@@ -363,7 +363,7 @@ assign_profile() {
         # temp=1.0 + presence_penalty=1.5 = diverse exploration without looping
         # The old temp=0.6 + presence=0.0 (precise coding mode) was too deterministic
         # for agentic exploration and caused repetitive tool call loops.
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
         # - 4096 tokens between checkpoints (balances coverage vs overhead)
@@ -390,7 +390,7 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
@@ -404,7 +404,7 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 1.5"
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"

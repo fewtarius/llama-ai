@@ -2,6 +2,39 @@
 
 Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggml-org/llama.cpp). Self-contained - no system ROCm install required. Vulkan (RADV) is the default backend for best stability on RDNA3 iGPUs.
 
+## Table of contents
+
+- [Why](#why)
+- [Quick start](#quick-start)
+- [Backends](#backends)
+  - [Vulkan (Linux/AMD)](#vulkan-linuxamd)
+  - [ROCm (Linux/AMD)](#rocm-linuxamd)
+  - [Metal (macOS)](#metal-macos)
+- [GPU memory](#gpu-memory)
+- [GPU detection](#gpu-detection)
+  - [CPU ISA detection](#cpu-isa-detection)
+- [Usage](#usage)
+- [How it works](#how-it-works)
+  - [Auto-profiling](#auto-profiling)
+  - [KV cache](#kv-cache)
+    - [Hot/warm/cold tiering](#hotwarmcold-tiering)
+    - [Search strategy](#search-strategy)
+    - [System prompt cache](#system-prompt-cache)
+    - [Kernel readahead](#kernel-readahead)
+  - [User isolation](#user-isolation)
+  - [MoE expert tracking](#moe-expert-tracking)
+- [Benchmarking](#benchmarking)
+  - [Test methodology](#test-methodology)
+  - [Results](#results)
+  - [Running the benchmark](#running-the-benchmark)
+  - [Output](#output)
+- [Real-world CLIO performance](#real-world-clio-performance)
+  - [Workload profile](#workload-profile)
+  - [Agentic workflow walkthrough](#agentic-workflow-walkthrough)
+- [Improvements over upstream](#improvements-over-upstream)
+- [Structure](#structure)
+- [License](#license)
+
 ## Why
 
 The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
@@ -26,12 +59,19 @@ cd llama-ai
 # -> http://localhost:9090
 ```
 
-To build with ROCm support (optional, has stability issues on some architectures):
+## Backends
 
-```bash
-./scripts/rebuild.sh --both    # Vulkan + ROCm
-./scripts/rebuild.sh --rocm    # ROCm only
-```
+### Vulkan (Linux/AMD)
+
+Default backend. Uses the Mesa RADV driver - no ROCm install required. Best stability on RDNA3 iGPUs (Phoenix, Hawk Point, Strix Point) and earlier GCN/RDNA generations. CPU offloading works for models that don't fit in GPU memory.
+
+### ROCm (Linux/AMD)
+
+Optional. Has known stability issues on some architectures - GLM-4.7-Flash and DeepSeek2 MLA models produce zero generation tokens on RDNA3. Use Vulkan unless you have a specific reason to try ROCm.
+
+### Metal (macOS)
+
+Apple Silicon (M1/M2/M3/M4) and Intel Macs with Metal-capable GPUs. Build with `./scripts/rebuild.sh` on macOS - it auto-detects the platform and builds the Metal backend.
 
 ## GPU memory
 
@@ -107,25 +147,33 @@ LLAMA_CPU_ISA_OVERRIDE=avx2 ./scripts/rebuild.sh
 ./scripts/rebuild.sh --rebuild    # Full rebuild from scratch
 ```
 
+Reasoning models (DeepSeek-R1, Qwen3.6, GLM-4.7) emit thinking blocks before each response. By default the runner strips these from prior assistant messages in the conversation history so they don't waste prompt tokens. To preserve them across turns (some workflows benefit from this), pass `--preserve-reasoning`. The `--reasoning-budget N` flag caps thinking tokens per response (default: 2048) to prevent runaway generation.
+
 ## How it works
 
-Models are auto-profiled based on filename characteristics. MoE models get checkpoint strategies and reasoning format; SSM/Mamba models get context-shift disabled; large dense models get optimized batch sizes. Profiles are assigned dynamically - no hard-coded model names.
+### Auto-profiling
 
-SSD-backed KV cache persists conversation state across server restarts. Enabled by default for all non-SSM models - the cache directory is `kv-cache/`. When available, ROCm is auto-detected as a secondary backend option.
+Models are auto-profiled based on filename characteristics. MoE models get checkpoint strategies and reasoning format; SSM/Mamba models get context-shift disabled; large dense models get optimized batch sizes. Profiles are assigned dynamically - no hard-coded model names. The profile name is logged at server startup (e.g. `Auto profile: moe-optimized (20GB, MoE=true, SSM=false)`).
 
-## Benchmarking
+### KV cache
 
-The bottleneck in agentic AI isn't generation speed (the model produces tokens as fast as the GPU allows). The bottleneck is **prompt evaluation** - reprocessing the entire prompt before the model can generate its first token.
+SSD-backed KV cache persists conversation state across server restarts. Enabled by default for all non-SSM models. The cache directory is `kv-cache/`. When a `user_id` is supplied (see [User isolation](#user-isolation)), checkpoints route to a separate `kv-cache/u/` namespace.
 
-Every API call in an agentic workflow sends static content: system prompt, tool definitions, prior conversation context. Without caching, this content is re-evaluated from scratch on every single call. An 18-30K-token prompt means it could be several minutes before the model starts responding on an APU like the 780M. With SSD cache and a 17,800-token prefix hit, only the divergent tail of the prompt is evaluated - typically a few seconds when only the latest tool result is new.
+#### Hot/warm/cold tiering
 
-### How the cache works
-
-The SSD-backed KV cache has three tiers with automatic promotion and demotion:
+The cache has three tiers with automatic promotion and demotion:
 
 - **Hot tier** - Checkpoints from the current session, kept in RAM. Instant restore when the same conversation continues. After 2 turns of inactivity, hot checkpoints are demoted to warm.
 - **Warm tier** - Checkpoints from previous sessions in the same server run. In RAM until memory pressure forces demotion to cold. After 4 turns of inactivity, warm checkpoints are demoted to cold.
 - **Cold tier** - On-disk checkpoints with token prefixes. Survives server restarts. Each conversation gets up to the ring buffer limit of cold checkpoints on disk. When the limit is exceeded, the oldest cold checkpoint is deleted. Up to 16 conversations are tracked simultaneously (configurable with `--cache-ssd-max-conversations`).
+
+#### System prompt cache
+
+The system prompt cache is a global (cross-conversation) cache that stores the system section of any prompt after first evaluation. On cold start - server restart, first request, or a model that has not been seen before - the server checks the system prompt cache before falling through to full evaluation. A hit returns the cached state directly, skipping the entire system prompt re-eval.
+
+The cache lives at `{kv-cache-path}/{model-stem}/sys-{hash}.bin`. Entries are keyed by the first N tokens of the prompt (the system section) and stored with a model compatibility hash that rejects mismatches on load. Default: 8 entries per model, 30 days unused before expiry. Override with `--cache-ssd-system-prompts N` and `--cache-ssd-system-max-days N`.
+
+The system prompt cache works for both standard transformer and hybrid (MoE/SSM) models. For hybrid architectures, the recurrent state is stored per-position in the state file, so a state saved after processing the full prompt can be restored with `n_past` capped to the system prompt boundary - the inference engine reads the cell at that position regardless of how many tokens came after.
 
 #### Search strategy
 
@@ -159,6 +207,109 @@ The KV cache (attention state) and recurrent state (for hybrid MoE models) are r
 
 The cache is persisted automatically after each turn. No manual management needed.
 
+### User isolation
+
+Multi-tenant deployments need isolation between users sharing the same server. This fork adds three dimensions of isolation:
+
+#### Identity
+
+The `user_id` field is a first-class request parameter. Pass it in the request body:
+
+```json
+{
+  "model": "...",
+  "messages": [...],
+  "llama_user_id": "tenant-42-user-7"
+}
+```
+
+OpenAI SDK callers pass it through `extra_body`:
+
+```python
+client.chat.completions.create(
+    model="...",
+    messages=[...],
+    extra_body={"llama_user_id": "tenant-42-user-7"},
+)
+```
+
+Validated to `^[a-zA-Z0-9\-_]+$` with a 512-char ceiling. Empty string is valid (anonymous bucket).
+
+#### KV cache routing
+
+When `user_id` is present, the SSD page manager routes checkpoints to a separate `u/` namespace on disk:
+
+```
+{ssd_path}/{hash_hex}/    # anonymous (conv_hash)
+{ssd_path}/u/{hash_hex}/  # user-scoped (fnv1a(user_id))
+```
+
+Cross-user lookup is disabled for user-scoped requests. A user can only access their own cached state, never another user's directory.
+
+#### Scheduling isolation
+
+`--max-concurrent-per-user N` caps the number of simultaneous slots a single user_id can occupy. When the cap is hit, the server returns HTTP 429 with a `rate_limit_error` type:
+
+```json
+{
+  "error": {
+    "code": 429,
+    "message": "User 'tenant-42-user-7' has reached the concurrent request limit (2)",
+    "type": "rate_limit_error"
+  }
+}
+```
+
+Slot allocation also prefers slots already owned by the requesting user (cache affinity). An empty slot (post-release) is fair game for any user.
+
+Default: 0 (unlimited). Set to 1 for strict one-at-a-time, or 2-3 for concurrent with backpressure.
+
+Design rationale: [`docs/development/user-isolation-design.md`](llama.cpp/docs/development/user-isolation-design.md)
+
+### MoE expert tracking
+
+MoE models (Qwen3.5/3.6, Gemma 4, GLM-4.7) activate only a subset of experts per token. This fork adds real-time expert activation tracking via two HTTP endpoints:
+
+#### GET /expert-stats
+
+Returns per-layer expert activation counts, frequencies, and token counts:
+
+```json
+{
+  "n_expert": 256,
+  "n_expert_used": 8,
+  "total_tokens": 1500,
+  "tracking_enabled": true,
+  "layers": [
+    {
+      "layer": 0,
+      "activations": [
+        {"expert": 42, "count": 150, "frequency": 0.0125},
+        {"expert": 7, "count": 148, "frequency": 0.0123},
+        ...
+      ]
+    },
+    ...
+  ]
+}
+```
+
+#### POST /expert-tracking
+
+Enable/disable tracking and optionally reset counters:
+
+```json
+{"enabled": true, "reset": true}
+```
+
+This is Phase 1 of the MoE expert tiering design - instrumentation only, no compute changes. Future phases will use this data to reorder experts for cache locality and offload cold experts to RAM/SSD.
+
+## Benchmarking
+
+The bottleneck in agentic AI isn't generation speed (the model produces tokens as fast as the GPU allows). The bottleneck is **prompt evaluation** - reprocessing the entire prompt before the model can generate its first token.
+
+Every API call in an agentic workflow sends static content: system prompt, tool definitions, prior conversation context. Without caching, this content is re-evaluated from scratch on every single call. An 18-30K-token prompt means it could be several minutes before the model starts responding on an APU like the 780M. With SSD cache and a 17,800-token prefix hit, only the divergent tail of the prompt is evaluated - typically a few seconds when only the latest tool result is new.
+
 ### Test methodology
 
 Real agentic workloads send 12-20K tokens of system prompt and tool definitions on every API call, growing to 32-64K tokens with compressed conversation context. Every token is re-evaluated from scratch without caching.
@@ -182,7 +333,7 @@ The key metric is **TTFT** (Time To First Token) - how long before the model sta
 
 Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 32768, all GPU layers. All three sizes use SSD cold cache (server restart with checkpoint restored from disk).
 
-#### GLM-4.7-Flash (Q4_K_M)
+#### GLM-4.7-Flash (Q4_K_M, 30B MoE, 3B active)
 
 | Size | Tokens | Cold TTFT | Warm TTFT | Speedup | Gen TPS |
 |------|--------|-----------|-----------|---------|---------|
@@ -211,7 +362,7 @@ Cold prompt eval: 132.6-165.6 t/s. Cached: 17,343/17,347 tokens at large size (4
 | Large | ~15.7K | 143.1s (2.4min) | 0.99s | 144.5x | 18.6 |
 
 Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4 tokens evaluated on warm).
-35B parameters with only 3B active keeps the eval rate high. The SSD cache restores both attention KV state and recurrent state from disk — the hybrid architecture's Mamba layers are checkpoint-aware and restore correctly across restarts.
+35B parameters with only 3B active keeps the eval rate high. The SSD cache restores both attention KV state and recurrent state from disk - the hybrid architecture's Mamba layers are checkpoint-aware and restore correctly across restarts.
 
 #### Summary
 
@@ -223,7 +374,7 @@ All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
 | Gemma 4 26B | 26B | 4B | 130.9s (2.2min) | 1.4s | 92.9x | 13.8 |
 | Qwen3.6-35B | 35B | 3B | 143.1s (2.4min) | 1.0s | 144.5x | 18.6 |
 
-Generation speed (t/s) is unaffected by caching — the speedup is entirely in prompt evaluation. What caching changes is whether you wait 3-5 minutes or 1-4 seconds before the model starts responding. MoE models trade parameter count for active headroom: Qwen loads 35B weights but only evaluates 3B per token, giving it the best generation speed of the three.
+Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 3-5 minutes or 1-4 seconds before the model starts responding. MoE models trade parameter count for active headroom: Qwen loads 35B weights but only evaluates 3B per token, giving it the best generation speed of the three.
 
 Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260611-0656/`](benchmarks/20260611-0656/)
 
@@ -273,13 +424,13 @@ Every turn includes the same static prefix: system prompt, tool definitions, the
 
 ### Agentic workflow walkthrough
 
-A single prompt — "Please evaluate this project and share your opinion of it." — sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Ten turns, 18 minutes 10 seconds.
+A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Ten turns, 18 minutes 10 seconds.
 
 The model explores the project autonomously: it lists directories, reads source files, checks git history, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-30K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation.
 
 #### Turn-by-turn
 
-Tools per turn: `list_dir`, `read_file`, `version_control/log`. T9 has no tool calls — it writes the final evaluation message directly.
+Tools per turn: `list_dir`, `read_file`, `version_control/log`. T9 has no tool calls - it writes the final evaluation message directly.
 
 | Turn | Model action | Tokens | Cached | Cache% | TTFT | Gen t/s |
 |------|-------------|--------|--------|--------|------|---------|
@@ -300,161 +451,54 @@ TTFT = time to first token (server-side prompt evaluation time per turn). Gen t/
 
 #### What the model explored
 
-Over nine tool-calling turns the model read six unique files — `llama-run.sh`, `benchmark.sh`, `detect-gpu.sh`, `rebuild.sh`, `env.sh`, `README.md` (with multiple line ranges and re-reads) — listed the project root, `scripts/`, and `src/`, and called `git log` twice. The exploration was broad rather than fixated: each turn targeted different files or different sections within those files.
+Over nine tool-calling turns the model read six unique files - `llama-run.sh`, `benchmark.sh`, `detect-gpu.sh`, `rebuild.sh`, `env.sh`, `README.md` (with multiple line ranges and re-reads) - listed the project root, `scripts/`, and `src/`, and called `git log` twice. The exploration was broad rather than fixated: each turn targeted different files or different sections within those files.
 
 The model's final evaluation called out five standout areas: the GPU detection system ("genuinely thorough," covering GCN5 through RDNA3.5 across 20+ device variants), the SSD cache work ("real systems-level expertise"), clean bash scripting (`set -euo pipefail`, `SCRIPT_DIR`/`PROJECT_ROOT`, color-coded logging), the multi-backend architecture (Vulkan default, ROCm optional, Metal for macOS), and the kernel parameter management for GTT/VRAM carveout (writing GRUB/systemd-boot config, verifying via `/proc/cmdline`).
 
 #### How the cache performed
 
-The ~18K-token static prefix — system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange — is cached after T0 and never re-evaluated. Every turn reuses these tokens from an in-memory or SSD checkpoint. The LCP between consecutive turns is consistently 17,882-23,725 tokens depending on how much of the prior conversation the next turn's input shares.
+The ~18K-token static prefix - system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange - is cached after T0 and never re-evaluated. Every turn reuses these tokens from an in-memory or SSD checkpoint. The LCP between consecutive turns is consistently 17,882-23,725 tokens depending on how much of the prior conversation the next turn's input shares.
 
 Cache hit rates range from 61.6% to 98.5% depending on how much the conversation has diverged:
 
-- **Near-perfect (98.5%, T1):** T1's input starts with the same 17,882 tokens T0 ended with — system prompt, tools, user message, T0's assistant turn, T0's tool results. Only 266 new tokens evaluated (the model's new tool call and the streaming chunk header). In-memory checkpoint restored in milliseconds.
+- **Near-perfect (98.5%, T1):** T1's input starts with the same 17,882 tokens T0 ended with - system prompt, tools, user message, T0's assistant turn, T0's tool results. Only 266 new tokens evaluated (the model's new tool call and the streaming chunk header). In-memory checkpoint restored in milliseconds.
 
 - **Typical tool turns (63-77%, T2-T7):** The model explores different files and the conversation context grows organically. The static prefix is always cached; the dynamic conversation content varies with model choices. 5,392-11,254 new tokens evaluated per turn at 74-82 t/s.
 
-- **Deep exploration (61.6%, T8):** The model's input at T8 diverges from the prior in-memory checkpoint at token 18,086 (T7 took a different path through the conversation). More tokens need fresh evaluation than other turns, but 18,086 are still restored from cache — 11,254 fresh tokens at 78 t/s.
+- **Deep exploration (61.6%, T8):** The model's input at T8 diverges from the prior in-memory checkpoint at token 18,086 (T7 took a different path through the conversation). More tokens need fresh evaluation than other turns, but 18,086 are still restored from cache - 11,254 fresh tokens at 78 t/s.
 
 - **Evaluation output (70.4%, T9):** The model writes a 632-token assessment with no tool calls. 18,119 tokens from cache, 7,605 fresh. The evaluation turn is generation-bound (37s of output at 17.2 t/s) rather than evaluation-bound.
 
 #### What the numbers mean
 
-Without caching, every turn would process all 18-30K tokens from scratch at 105 t/s — 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: a 10-turn exploration session drops from ~42 minutes (estimated cold) to 18 minutes (cached).
+Without caching, every turn would process all 18-30K tokens from scratch at 105 t/s - 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: a 10-turn exploration session drops from ~42 minutes (estimated cold) to 18 minutes (cached).
 
 The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 5-144 seconds. Local inference is private, offline-capable, and has no per-token cost.
 
-## User isolation
-
-Multi-tenant deployments need isolation between users sharing the same server. This fork adds three dimensions of isolation:
-
-### Identity
-
-The `user_id` field is a first-class request parameter. Pass it in the request body:
-
-```json
-{
-  "model": "...",
-  "messages": [...],
-  "llama_user_id": "tenant-42-user-7"
-}
-```
-
-OpenAI SDK callers pass it through `extra_body`:
-
-```python
-client.chat.completions.create(
-    model="...",
-    messages=[...],
-    extra_body={"llama_user_id": "tenant-42-user-7"},
-)
-```
-
-Validated to `^[a-zA-Z0-9\-_]+$` with a 512-char ceiling. Empty string is valid (anonymous bucket).
-
-### KV cache routing
-
-When `user_id` is present, the SSD page manager routes checkpoints to a separate `u/` namespace on disk:
-
-```
-{ssd_path}/{hash_hex}/    # anonymous (conv_hash)
-{ssd_path}/u/{hash_hex}/  # user-scoped (fnv1a(user_id))
-```
-
-Cross-user lookup is disabled for user-scoped requests. A user can only access their own cached state, never another user's directory.
-
-### Scheduling isolation
-
-`--max-concurrent-per-user N` caps the number of simultaneous slots a single user_id can occupy. When the cap is hit, the server returns HTTP 429 with a `rate_limit_error` type:
-
-```json
-{
-  "error": {
-    "code": 429,
-    "message": "User 'tenant-42-user-7' has reached the concurrent request limit (2)",
-    "type": "rate_limit_error"
-  }
-}
-```
-
-Slot allocation also prefers slots already owned by the requesting user (cache affinity). An empty slot (post-release) is fair game for any user.
-
-Default: 0 (unlimited). Set to 1 for strict one-at-a-time, or 2-3 for concurrent with backpressure.
-
-Design rationale: [`docs/development/user-isolation-design.md`](llama.cpp/docs/development/user-isolation-design.md)
-
-## MoE expert tracking
-
-MoE models (Qwen3.5/3.6, DeepSeek, Mixtral) activate only a subset of experts per token. This fork adds real-time expert activation tracking via two HTTP endpoints:
-
-### GET /expert-stats
-
-Returns per-layer expert activation counts, frequencies, and token counts:
-
-```json
-{
-  "n_expert": 256,
-  "n_expert_used": 8,
-  "total_tokens": 1500,
-  "tracking_enabled": true,
-  "layers": [
-    {
-      "layer": 0,
-      "activations": [
-        {"expert": 42, "count": 150, "frequency": 0.0125},
-        {"expert": 7, "count": 148, "frequency": 0.0123},
-        ...
-      ]
-    },
-    ...
-  ]
-}
-```
-
-### POST /expert-tracking
-
-Enable/disable tracking and optionally reset counters:
-
-```json
-{"enabled": true, "reset": true}
-```
-
-This is Phase 1 of the MoE expert tiering design - instrumentation only, no compute changes. Future phases will use this data to reorder experts for cache locality and offload cold experts to RAM/SSD.
-
 ## Improvements over upstream
 
-This fork maintains patches on top of [llama.cpp](https://github.com/ggml-org/llama.cpp) that improve performance of agentic AI workloads with hybrid MoE models on AMD APU hardware.
+This fork maintains patches on top of [llama.cpp](https://github.com/ggml-org/llama.cpp) that improve performance of agentic AI workloads with hybrid MoE models on AMD APU hardware. The full design lives in [KV cache](#kv-cache), [User isolation](#user-isolation), and [MoE expert tracking](#moe-expert-tracking). The high-level changes:
 
 ### SSD-backed KV cache
 
-Persistent cross-session KV cache that survives server restarts. Hot/warm/cold tiering with automatic promotion and demotion keeps frequently-used conversation state in RAM while evicting stale entries to disk.
+Persistent cross-session KV cache that survives server restarts. Hot/warm/cold tiering with automatic promotion and demotion keeps frequently-used conversation state in RAM while evicting stale entries to disk. Per-conversation ring buffer prevents unbounded disk growth. Three-tier search (same-conversation, shared-prefix, cold-start token prefix) with chain/safe phases for cross-conversation safety. Kernel readahead overlaps SSD I/O with CPU work. Checkpoint overflow prevention handles cases where the saved state covers more tokens than the current task needs. Conversation hash and model compatibility hash prevent mismatched checkpoint restoration. Per-conversation directories (`kv-cache/{conv_hash}/`) let multiple chat threads run in parallel without interference. MLA model support for DeepSeek2/DeepSeek3.
 
-- **Hot tier**: Recently-used checkpoints kept in RAM for instant restore. Demoted to warm after 2 inactive turns.
-- **Warm tier**: Checkpoints from previous sessions, kept in RAM until memory pressure forces demotion. Demoted to cold after 4 inactive turns.
-- **Cold tier**: On-disk checkpoints with token prefixes for cross-session matching
-- **Ring buffer eviction**: Per-conversation ring buffer prevents unbounded disk growth. Oldest checkpoints are evicted when space is needed.
-- **Three-tier search**: Same-conversation match by conversation hash, shared-prefix match by n_past, and cold-start token prefix comparison with chain/safe phases
-- **Kernel readahead**: `posix_fadvise(POSIX_FADV_WILLNEED)` on Linux, `readahead()` on macOS. Overlaps SSD I/O with CPU work for ~0.5-0.75s TTFT reduction on cold cache hits.
-- **Checkpoint overflow prevention**: Same-conversation checkpoints are accepted regardless of size (recurrent state is content-accurate) and capped in the restore layer. Cross-conversation oversized checkpoints are skipped at the search layer. Prevents "no tokens to decode" crashes.
-- **Turn-based tiering**: Checkpoints track turn activity across server restarts for accurate promotion/demotion
-- **Cold start recovery**: On server restart, automatically searches SSD cache by token prefix match. Same-conversation checkpoints are restored even if larger than the current task - `n_past` is capped with overflow margin instead of falling through to full reprocessing.
-- **Conversation-aware matching**: Checkpoints carry conversation hash and model compatibility hash. Mismatched checkpoints are rejected, so switching models or conversations doesn't corrupt cached state.
-- **Per-conversation directories**: Each conversation gets its own directory (`kv-cache/{conv_hash}/`). Switching conversations doesn't corrupt cached state. Multiple independent chat threads operate in parallel without interference.
-- **Smart eviction**: Scores checkpoints by age, size, and task overlap to preserve what's most useful
-- **MLA model support**: DeepSeek2/DeepSeek3 MLA models get checkpoint support via `llama_model_is_mla()` detection
+CLI flags: `--cache-ssd`, `--cache-ssd-checkpoints`, `--cache-ssd-hot-window`, `--cache-ssd-warm-window`, `--cache-ssd-max-cold`, `--cache-ssd-page-size`, `--cache-ssd-max-conversations`, `--cache-ssd-hot-ram`, `--cache-ssd-warm-ram`, `--cache-ssd-system-prompts`, `--cache-ssd-system-max-days`.
 
-CLI flags: `--cache-ssd`, `--cache-ssd-checkpoints`, `--cache-ssd-hot-window`, `--cache-ssd-warm-window`, `--cache-ssd-max-cold`, `--cache-ssd-page-size`, `--cache-ssd-max-conversations`
+### System prompt cache
+
+Global cross-conversation cache for the system section of any prompt. First eval writes the state, subsequent requests skip the system prompt re-eval entirely. Works for both standard transformer and hybrid MoE/SSM models - the per-position recurrent state in the state file means a state saved after the full prompt can be restored with `n_past` capped to the system prompt boundary. Default: 8 entries per model, 30 days unused before expiry.
 
 ### Hybrid MoE model fixes (Qwen3.5/3.6)
 
-Hybrid models (Qwen3.5/3.6 MoE) combine transformer attention with recurrent state (like Mamba). Upstream checkpoint restore was broken for these architectures, causing silent KV cache exhaustion and `no tokens to decode` crashes after 2-3 conversation turns. 13 incremental fixes:
+Upstream checkpoint restore was broken for hybrid architectures, causing silent KV cache exhaustion and `no tokens to decode` crashes after 2-3 conversation turns. Fixes:
 
 - **KV cache shifting**: Hybrid models need different position tracking than dense models - pos_min/pos_max don't capture recurrent state coverage
 - **Checkpoint erasure**: When conversation content diverges, only attention cells are cleared, preserving recurrent state for reuse
-- **Checkpoint overflow prevention**: Same-conversation checkpoints are accepted regardless of size (recurrent state is content-accurate) and capped in the restore layer. Cross-conversation oversized checkpoints are skipped at the search layer. Prevents the fatal `batch.n_tokens = 0` crash
-- **seq_rm_attn_only**: New API that clears attention KV entries without disturbing recurrent state - critical for checkpoint restore correctness
-- **QWEN35MOE architecture filter**: Correctly identifies which layers are attention vs. recurrent for state management
-- **Checkpoint search condition**: Hybrid checkpoint restore uses `n_tokens <= n_past` to prevent restoring recurrent state from stale (diverged) conversation content. The previous `>=` condition allowed checkpoints past the cache divergence point, causing degraded output on multi-turn conversations
+- **Checkpoint overflow prevention**: Same-conversation checkpoints accepted regardless of size (recurrent state is content-accurate), cross-conversation oversized checkpoints skipped at search
+- **seq_rm_attn_only**: New API that clears attention KV entries without disturbing recurrent state
+- **QWEN35MOE architecture filter**: Correctly identifies attention vs. recurrent layers
+- **Checkpoint search condition**: `n_tokens <= n_past` prevents restoring recurrent state from stale (diverged) conversation content
 
 ### User isolation
 
@@ -504,6 +548,8 @@ Hybrid models (Qwen3.5/3.6 MoE) combine transformer attention with recurrent sta
 ├── scratch/                  # Transient working files (benchmark source text)
 └── benchmarks/               # Benchmark results with full server logs
 ```
+
+See [AGENTS.md](AGENTS.md) for the technical reference (directory structure, build commands, code style, patch workflow).
 
 ## License
 
