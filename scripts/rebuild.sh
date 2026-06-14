@@ -21,7 +21,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-LLAMA_DIR="$PROJECT_ROOT/llama.cpp"
+LLAMA_DIR="$PROJECT_ROOT/CachyLLama"
 DEPS_DIR="$PROJECT_ROOT/deps"
 
 # AMD nightly tarball base URL
@@ -380,7 +380,7 @@ apply_patches() {
 build_rocm() {
     log_info "Building ROCm backend..."
 
-    local build_dir="$PROJECT_ROOT/src/llama-cpp-rocm/build"
+    local build_dir="$PROJECT_ROOT/src/cachy-llama-rocm/build"
 
     # Clean if requested
     [[ "$CLEAN" == true || "$REBUILD" == true ]] && rm -rf "$build_dir"
@@ -424,7 +424,7 @@ build_rocm() {
 build_vulkan() {
     log_info "Building Vulkan backend..."
 
-    local build_dir="$PROJECT_ROOT/src/llama-cpp-vulkan/build"
+    local build_dir="$PROJECT_ROOT/src/cachy-llama-vulkan/build"
 
     # Clean if requested
     [[ "$CLEAN" == true || "$REBUILD" == true ]] && rm -rf "$build_dir"
@@ -460,7 +460,7 @@ build_vulkan() {
 build_metal() {
     log_info "Building Metal backend (macOS)..."
 
-    local build_dir="$PROJECT_ROOT/src/llama-cpp-metal/build"
+    local build_dir="$PROJECT_ROOT/src/cachy-llama-metal/build"
 
     # Clean if requested
     [[ "$CLEAN" == true || "$REBUILD" == true ]] && rm -rf "$build_dir"
@@ -543,9 +543,9 @@ echo ""
 echo -e "${GREEN}=== Build Complete ===${NC}"
 echo ""
 echo "Binaries:"
-[[ "$BUILD_ROCM" == true ]]   && echo "  ROCm:   $PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server"
-[[ "$BUILD_VULKAN" == true ]] && echo "  Vulkan: $PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server"
-[[ "$BUILD_METAL" == true ]]  && echo "  Metal:  $PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server"
+[[ "$BUILD_ROCM" == true ]]   && echo "  ROCm:   $PROJECT_ROOT/src/cachy-llama-rocm/build/bin/llama-server"
+[[ "$BUILD_VULKAN" == true ]] && echo "  Vulkan: $PROJECT_ROOT/src/cachy-llama-vulkan/build/bin/llama-server"
+[[ "$BUILD_METAL" == true ]]  && echo "  Metal:  $PROJECT_ROOT/src/cachy-llama-metal/build/bin/llama-server"
 echo ""
 echo "Next: drop a GGUF model in models/ and run ./llama-run.sh --server"
 echo ""

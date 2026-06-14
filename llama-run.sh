@@ -38,25 +38,25 @@ get_backend_binary() {
     local backend="$1"
     case "$backend" in
         rocm)
-            echo "$PROJECT_ROOT/src/llama-cpp-rocm/build"
+            echo "$PROJECT_ROOT/src/cachy-llama-rocm/build"
             ;;
         vulkan)
-            echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
+            echo "$PROJECT_ROOT/src/cachy-llama-vulkan/build"
             ;;
         metal)
-            echo "$PROJECT_ROOT/src/llama-cpp-metal/build"
+            echo "$PROJECT_ROOT/src/cachy-llama-metal/build"
             ;;
         cpu)
-            echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
+            echo "$PROJECT_ROOT/src/cachy-llama-vulkan/build"
             ;;
         auto)
             # Check which is available
-            if [[ -x "$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server" ]]; then
-                echo "$PROJECT_ROOT/src/llama-cpp-metal/build"
-            elif [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
-                echo "$PROJECT_ROOT/src/llama-cpp-rocm/build"
-            elif [[ -x "$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server" ]]; then
-                echo "$PROJECT_ROOT/src/llama-cpp-vulkan/build"
+            if [[ -x "$PROJECT_ROOT/src/cachy-llama-metal/build/bin/llama-server" ]]; then
+                echo "$PROJECT_ROOT/src/cachy-llama-metal/build"
+            elif [[ -x "$PROJECT_ROOT/src/cachy-llama-rocm/build/bin/llama-server" ]]; then
+                echo "$PROJECT_ROOT/src/cachy-llama-rocm/build"
+            elif [[ -x "$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin/llama-server" ]]; then
+                echo "$PROJECT_ROOT/src/cachy-llama-vulkan/build"
             else
                 echo ""
             fi
@@ -77,19 +77,19 @@ detect_backend() {
     fi
 
     # macOS: prefer Metal (only Apple Silicon has GPU acceleration)
-    if [[ "$(uname -s)" == "Darwin" ]] && [[ -x "$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-server" ]]; then
+    if [[ "$(uname -s)" == "Darwin" ]] && [[ -x "$PROJECT_ROOT/src/cachy-llama-metal/build/bin/llama-server" ]]; then
         BACKEND="metal"
         return 0
     fi
 
     # Check for Vulkan first (default backend - best stability on RDNA3)
-    if [[ -x "$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-server" ]]; then
+    if [[ -x "$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin/llama-server" ]]; then
         BACKEND="vulkan"
         return 0
     fi
 
     # Check for ROCm (optional backend - known issues with some archs)
-    if [[ -x "$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-server" ]]; then
+    if [[ -x "$PROJECT_ROOT/src/cachy-llama-rocm/build/bin/llama-server" ]]; then
         BACKEND="rocm"
         return 0
     fi
@@ -511,9 +511,9 @@ list_backends() {
 
 list_backends_v2() {
     echo -e "${BLUE}Available Backends:${NC}"
-    local binary_rocm="$PROJECT_ROOT/src/llama-cpp-rocm/build/bin/llama-cli"
-    local binary_vulkan="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-cli"
-    local binary_metal="$PROJECT_ROOT/src/llama-cpp-metal/build/bin/llama-cli"
+    local binary_rocm="$PROJECT_ROOT/src/cachy-llama-rocm/build/bin/llama-cli"
+    local binary_vulkan="$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin/llama-cli"
+    local binary_metal="$PROJECT_ROOT/src/cachy-llama-metal/build/bin/llama-cli"
     if [[ -x "$binary_rocm" ]]; then
         if [[ -n "$LLAMA_GPU_NAME" ]]; then
             echo -e "  ${GREEN}[*] ROCm/HIP${NC}   - $LLAMA_GPU_NAME ($LLAMA_GFX_ARCH)"

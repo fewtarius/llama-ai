@@ -1,14 +1,14 @@
 #!/bin/bash
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (c) 2026 fewtarius
-# Build script for llama-cpp-vulkan
+# Build script for cachy-llama-rocm
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
-LLAMA_DIR="$PROJECT_ROOT/llama.cpp"
+LLAMA_DIR="$PROJECT_ROOT/CachyLLama"
 
 BLUE="\033[0;34m"
 GREEN="\033[0;32m"
@@ -19,17 +19,16 @@ log_ok()   { echo -e "${GREEN}[OK]${NC}   $1"; }
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
-
-# Add ROCm LLVM to PATH for Vulkan build (uses bare clang/clang++)
-export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
+source "$PROJECT_ROOT/scripts/env.sh" rocm
 
 cmake "$LLAMA_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
-    -DGGML_HIP=OFF \
-    -DGGML_HIPBLAS=OFF \
-    -DGGML_VULKAN=ON \
+    -DCMAKE_HIP_PLATFORM=amd \
+    -DGGML_HIP=ON \
+    -DGGML_HIPBLAS=ON \
+    -DGGML_VULKAN=OFF \
     -DGGML_CPU=ON \
     -DGGML_NATIVE=OFF \
     -DLLAMA_BUILD_SERVER=ON \
@@ -37,5 +36,5 @@ cmake "$LLAMA_DIR" \
     -DLLAMA_BUILD_EXAMPLES=ON
 
 cmake --build . --config Release -j$(nproc)
-log_ok "Vulkan build complete"
+log_ok "ROCm build complete"
 

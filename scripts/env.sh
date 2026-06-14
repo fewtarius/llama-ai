@@ -49,7 +49,7 @@ if [[ "$BACKEND" == "rocm" ]]; then
     export PATH="$ROCM_PATH/bin:$ROCM_PATH/lib/llvm/bin:$PATH"
     
     # Llama.cpp binary
-    export LLAMA_BIN="$PROJECT_ROOT/src/llama-cpp-rocm/build/bin"
+    export LLAMA_BIN="$PROJECT_ROOT/src/cachy-llama-rocm/build/bin"
     export PATH="$LLAMA_BIN:$PATH"
     
     # Verify ROCm
@@ -78,7 +78,7 @@ if [[ "$BACKEND" == "rocm" ]]; then
     
 elif [[ "$BACKEND" == "vulkan" ]]; then
     # Vulkan doesn't need ROCm paths
-    export LLAMA_BIN="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin"
+    export LLAMA_BIN="$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin"
     export PATH="$LLAMA_BIN:$PATH"
 
     # Set Vulkan backend env var
@@ -94,7 +94,7 @@ elif [[ "$BACKEND" == "vulkan" ]]; then
 
 elif [[ "$BACKEND" == "metal" ]]; then
     # Metal uses macOS system frameworks; nothing to set besides LLAMA_BIN
-    export LLAMA_BIN="$PROJECT_ROOT/src/llama-cpp-metal/build/bin"
+    export LLAMA_BIN="$PROJECT_ROOT/src/cachy-llama-metal/build/bin"
     export PATH="$LLAMA_BIN:$PATH"
 
     # Metal uses unified memory automatically on Apple Silicon

@@ -6,7 +6,7 @@ rocm/
 
 # Build output
 src/*/build/
-llama.cpp/build/
+CachyLLama/build/
 
 # Llama.cpp source (managed as git submodules)
 

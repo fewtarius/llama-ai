@@ -27,8 +27,8 @@ BENCH_DIR="$PROJECT_ROOT/benchmarks/$TIMESTAMP"
 mkdir -p "$BENCH_DIR"
 
 # Backend paths
-ROCM_BIN="$PROJECT_ROOT/src/llama-cpp-rocm/build/bin"
-VULKAN_BIN="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin"
+ROCM_BIN="$PROJECT_ROOT/src/cachy-llama-rocm/build/bin"
+VULKAN_BIN="$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin"
 
 # Default settings
 PORT=9090

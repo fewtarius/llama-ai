@@ -41,7 +41,7 @@ Full data with server logs: benchmarks/20260508-2002/
 - `scripts/rebuild.sh` - Build (Vulkan default, optional ROCm)
 - `scripts/detect-gpu.sh` - AMD GPU auto-detection
 - `scripts/benchmark.sh` - SSD prompt cache performance testing
-- `llama.cpp/` - Submodule (ggml-org/llama.cpp with patches)
+- `CachyLLama/` - Submodule (fork of ggml-org/llama.cpp with custom changes)
 - `patches/` - Incremental patches on top of upstream
 - `kv-cache/` - SSD-backed KV cache directory
 

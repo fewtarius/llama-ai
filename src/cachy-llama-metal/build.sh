@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
-LLAMA_DIR="$PROJECT_ROOT/llama.cpp"
+LLAMA_DIR="$PROJECT_ROOT/CachyLLama"
 
 # macOS only
 if [[ "$(uname -s)" != "Darwin" ]]; then

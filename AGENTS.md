@@ -7,7 +7,7 @@ Technical reference for AI agents working on this project.
 ```
 llama-ai/
 ├── llama-run.sh              # Main entry point — model detection, server launch
-├── llama.cpp/                # Submodule — ggml-org/llama.cpp
+├── CachyLLama/               # Submodule — fork of ggml-org/llama.cpp
 ├── scripts/
 │   ├── rebuild.sh            # Download ROCm SDK + build both backends
 │   ├── env.sh                # Environment setup (source before ROCm tools)
@@ -15,11 +15,11 @@ llama-ai/
 │   ├── benchmark.sh          # Performance testing
 │   └── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
 ├── src/
-│   ├── llama-cpp-rocm/       # ROCm build
-│   │   ├── build.sh          # Build script (references $PROJECT_ROOT/llama.cpp)
+│   ├── cachy-llama-rocm/     # ROCm build
+│   │   ├── build.sh          # Build script (references $PROJECT_ROOT/CachyLLama)
 │   │   └── build/            # Build output (binaries, libs)
-│   └── llama-cpp-vulkan/     # Vulkan build
-│       ├── build.sh          # Build script (references $PROJECT_ROOT/llama.cpp)
+│   └── cachy-llama-vulkan/   # Vulkan build
+│       ├── build.sh          # Build script (references $PROJECT_ROOT/CachyLLama)
 │       └── build/            # Build output (binaries, libs)
 ├── deps/                     # ROCm SDK (downloaded, gitignored)
 ├── models/                   # GGUF files (gitignored)
@@ -48,10 +48,10 @@ llama-ai/
 ./scripts/rebuild.sh --rocm  # (Vulkan is always built by default)
 ```
 
-Build scripts in `src/llama-cpp-rocm/build.sh` and `src/llama-cpp-vulkan/build.sh` reference `$PROJECT_ROOT/llama.cpp` for the source.
+Build scripts in `src/cachy-llama-rocm/build.sh` and `src/cachy-llama-vulkan/build.sh` reference `$PROJECT_ROOT/CachyLLama` for the source.
 
 `scripts/rebuild.sh` automatically applies patches from `patches/` to the submodule before building. Patches are checked for idempotency — if already applied, they're skipped.
-Note: patch application is deprecated since we now maintain llama.cpp directly.
+Note: patch application is deprecated since we now maintain CachyLLama directly.
 The `patches/` directory is kept for historical reference only.
 
 ## Environment
@@ -105,7 +105,7 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 
 - Everything self-contained in this directory — no system ROCm
 - `deps/`, `models/`, `kv-cache/`, `build/` directories are gitignored
-- `llama.cpp/` is a git submodule — use `--recurse-submodules` when cloning
+- `CachyLLama/` is a git submodule — use `--recurse-submodules` when cloning
 - **Vulkan (RADV) is the default backend** — ROCm has stability issues on RDNA3
   (GLM-4.7-Flash/DeepSeek2 MLA produces zero generation tokens on ROCm)
 - **Target hardware: Ayaneo Flip KB** (AYANEO FLIP KB, AMD 7840U Phoenix / gfx1103,
@@ -116,11 +116,11 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 
 ## Patch management
 
-The `patches/` directory is **deprecated**. We now maintain `llama.cpp` directly as a fork rather than applying patches to an upstream submodule. The git history in `llama.cpp/` is the canonical source of truth.
+The `patches/` directory is **deprecated**. We now maintain `CachyLLama` directly as a fork rather than applying patches to an upstream submodule. The git history in `CachyLLama/` is the canonical source of truth.
 
 ### Historical reference
 
-The old patch workflow (generating incremental and consolidated patches after each commit) is no longer needed. All custom changes are committed directly to the `llama.cpp/` fork's git history.
+The old patch workflow (generating incremental and consolidated patches after each commit) is no longer needed. All custom changes are committed directly to the `CachyLLama/` fork's git history.
 
 ## License
 

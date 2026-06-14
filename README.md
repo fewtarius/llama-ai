@@ -41,7 +41,7 @@ Local LLM inference on AMD APU hardware using [llama.cpp](https://github.com/ggm
 The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
 
 <p align="center">
-  <img src=".images/flip.png" alt="Ayaneo Flip KB" width="400">
+  <img src=".images/flip.png" alt="Ayaneo Flip KB" width="600">
 </p>
 
 [CLIO](https://github.com/SyntheticAutonomicMind/CLIO) is optimized for this implementation. It serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context - the static content sent on every API call - are cached and persisted to disk so they're available immediately on the next request.
@@ -265,7 +265,7 @@ Slot allocation also prefers slots already owned by the requesting user (cache a
 
 Default: 0 (unlimited). Set to 1 for strict one-at-a-time, or 2-3 for concurrent with backpressure.
 
-Design rationale: [`docs/development/user-isolation-design.md`](llama.cpp/docs/development/user-isolation-design.md)
+Design rationale: [`docs/development/user-isolation-design.md`](CachyLLama/docs/development/user-isolation-design.md)
 
 ### MoE expert tracking
 
@@ -552,7 +552,7 @@ Upstream checkpoint restore was broken for hybrid architectures, causing silent 
 
 ```
 ├── llama-run.sh              # Main entry point
-├── llama.cpp/                # Submodule - ggml-org/llama.cpp
+├── CachyLLama/               # Submodule - fork of ggml-org/llama.cpp
 ├── scripts/
 │   ├── rebuild.sh            # Build script (Vulkan default, optional ROCm)
 │   ├── env.sh                # Environment setup (source before using tools)
@@ -560,8 +560,8 @@ Upstream checkpoint restore was broken for hybrid architectures, causing silent 
 │   ├── benchmark.sh          # Prompt cache performance testing
 │   └── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
 ├── src/
-│   ├── llama-cpp-rocm/       # ROCm build output + build.sh
-│   └── llama-cpp-vulkan/     # Vulkan build output + build.sh
+│   ├── cachy-llama-rocm/     # ROCm build output + build.sh
+│   └── cachy-llama-vulkan/   # Vulkan build output + build.sh
 ├── deps/                     # ROCm SDK (downloaded by rebuild.sh)
 ├── models/                   # GGUF files
 ├── kv-cache/                 # SSD-backed KV cache (per-conversation directories)
