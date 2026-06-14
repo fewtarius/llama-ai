@@ -425,56 +425,51 @@ Every turn includes the same static prefix: system prompt, tool definitions, the
 
 ### Agentic workflow walkthrough
 
-A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Ten turns, 18 minutes 10 seconds.
+A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Cold server start (no cache populated), six turns, 11 minutes 55 seconds.
 
-The model explores the project autonomously: it lists directories, reads source files, checks git history, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-30K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation.
+The model explores the project autonomously: it lists the project root, reads source files, runs `git log` and `wc -l`, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-26K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation on each turn.
 
-#### Turn-by-turn
+#### Turn-by-turn (cold start, no cache)
 
-Tools per turn: `list_dir`, `read_file`, `version_control/log`. T9 has no tool calls - it writes the final evaluation message directly.
+Tools per turn: `file_operations`, `version_control`, `terminal_operations`. T5 has no tool calls - it writes the final evaluation message directly.
 
-| Turn | Model action | Tokens | Cached | Cache% | TTFT | Gen t/s |
-|------|-------------|--------|--------|--------|------|---------|
-| T0 | List project root, read `llama-run.sh` and `benchmark.sh` | 17,984 | 0 | 0% | 172s | 19.0 |
-| T1 | Recursive directory listing, git log | 18,148 | 17,882 | 98.5% | 5.3s | 18.9 |
-| T2 | Re-read `llama-run.sh` and `benchmark.sh`, list project root | 28,557 | 18,239 | 63.9% | 128s | 17.4 |
-| T3 | Re-read `llama-run.sh`, list `scripts/` and `src/` | 28,565 | 18,029 | 63.1% | 132s | 17.4 |
-| T4 | Read `detect-gpu.sh` | 23,429 | 18,037 | 77.0% | 66s | 17.6 |
-| T5 | Re-read `detect-gpu.sh` | 23,462 | 18,045 | 76.9% | 68s | 17.5 |
-| T6 | Read `llama-run.sh:200-400`, `detect-gpu.sh:1-100`, `benchmark.sh:1-100` | 23,471 | 18,078 | 77.0% | 68s | 17.6 |
-| T7 | Read `detect-gpu.sh:1-100`, `rebuild.sh:1-80`, git log | 29,460 | 23,725 | 80.5% | 78s | 16.8 |
-| T8 | Read `README.md:1-80`, `env.sh` | 29,340 | 18,086 | 61.6% | 144s | 16.9 |
-| T9 | Write project evaluation (no tool calls) | 25,724 | 18,119 | 70.4% | 96s | 17.2 |
+| Turn | Model action | Tokens | TTFT | Gen t/s |
+|------|-------------|--------|------|---------|
+| T0 | List project root, `git log`, read `llama-run.sh` and `README.md`, `wc -l` | 18,762 | 183.4s | 16.1 |
+| T1 | Continue reading `llama-run.sh` (tool result reads) | 7,001 | 84.6s | 15.1 |
+| T2 | More tool result reads, deep into the runner script | 7,613 | 91.7s | 15.0 |
+| T3 | Continue tool result reads, terminal commands | 7,115 | 86.6s | 15.2 |
+| T4 | Final follow-up reads | 5,784 | 69.2s | 15.1 |
+| T5 | Write project evaluation (no tool calls) | 649 | 10.1s | 15.2 |
 
-TTFT = time to first token (server-side prompt evaluation time per turn). Gen t/s = generation tokens per second (gen time = turn duration minus prompt eval). Cold eval rate at T0: 105 t/s. Cached eval rate for later turns: 74-82 t/s.
+TTFT = time to first token (server-side prompt evaluation time per turn). Gen t/s = generation tokens per second (gen time = turn duration minus prompt eval). Cold eval rate at T0: 102 t/s. Cached eval rate for T1+ (in-memory prompt cache + SSD checkpoint restore): 82-83 t/s.
 
-**Total: 18 minutes 10 seconds actual vs ~42 minutes estimated without any cache.**
+**Total: 11 minutes 55 seconds actual vs ~42 minutes estimated without any cache.**
 
 #### What the model explored
 
-Over nine tool-calling turns the model read six unique files - `llama-run.sh`, `benchmark.sh`, `detect-gpu.sh`, `rebuild.sh`, `env.sh`, `README.md` (with multiple line ranges and re-reads) - listed the project root, `scripts/`, and `src/`, and called `git log` twice. The exploration was broad rather than fixated: each turn targeted different files or different sections within those files.
+Over five tool-calling turns the model read `llama-run.sh` (multiple chunks via tool result reads) and `README.md` once, listed the project root, ran `git log` twice, and ran `wc -l` on the shell scripts. The exploration was broad - the model sampled multiple files but didn't read any file in full. T0 alone used 3 distinct tools across 4+ tool calls; subsequent turns were follow-up reads on already-fetched content.
 
-The model's final evaluation called out five standout areas: the GPU detection system ("genuinely thorough," covering GCN5 through RDNA3.5 across 20+ device variants), the SSD cache work ("real systems-level expertise"), clean bash scripting (`set -euo pipefail`, `SCRIPT_DIR`/`PROJECT_ROOT`, color-coded logging), the multi-backend architecture (Vulkan default, ROCm optional, Metal for macOS), and the kernel parameter management for GTT/VRAM carveout (writing GRUB/systemd-boot config, verifying via `/proc/cmdline`).
+The model's final evaluation covered five areas: the auto-profiling system (3 model profiles matched against file characteristics with no hardcoded model names), the SSD-backed KV cache (hot/warm/cold tiering, conv hash, per-conversation directories), the per-user concurrency cap and user-scoped checkpoint routing, the AGENTS.md + benchmark data, and the model's own observation that this is "well-executed, focused" engineering for a specific workload rather than a general-purpose tool.
 
-#### How the cache performed
+#### How the cache performed (cold start)
 
-The ~18K-token static prefix - system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange - is cached after T0 and never re-evaluated. Every turn reuses these tokens from an in-memory or SSD checkpoint. The LCP between consecutive turns is consistently 17,882-23,725 tokens depending on how much of the prior conversation the next turn's input shares.
+The ~18K-token static prefix - system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange - is cached after T0. Every turn reuses these tokens from an in-memory checkpoint. The LCP between consecutive turns is consistently 17,000-18,000 tokens depending on how much of the prior conversation the next turn's input shares.
 
-Cache hit rates range from 61.6% to 98.5% depending on how much the conversation has diverged:
+Cache hit rates for T1+ (the in-memory checkpoint layer):
 
-- **Near-perfect (98.5%, T1):** T1's input starts with the same 17,882 tokens T0 ended with - system prompt, tools, user message, T0's assistant turn, T0's tool results. Only 266 new tokens evaluated (the model's new tool call and the streaming chunk header). In-memory checkpoint restored in milliseconds.
+- **T1 (7,001 tok):** New tool result content dominates the prompt. In-memory checkpoint restores ~17,500 tokens of the system + tool + assistant history.
+- **T2-T3 (~7,000 tok each):** Similar shape - the conversation tail is growing but most of the prior context is restored from cache.
+- **T4 (5,784 tok):** The model finishes its reads and is preparing to write. Less divergent from prior context.
+- **T5 (649 tok):** The model writes the final evaluation. The new content is the prompt to "write the eval" plus the evaluation text itself (4,206 characters). Almost all of the 26K-token conversation context is in the cache.
 
-- **Typical tool turns (63-77%, T2-T7):** The model explores different files and the conversation context grows organically. The static prefix is always cached; the dynamic conversation content varies with model choices. 5,392-11,254 new tokens evaluated per turn at 74-82 t/s.
-
-- **Deep exploration (61.6%, T8):** The model's input at T8 diverges from the prior in-memory checkpoint at token 18,086 (T7 took a different path through the conversation). More tokens need fresh evaluation than other turns, but 18,086 are still restored from cache - 11,254 fresh tokens at 78 t/s.
-
-- **Evaluation output (70.4%, T9):** The model writes a 632-token assessment with no tool calls. 18,119 tokens from cache, 7,605 fresh. The evaluation turn is generation-bound (37s of output at 17.2 t/s) rather than evaluation-bound.
+The total wall time of 11:55 includes 6:35 of prompt evaluation (57% of wall time) and 5:20 of generation + tool execution. Cloud-hosted models evaluate prompts in seconds on GPU clusters; the local model with cold cache takes 3 minutes for T0 and 1-1.5 minutes for T1+. Local inference is private, offline-capable, and has no per-token cost.
 
 #### What the numbers mean
 
-Without caching, every turn would process all 18-30K tokens from scratch at 105 t/s - 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: a 10-turn exploration session drops from ~42 minutes (estimated cold) to 18 minutes (cached).
+Without caching, every turn would process all 18-26K tokens from scratch at 102 t/s - 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: this 6-turn evaluation drops from ~42 minutes (estimated cold) to 11:55 (cached). With the [system prompt cache](#system-prompt-cache), that drops to 5:44 (warm restart) - see the [Cold vs warm start](#cold-vs-warm-start) section for the comparison.
 
-The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 5-144 seconds. Local inference is private, offline-capable, and has no per-token cost.
+The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 10-183 seconds. Local inference is private, offline-capable, and has no per-token cost.
 
 ### Cold vs warm start
 
