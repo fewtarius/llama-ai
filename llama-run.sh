@@ -359,11 +359,15 @@ assign_profile() {
         # and agentic workloads use 1 slot at a time anyway
         OVERRIDE_N_PARALLEL="1"
        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        # General tasks sampling (Unsloth recommended for Qwen 3.6):
-        # temp=1.0 + presence_penalty=1.5 = diverse exploration without looping
-        # The old temp=0.6 + presence=0.0 (precise coding mode) was too deterministic
-        # for agentic exploration and caused repetitive tool call loops.
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
+        # Sampling (Unsloth recommended for Qwen 3.6 thinking mode):
+        # temp=1.0 + top_p=0.95 + top_k=20 + min_p=0.0 + no penalties.
+        # Qwen3 was trained without repetition penalty - applying any
+        # value >1.0 degrades the model and causes repetitive tool call
+        # loops in agentic workloads. presence_penalty=0.0 is also required;
+        # the non-thinking (instruct) mode uses 1.5 but that mode strips
+        # reasoning and is not what CLIO sends.
+        # https://unsloth.ai/docs/models/qwen3.6
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads:
         # - 4096 tokens between checkpoints (balances coverage vs overhead)
@@ -390,7 +394,8 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
+        # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # Checkpoint strategy for agentic workloads
         EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
@@ -404,7 +409,8 @@ assign_profile() {
         KV_CACHE_TYPE_V="q8_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.9"
+        # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
+        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"
