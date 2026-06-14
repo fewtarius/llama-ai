@@ -172,6 +172,10 @@ SSD_HOT_RAM=""
 SSD_WARM_RAM=""
 PROMPT_MAX="8"
 SSD_CHECKPOINTS="64"
+# System prompt KV cache defaults (cross-conversation prompt sharing)
+# Override with --cache-ssd-system-prompts / --cache-ssd-system-max-days
+SSD_SYSTEM_PROMPTS="8"
+SSD_SYSTEM_MAX_DAYS="30"
 OVERRIDE_CHECKPOINT_EVERY=""
 OVERRIDE_CTX_CHECKPOINTS=""
 OVERRIDE_CACHE_RAM=""
@@ -339,6 +343,9 @@ assign_profile() {
         OVERRIDE_REASONING_BUDGET="2048"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
         SSD_PATH=""
+        # System prompt cache depends on KV serialization, also unavailable for SSM
+        SSD_SYSTEM_PROMPTS=""
+        SSD_SYSTEM_MAX_DAYS=""
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
         # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
@@ -492,32 +499,8 @@ list_models() {
 }
 
 list_backends() {
-    # Set up ROCm environment for GPU detection
-    export ROCM_PATH="$PROJECT_ROOT/deps"
-    export LD_LIBRARY_PATH="${PROJECT_ROOT:-.}/deps/lib:${LD_LIBRARY_PATH:-}"
-    export PATH="$ROCM_PATH/bin:$PATH"
-    echo -e "${BLUE}Available Backends:${NC}"
-    local binary="${LLAMA_BUILD:-}/bin/llama-cli"
-    if [[ -z "${LLAMA_BUILD:-}" ]]; then
-        # Fallback to vulkan build dir when called early
-        binary="$PROJECT_ROOT/src/llama-cpp-vulkan/build/bin/llama-cli"
-    fi
-    if [[ -x "$binary" ]]; then
-        if [[ -n "$LLAMA_GPU_NAME" ]]; then
-            echo -e "  ${GREEN}[*] ROCm/HIP${NC}   - $LLAMA_GPU_NAME ($LLAMA_GFX_ARCH)"
-        else
-            echo -e "  ${CYAN}[ ] ROCm/HIP${NC}   - installed (GPU not in detection map)"
-        fi
-    else
-        echo -e "  ${YELLOW}[ ] ROCm/HIP${NC}   - not built"
-    fi
-    if [[ -x "${LLAMA_BUILD:-$PROJECT_ROOT/src/llama-cpp-vulkan/build}/bin/llama-cli" ]]; then
-        echo -e "  ${GREEN}[*] Vulkan${NC}      - available"
-    else
-        echo -e "  ${YELLOW}[ ] Vulkan${NC}      - not built"
-    fi
-    echo -e "  ${GREEN}[*] CPU${NC}         - always available"
-    exit 0
+    # Single source of truth: list_backends_v2 covers rocm/vulkan/metal/cpu.
+    list_backends_v2
 }
 
 list_backends_v2() {
@@ -670,18 +653,20 @@ hf_find_gguf() {
     # Handle formats like "Q4_K_M", "UD-Q4_K_M", "IQ4_NL", etc.
     local quant_base="${quant_pattern#*-}"  # Remove prefix like "UD-"
     local quant_family="${quant_base%%_*}"  # Get base like "Q4"
-    
-    # Convert to lowercase for case-insensitive matching (HF uses lowercase filenames)
-    local quant_lc="${quant_pattern,,}"
-    local quant_base_lc="${quant_base,,}"
-    local quant_family_lc="${quant_family,,}"
-    
+
+    # Lowercase via tr for bash 3.2 compatibility (macOS default)
+    local quant_lc quant_base_lc quant_family_lc
+    quant_lc=$(printf '%s' "$quant_pattern" | tr 'A-Z' 'a-z')
+    quant_base_lc=$(printf '%s' "$quant_base" | tr 'A-Z' 'a-z')
+    quant_family_lc=$(printf '%s' "$quant_family" | tr 'A-Z' 'a-z')
+
     # Extract matching GGUF files
     local matches=()
     while IFS= read -r f; do
         [[ "$f" == *.gguf ]] || continue
-        # Convert filename to lowercase for comparison
-        local f_lc="${f,,}"
+        # Lowercase the filename for case-insensitive comparison
+        local f_lc
+        f_lc=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
         # Match: Q4_K_M style OR unsloth UD-Q4_K_M style OR IQ4_NL style
         # Order matters - most specific first
         if [[ "$f_lc" =~ [-_]${quant_lc}[-_.] ]] || \
@@ -788,14 +773,17 @@ download_model() {
     local selected_base=""
     local part_count=1
     local total_parts=1
-    local quant_lc="${quant,,}"
-    local quant_family_lc="${quant%%_*},,"
-    local quant_base_lc="${quant#*-,,}"
+    # Lowercase via tr for bash 3.2 compatibility (macOS default)
+    local quant_lc quant_family_lc quant_base_lc
+    quant_lc=$(printf '%s' "$quant" | tr 'A-Z' 'a-z')
+    quant_family_lc=$(printf '%s' "${quant%%_*}" | tr 'A-Z' 'a-z')
+    quant_base_lc=$(printf '%s' "${quant#*-}" | tr 'A-Z' 'a-z')
 
     # Priority: exact quant match > same quant family > largest available
     # Use case-insensitive matching since HF filenames are lowercase
     while IFS= read -r f; do
-        local f_lc="${f,,}"
+        local f_lc
+        f_lc=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
         if [[ "$f_lc" =~ [-_]${quant_lc}[-_.] ]] || [[ "$f_lc" =~ [-_]${quant_lc}$ ]] || [[ "$f_lc" == *"${quant_lc}"*.gguf ]]; then
             selected="$f"
             break
@@ -805,7 +793,8 @@ download_model() {
     # Fallback: same quant family (e.g., Q4_K_M -> Q4_K_S)
     if [[ -z "$selected" ]]; then
         while IFS= read -r f; do
-            local f_lc="${f,,}"
+            local f_lc
+            f_lc=$(printf '%s' "$f" | tr 'A-Z' 'a-z')
             if [[ "$f_lc" =~ [-_]${quant_family_lc}[-_] ]]; then
                 selected="$f"
                 break
@@ -839,9 +828,9 @@ download_model() {
     if [[ -n "$selected_base" ]]; then
         while IFS= read -r f; do
             [[ " ${all_files[*]} " == *" $f "* ]] && continue
-            # Use extended regex to handle the non-greedy base matching properly
-            # Escape special chars in base for regex use
-            local escaped_base="${selected_base//\//\\/}"
+            # Bash 3.2 safe: escape slashes via tr instead of ${var//pat/repl}
+            local escaped_base
+            escaped_base=$(printf '%s' "$selected_base" | tr '/' '\\/')
             if [[ "$f" =~ ^${escaped_base}-[0-9]+-of-[0-9]+\.gguf$ ]]; then
                 all_files+=("$f")
             fi
@@ -1131,6 +1120,23 @@ fi
 # All models use dynamic profiling based on file characteristics
 assign_profile "$MODEL"
 
+# CLI overrides take precedence over profile-set values. We re-parse
+# EXTRA_SERVER_ARGS to drop matching tokens, then append the override.
+# The sed patterns are anchored to a leading space so we only match whole
+# tokens (avoids --cache-ram eating --cache-ram-mlock or similar).
+# Use a space between pattern and number so we match "--cache-ram 6144"
+# (the value is a separate token, not glued onto the flag name).
+# This runs before PRINT_PROFILE so the printed profile reflects overrides.
+strip_and_append() {
+    local pattern="$1" replacement="$2" var_name="EXTRA_SERVER_ARGS"
+    local stripped
+    stripped=$(echo "${!var_name}" | sed -E "s/ ${pattern} [0-9]+//g")
+    eval "$var_name=\"\$stripped \$replacement\""
+}
+[[ -n "$OVERRIDE_CHECKPOINT_EVERY"  ]] && strip_and_append --checkpoint-every-n-tokens "--checkpoint-every-n-tokens $OVERRIDE_CHECKPOINT_EVERY"
+[[ -n "$OVERRIDE_CTX_CHECKPOINTS"    ]] && strip_and_append --ctx-checkpoints            "--ctx-checkpoints $OVERRIDE_CTX_CHECKPOINTS"
+[[ -n "$OVERRIDE_CACHE_RAM"          ]] && strip_and_append --cache-ram                  "--cache-ram $OVERRIDE_CACHE_RAM"
+
 # =============================================================================
 
 if [[ "$PRINT_PROFILE" == true ]]; then
@@ -1159,6 +1165,8 @@ SSD_MAX_COLD=$SSD_MAX_COLD
 SSD_PAGE_SIZE=$SSD_PAGE_SIZE
 SSD_HOT_RAM=$SSD_HOT_RAM
 SSD_WARM_RAM=$SSD_WARM_RAM
+SSD_SYSTEM_PROMPTS='$SSD_SYSTEM_PROMPTS'
+SSD_SYSTEM_MAX_DAYS='$SSD_SYSTEM_MAX_DAYS'
 OVERRIDE_FIT='$OVERRIDE_FIT'
 PROFILE_EOF
     exit 0
@@ -1214,11 +1222,10 @@ echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 # Fit mode: auto-calculate GPU layers to fit available VRAM
 # =============================================================================
 
+# Only pass --fit when the user asked for it; don't inject --fit off by default
 if [[ "$OVERRIDE_FIT" == "on" ]]; then
     GPU_LAYERS=-1
     EXTRA_SERVER_ARGS+=" --fit on"
-else
-    EXTRA_SERVER_ARGS+=" --fit off"
 fi
 
 # Build args
@@ -1265,20 +1272,9 @@ SERVER_ARGS="$SERVER_ARGS --slot-save-path $KV_CACHE_DIR"
 # Higher similarity threshold for confident cache matches, unified KV
 SERVER_ARGS="$SERVER_ARGS --slot-prompt-similarity 0.20 --kv-unified"
 
-# Apply command-line overrides (strip from EXTRA_SERVER_ARGS and append fresh)
-if [[ -n "$OVERRIDE_CHECKPOINT_EVERY" ]]; then
-    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--checkpoint-every-n-tokens [0-9]+//g')
-    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --checkpoint-every-n-tokens $OVERRIDE_CHECKPOINT_EVERY"
-fi
-if [[ -n "$OVERRIDE_CTX_CHECKPOINTS" ]]; then
-    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--ctx-checkpoints [0-9]+//g')
-    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --ctx-checkpoints $OVERRIDE_CTX_CHECKPOINTS"
-fi
-if [[ -n "$OVERRIDE_CACHE_RAM" ]]; then
-    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed -E 's/--cache-ram [0-9]+//g')
-    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --cache-ram $OVERRIDE_CACHE_RAM"
-fi
-
+# Append the profile-set + override-merged EXTRA_SERVER_ARGS.
+# CLI overrides are applied earlier (before --print-profile) so the printed
+# profile reflects them.
 [[ -n "$EXTRA_SERVER_ARGS" ]] && SERVER_ARGS="$SERVER_ARGS $EXTRA_SERVER_ARGS"
 
 # Preserve reasoning/thinking in prior assistant messages
@@ -1329,6 +1325,11 @@ kill_existing_server() {
 # =============================================================================
 
 # Build environment inline for direct execution (no sudo)
+# Note: we use eval here because we need to set env vars (ROCM_PATH, LD_LIBRARY_PATH,
+# etc.) in the same command line as launching the binary. A simple `env` prefix would
+# re-define the env, but the values are computed by setup_*_env functions and need
+# to be quoted to survive paths with spaces. eval is the simplest way to splice them
+# in front of the binary invocation without breaking word splitting on $COMMON_ARGS.
 EXEC_ENV=""
 if [[ "$BACKEND" == "rocm" ]]; then
     EXEC_ENV="ROCM_PATH='$ROCM_PATH' HIP_PATH='$HIP_PATH' HIP_VISIBLE_DEVICES=0 HSA_OVERRIDE_GFX_VERSION='$HSA_OVERRIDE_GFX_VERSION' LD_LIBRARY_PATH='$LD_LIBRARY_PATH'"
