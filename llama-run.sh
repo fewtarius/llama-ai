@@ -1056,6 +1056,8 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-page-size) SSD_PAGE_SIZE="$2"; shift 2 ;;
         --cache-ssd-hot-ram) SSD_HOT_RAM="$2"; shift 2 ;;
         --cache-ssd-warm-ram) SSD_WARM_RAM="$2"; shift 2 ;;
+        --cache-ssd-system-prompts) SSD_SYSTEM_PROMPTS="$2"; shift 2 ;;
+        --cache-ssd-system-max-days) SSD_SYSTEM_MAX_DAYS="$2"; shift 2 ;;
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
         --checkpoint-every-n-tokens)
             OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
@@ -1298,6 +1300,8 @@ if [[ -n "$SSD_PATH" ]]; then
     [[ -n "$SSD_PAGE_SIZE" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-page-size $SSD_PAGE_SIZE"
     [[ -n "$SSD_HOT_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-hot-ram $SSD_HOT_RAM"
     [[ -n "$SSD_WARM_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-warm-ram $SSD_WARM_RAM"
+    [[ -n "${SSD_SYSTEM_PROMPTS:-}" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-system-prompts $SSD_SYSTEM_PROMPTS"
+    [[ -n "${SSD_SYSTEM_MAX_DAYS:-}" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-system-max-days $SSD_SYSTEM_MAX_DAYS"
     [[ -n "$PROMPT_MAX" && "$PROMPT_MAX" != "0" ]] && SERVER_ARGS="$SERVER_ARGS --prompt-max $PROMPT_MAX"
 fi
 
