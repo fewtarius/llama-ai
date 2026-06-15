@@ -390,10 +390,10 @@ assign_profile() {
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
         [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
+        KV_CACHE_TYPE_K="q4_0"
+        KV_CACHE_TYPE_V="q4_0"
         OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
