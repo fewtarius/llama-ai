@@ -38,14 +38,6 @@ On top of CachyLLama, llama-ai adds:
 - Auto-profile model selection and a runner that strips reasoning
   blocks to keep prompt tokens small
 
-The goal: usable agentic AI on AMD APU hardware with no network and
-no per-token cost. The Strix Halo's 96GB APU carveout runs 35B-class
-MoE models at 192K-token context with full fp16 KV cache and a 16GB
-in-RAM cache layer; the Ayaneo Flip KB's 780M iGPU handles the same
-workloads at 64K context with q8_0 KV and 6GB cache-ram. Cached state
-survives reboots and power outages (JELOS-based handhelds have
-batteries) so an interrupted session picks up where it left off.
-
 ## Why
 
 The goal is reasonably-performing agentic AI development on AMD APU
@@ -90,8 +82,10 @@ total). Also runs well on the [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO
   - [Output](#output)
 - [Real-world CLIO performance](#real-world-clio-performance)
   - [Workload profile](#workload-profile)
-  - [Agentic workflow walkthrough](#agentic-workflow-walkthrough)
-  - [Cold vs warm start](#cold-vs-warm-start)
+  - [Test scenario](#test-scenario)
+  - [Results - cold start](#results-cold-start-no-cache)
+  - [Results - warm restart](#results-warm-restart-cache-populated)
+  - [Takeaways](#takeaways)
 - [What CachyLLama adds](#what-cachyllama-adds)
 - [Structure](#structure)
 - [License](#license)
@@ -334,7 +328,7 @@ Cross-user lookup is disabled for user-scoped requests. A user can only access t
 {
   "error": {
     "code": 429,
-    "message": "User 'tenant-42-user-7' has reached the concurrent request limit (2)",
+    "message": "per-user concurrency cap reached for user_id=tenant-42-user-7",
     "type": "rate_limit_error"
   }
 }
@@ -648,69 +642,44 @@ benchmarks/YYYYMMDD-HHMM/
 
 ## Real-world CLIO performance
 
-This cache was built for [CLIO](https://github.com/SyntheticAutonomicMind/CLIO), an AI coding assistant that sends 18-30K tokens of system prompt, tool definitions, and prior conversation context on every API call. Without caching, every turn would re-evaluate all 18K+ tokens from scratch.
+[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) sends 18-30K tokens of system prompt, tool definitions, and prior conversation context on every API call. Without caching, every turn would re-evaluate the whole prompt from scratch. The numbers below come from one real session to show what the cache actually buys in practice.
 
 ### Workload profile
 
-A CLIO session consists of alternating tool call turns (the LLM decides what tool to run) and response turns (the LLM generates a user-visible message). Tool call turns are short - the model outputs a tool call JSON (~30-150 tokens). Response turns are longer - the model generates commands, code, and explanations.
+A CLIO session alternates between tool call turns (the LLM picks a tool and emits a JSON call) and response turns (the LLM writes a user-visible message). Tool call generations are short (~30-150 tokens). Response generations are longer - commands, code, explanations.
 
-Every turn includes the same static prefix: system prompt, tool definitions, the initial user message, and all prior conversation messages. As the conversation grows, new tool results get appended to the end. The static prefix that never changes across turns is ~18K tokens (system prompt + tool definitions + initial user message + assistant turn 0 + tool results 0). The dynamic tail grows from ~0 to ~12K tokens as new tool results accumulate.
+The prompt for every turn is split into two regions:
 
-### Agentic workflow walkthrough
+- **Static prefix** (~18K tokens, identical across turns): system prompt, tool definitions, the initial user message, the turn-0 assistant message, and the turn-0 tool results.
+- **Dynamic tail** (grows ~0 to ~12K tokens): tool results and assistant responses from subsequent turns.
 
-A single prompt - "Please evaluate this project and share your opinion of it."
-- sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL,
-Vulkan). Cold server start (no cache populated), six turns, 11 minutes
-55 seconds on the Ayaneo Flip KB baseline. Strix Halo timing pending
-benchmark runs at 192K context.
 
-The model explores the project autonomously: it lists the project root, reads source files, runs `git log` and `wc -l`, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-26K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation on each turn.
+Without caching, every turn re-evaluates both regions. The static prefix is the obvious target - it's identical across turns and dominates prompt size. The dynamic tail stabilizes once the conversation does, so most of it can be cached too once it's been seen once.
 
-#### Turn-by-turn (cold start, no cache)
+### Test scenario
 
-Tools per turn: `file_operations`, `version_control`, `terminal_operations`. T5 has no tool calls - it writes the final evaluation message directly.
+CLIO running Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan) on an Ayaneo Flip KB. Single user prompt: *"Please evaluate this project and share your opinion of it."* The model runs the project autonomously for five tool-calling turns, then writes a final evaluation. Cold server start with no cache populated.
 
-| Turn | Model action | Tokens | TTFT | Gen t/s |
-|------|-------------|--------|------|---------|
-| T0 | List project root, `git log`, read `llama-run.sh` and `README.md`, `wc -l` | 18,762 | 183.4s | 16.1 |
-| T1 | Continue reading `llama-run.sh` (tool result reads) | 7,001 | 84.6s | 15.1 |
-| T2 | More tool result reads, deep into the runner script | 7,613 | 91.7s | 15.0 |
-| T3 | Continue tool result reads, terminal commands | 7,115 | 86.6s | 15.2 |
-| T4 | Final follow-up reads | 5,784 | 69.2s | 15.1 |
-| T5 | Write project evaluation (no tool calls) | 649 | 10.1s | 15.2 |
+### Results: cold start (no cache)
 
-TTFT = time to first token (server-side prompt evaluation time per turn). Gen t/s = generation tokens per second (gen time = turn duration minus prompt eval). Cold eval rate at T0: 102 t/s. Cached eval rate for T1+ (in-memory prompt cache + SSD checkpoint restore): 82-83 t/s.
+Tools per turn: `file_operations`, `version_control`, `terminal_operations`. T5 has no tool calls - it writes the final evaluation directly.
 
-**Total: 11 minutes 55 seconds actual vs ~42 minutes estimated without any cache.**
+| Turn | Prompt tokens | TTFT | Gen t/s | Notes |
+|------|---------------|------|---------|-------|
+| T0 | 18,762 | 183.4s | 16.1 | Full system prompt + tools + initial user message. 102 t/s prompt eval rate. |
+| T1 | 7,001 | 84.6s | 15.1 | Tool result reads. Static prefix restored from in-memory checkpoint. |
+| T2 | 7,613 | 91.7s | 15.0 | Tool result reads, deeper into the runner script. |
+| T3 | 7,115 | 86.6s | 15.2 | Tool result reads, terminal commands. |
+| T4 | 5,784 | 69.2s | 15.1 | Final follow-up reads. Model preparing to write. |
+| T5 | 649 | 10.1s | 15.2 | Writes the project evaluation. |
 
-#### What the model explored
+TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = generation speed (gen time = turn duration minus prompt eval). Prompt eval rate after T0: 82-83 t/s - the in-memory checkpoint restores the ~18K-token static prefix on each subsequent turn, so only the dynamic tail needs fresh evaluation.
 
-Over five tool-calling turns the model read `llama-run.sh` (multiple chunks via tool result reads) and `README.md` once, listed the project root, ran `git log` twice, and ran `wc -l` on the shell scripts. The exploration was broad - the model sampled multiple files but didn't read any file in full. T0 alone used 3 distinct tools across 4+ tool calls; subsequent turns were follow-up reads on already-fetched content.
+**Total: 11 minutes 55 seconds with cache, vs ~42 minutes estimated without any cache.** Without caching, every turn would process all 18-26K tokens at the T0 eval rate of 102 t/s - 3 to 5 minutes of prompt eval per turn on top of generation. The 6:35 of total prompt eval time was concentrated in those per-turn TTFTs; the remaining 5:20 was generation and tool execution.
 
-The model's final evaluation covered five areas: the auto-profiling system (3 model profiles matched against file characteristics with no hardcoded model names), the SSD-backed KV cache (hot/warm/cold tiering, conv hash, per-conversation directories), the per-user concurrency cap and user-scoped checkpoint routing, the AGENTS.md + benchmark data, and the model's own observation that this is "well-executed, focused" engineering for a specific workload rather than a general-purpose tool.
+### Results: warm restart (cache populated)
 
-#### How the cache performed (cold start)
-
-The ~18K-token static prefix - system prompt, tool definitions, the initial user message, and the turn-0 assistant/tool result exchange - is cached after T0. Every turn reuses these tokens from an in-memory checkpoint. The LCP between consecutive turns is consistently 17,000-18,000 tokens depending on how much of the prior conversation the next turn's input shares.
-
-Cache hit rates for T1+ (the in-memory checkpoint layer):
-
-- **T1 (7,001 tok):** New tool result content dominates the prompt. In-memory checkpoint restores ~17,500 tokens of the system + tool + assistant history.
-- **T2-T3 (~7,000 tok each):** Similar shape - the conversation tail is growing but most of the prior context is restored from cache.
-- **T4 (5,784 tok):** The model finishes its reads and is preparing to write. Less divergent from prior context.
-- **T5 (649 tok):** The model writes the final evaluation. The new content is the prompt to "write the eval" plus the evaluation text itself (4,206 characters). Almost all of the 26K-token conversation context is in the cache.
-
-The total wall time of 11:55 includes 6:35 of prompt evaluation (57% of wall time) and 5:20 of generation + tool execution. Cloud-hosted models evaluate prompts in seconds on GPU clusters; the local model with cold cache takes 3 minutes for T0 and 1-1.5 minutes for T1+. Local inference is private, offline-capable, and has no per-token cost.
-
-#### What the numbers mean
-
-Without caching, every turn would process all 18-26K tokens from scratch at 102 t/s - 3 to 5 minutes per turn. The SSD cache eliminates evaluation of the static prefix entirely and captures much of the dynamic conversation as it stabilizes. Real agentic workloads benefit from this daily: this 6-turn evaluation drops from ~42 minutes (estimated cold) to 11:55 (cached). With the [system prompt cache](#system-prompt-cache), that drops to 5:44 (warm restart) - see the [Cold vs warm start](#cold-vs-warm-start) section for the comparison.
-
-The tradeoff: cloud-hosted models evaluate prompts in seconds on GPU clusters. The local model with SSD cache achieves per-turn latency of 10-183 seconds. Local inference is private, offline-capable, and has no per-token cost.
-
-### Cold vs warm start
-
-The same workload run twice on the same machine: once after a fresh server start (cold) and once after a server restart with the SSD cache and system prompt cache populated (warm). The warm run does NOT restart the OS or clear the cache directory between runs.
+Same workload, same machine. The warm run does NOT restart the OS or clear the cache directory - just the server, with the SSD cache and system prompt cache already on disk from the cold run.
 
 | Turn | Cold TTFT | Cold prompt tok | Warm TTFT | Warm prompt tok | Speedup |
 |------|-----------|-----------------|-----------|-----------------|---------|
@@ -722,15 +691,24 @@ The same workload run twice on the same machine: once after a fresh server start
 | T5 | 10.1s | 649 | 43.0s | 3,044 | 0.2x |
 | **Total** | **11:55 (715s)** | | **5:44 (344s)** | | **2.1x** |
 
-The T0 row is where the system prompt cache fix shows up: warm T0 processes only 101 tokens because the 18,661-token system prompt is restored from the global cache, while cold T0 has to re-evaluate the entire 18,762-token prompt from scratch. The 54x T0 speedup translates to 180 seconds saved on the very first request of every server restart.
+#### Where the speedup comes from
 
-The T1+ rows show SSD cache reuse: the in-memory and SSD checkpoint layers restore 80-90% of the conversation context, leaving only the new tool result and assistant response to evaluate. Speedup drops from 4.3x on T1 to ~1x on T4+ as the conversations diverge - the SSD cache hit rate falls when the model explores new branches.
+**T0 (54x)** - the [system prompt cache](#system-prompt-cache) shines here. Cold T0 evaluates the full 18,762-token prompt from scratch. Warm T0 evaluates only 101 tokens because the 18,661-token system prompt is restored from the global cross-conversation cache. 180 seconds saved on the very first request of every server restart.
 
-T5 is the inverse: the warm run generated 3,044 tokens of fresh content (a longer final response) while the cold run only added 649 (a short one). Generation time dominates, making the warm run slower for that turn. The same shape would appear in any conversation that branches late.
+**T1-T3 (3.7-4.3x)** - the [SSD checkpoint layers](#search-strategy) restore 80-90% of the conversation context. The remaining 1,500-2,000 tokens to evaluate is just the new tool result plus the assistant's tool-call response. Speedup degrades from 4.3x to 3.7x as the conversation tail grows because each turn's divergent content is slightly larger than the last.
 
-Total wall time: cold 11:55, warm 5:44. The 2.1x speedup is conservative - on longer sessions or with more repeated tool calls, the SSD cache hit rate stays high and the speedup grows toward 5-10x.
+**T4 (1.1x)** - the conversation has nearly stabilized. The new tool result is similar in size to the prior turn's, so the checkpoint covers most of it. Caching and no-caching converge as the per-turn delta stops shrinking.
 
-Source logs (project root, not committed): `cold-start-server.log`, `clio-cold-start.log`, `clio-cold-start-debug.log`, `warm-start-server.log`, `clio-warm-start.log`, `clio-warm-start-debug.log`.
+**T5 (0.2x)** - inversion. Warm T5 is *slower* than cold T5. The warm run generated 3,044 tokens of fresh content (a longer final evaluation), the cold run only 649 (a short one). Generation time dominates this turn, and the warm model wrote more. This shape shows up in any conversation where the final response branches late.
+
+### Takeaways
+
+- **The T0 speedup is the highest-value win.** 54x on the first request of every server restart, with no warmup needed. The system prompt cache turns "cold" server starts from a multi-minute wait into a sub-5-second response.
+- **Per-turn speedup decays as conversations diverge.** Repeated reads of the same files cache well; a fresh exploration branch does not. SSD cache hit rate stays high on focused work and drops on divergent exploration.
+- **Generation time is the floor.** Once prompt eval drops below generation time, more cache hits don't help - the model still has to write the response. The 0.2x on T5 is a feature, not a bug: it means caching isn't lying about its wins.
+- **Local inference trades latency for privacy and cost.** Cloud-hosted models evaluate prompts in seconds on GPU clusters; the local model with SSD cache runs 10-183 seconds per turn. The tradeoff is no API keys, no per-token cost, no network dependency - usable offline.
+
+The 2.1x total speedup is conservative. Longer sessions with more repeated tool calls (the common case in real agentic work) keep the SSD cache hit rate high and push the overall speedup toward 5-10x.
 
 ## What CachyLLama adds
 
@@ -751,7 +729,7 @@ CLI flags: `--cache-ssd`, `--cache-ssd-checkpoints`, `--cache-ssd-hot-window`, `
 
 ### System prompt cache
 
-Global cross-conversation cache for the system section of any prompt. First eval writes the state, subsequent requests skip the system prompt re-eval entirely. Works for both standard transformer and hybrid MoE/SSM models - the per-position recurrent state in the state file means a state saved after the full prompt can be restored with `n_past` capped to the system prompt boundary. Default: 8 entries per model, 30 days unused before expiry.
+Global cross-conversation cache for the system section of any prompt. First eval writes the state, subsequent requests skip the system prompt re-eval entirely. Default: 8 entries per model, 30 days unused before expiry. See the [System prompt cache](#system-prompt-cache) section for the full design including the per-position recurrent state handling for hybrid MoE/SSM models.
 
 ### Hybrid MoE support (Qwen3.5/3.6, GLM-4.7, Gemma 4)
 
@@ -762,7 +740,12 @@ Hybrid architectures mix attention and recurrent (Mamba) layers, which need diff
 - **Checkpoint overflow prevention**: Same-conversation checkpoints accepted regardless of size (recurrent state is content-accurate), cross-conversation oversized checkpoints skipped at search
 - **seq_rm_attn_only**: New API that clears attention KV entries without disturbing recurrent state
 - **QWEN35MOE architecture filter**: Correctly identifies attention vs. recurrent layers
-- **Checkpoint search condition**: `n_tokens <= n_past` prevents restoring recurrent state from stale (diverged) conversation content
+- **Checkpoint search condition**: Checkpoints are accepted only when
+  `n_tokens >= n_past` (covers the prompt prefix) and `n_tokens <
+  task_n_tokens` (fits within the current task). The first guard rejects
+  divergent checkpoints whose stored state is shorter than the shared
+  prefix; the second rejects checkpoints larger than the new task, which
+  would leave no tokens to decode.
 
 ### User isolation
 
