@@ -1,0 +1,74 @@
+0.00.034.230 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.034.316 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.034.318 I device_info:
+0.00.034.362 I   - Vulkan0 : AMD Radeon Graphics (RADV GFX1151) (114157 MiB, 113599 MiB free)
+0.00.034.367 I   - CPU     : AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (31707 MiB, 31707 MiB free)
+0.00.034.408 I system_info: n_threads = 32 (n_threads_batch = 32) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.034.428 I srv          init: running without SSL
+0.00.034.465 I srv          init: using 31 threads for HTTP server
+0.00.034.653 I srv         start: binding port with default address family
+0.00.035.776 I srv  llama_server: loading model
+0.00.035.783 I srv    load_model: loading model '/home/deck/llama-ai/models/gemma-4-26B-A4B-it-UD-Q5_K_M.gguf'
+0.00.035.822 I common_init_result: fitting params to device memory ...
+0.00.035.824 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.703.762 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.703.988 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.706.891 W load: control-looking token:      1 '<eos>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.714.941 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+0.02.726.586 W llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.02.751.431 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.02.799.611 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.02.799.618 I srv    load_model: initializing slots, n_slots = 1
+0.02.839.440 I srv    load_model: SSD-backed KV cache initialized at '/home/deck/llama-ai/ssd-cache' (hot=4096, warm=32768, page=1024 tokens)
+0.02.839.449 I SSD cache: model compat_hash 4db765d3d74af491 (arch dims + type_k=8 type_v=8)
+0.02.839.707 I system cache: initialized at /home/deck/llama-ai/ssd-cache/gemma-4-26B-A4B-it-UD-Q5_K_M (entries=1, bytes=0.9 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.02.839.710 I srv    load_model: global system prompt cache: dir='/home/deck/llama-ai/ssd-cache/gemma-4-26B-A4B-it-UD-Q5_K_M', max=8, days=30, current=1
+0.02.839.715 W common_speculative_init: no implementations specified for speculative decoding
+0.02.839.715 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 131072
+0.02.839.756 I srv    load_model: prompt cache is enabled, size limit: 16384 MiB
+0.02.839.757 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.02.839.757 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.02.839.758 I srv    load_model: context checkpoints enabled, max = 8, min spacing = 256
+0.02.839.784 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+0.02.843.969 I init: chat template, example_format: '<|turn>system
+<|think|>
+You are a helpful assistant<turn|>
+<|turn>user
+Hello<turn|>
+<|turn>model
+Hi there<turn|>
+<|turn>user
+How are you?<turn|>
+<|turn>model
+'
+0.02.844.343 I srv          init: init: chat template, thinking = 1
+0.02.844.378 I srv  llama_server: model loaded
+0.02.844.383 I srv  llama_server: server is listening on http://0.0.0.0:9090
+0.02.844.389 I srv  update_slots: all slots are idle
+0.05.046.451 I srv  params_from_: Chat format: peg-gemma4
+0.05.046.686 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.05.046.689 I srv  get_availabl: updating prompt cache
+0.05.046.706 I srv          load:  - looking for better prompt, base f_keep = -1.000, sim = 0.000
+0.05.046.712 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 16384.000 MiB, 131072 tokens, 17179869184 est)
+0.05.046.714 I srv  get_availabl: prompt cache update took 0.02 ms
+0.05.046.790 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.05.048.884 I SSD cache: auto-sized hot=512 MiB warm=256 MiB (avail=561 MiB)
+0.05.048.886 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+0.05.048.910 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/613c1ef8fd10995e (next_id=3)
+0.05.048.913 I SSD cache: model compat_hash set to 4db765d3d74af491
+0.05.048.916 I SSD cache: created new conversation cache conv=613c1ef8fd10995e (total=1)
+0.05.048.921 I SSD cache: match checkpoint 2 conv=613c1ef8fd10995e turn=0 n_tokens=6079 lcp=4096
+0.05.085.892 I SSD cache: promoted checkpoint 2 cold->hot (169 MiB)
+0.05.139.314 W slot update_slots: id  0 | task 0 | cold-start restored SSD checkpoint (n_tokens=6079)
+0.05.139.883 I slot update_slots: id  0 | task 0 | prompt processing done, n_tokens = 6083, batch.n_tokens = 4
+0.05.164.374 W slot update_slots: id  0 | task 0 | created final context checkpoint 1 of 8 (pos_min = 5055, pos_max = 6078, n_tokens = 6079, size = 106.262 MiB)
+0.05.321.771 I SSD cache: stored checkpoint 3 slot=0 tokens=6079 size=169 MiB (hot=338 MiB warm=0 MiB total=3)
+0.07.804.720 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  41.05 t/s
+0.08.488.167 I slot print_timing: id  0 | task 0 | prompt eval time =     321.88 ms /     4 tokens (   80.47 ms per token,    12.43 tokens per second)
+0.08.488.171 I slot print_timing: id  0 | task 0 |        eval time =    3119.47 ms /   128 tokens (   24.37 ms per token,    41.03 tokens per second)
+0.08.488.172 I slot print_timing: id  0 | task 0 |       total time =    3441.35 ms /   132 tokens
+0.08.488.175 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+0.08.488.486 I slot      release: id  0 | task 0 | stop processing: n_tokens = 6210, truncated = 1
+0.08.488.498 I SSD cache: turn 1 complete (hot=338 MiB warm=0 MiB cold=1 checkpoints=3)
+0.08.488.502 I srv  update_slots: all slots are idle
+0.08.549.241 I srv    operator(): operator(): cleaning up before exit...

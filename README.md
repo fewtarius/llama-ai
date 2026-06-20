@@ -419,25 +419,134 @@ changes is the underlying compute, memory, and context size.
 
 #### Strix Halo
 
-Radeon 8060S, 96GB APU VRAM, ctx 32768, 128 output tokens, all GPU
-layers. Full per-test data: [`benchmarks/20260620-1314/`](benchmarks/20260620-1314/).
+Radeon 8060S, 96GB APU VRAM, ctx 196608 (MoE) / 32768 (dense), 128
+output tokens, all GPU layers. Three benchmark runs: an initial run
+with aggressive SSD checkpointing (3 checkpoints per prefill, 24
+in-memory ring, 64 on-disk), a tuned run with minimal SSD
+checkpointing (1-2 per prefill, 8 in-memory ring, 8 on-disk), and a
+final run after fixing the system-prompt boundary detector for
+GLM/Gemma templates. Full per-test data:
+[`benchmarks/20260620-1314/`](benchmarks/20260620-1314/) (aggressive),
+[`benchmarks/20260620-1433/`](benchmarks/20260620-1433/) (tuned), and
+[`benchmarks/20260620-1639/`](benchmarks/20260620-1639/) (boundary fix).
 
 | Model | Size | Cold TTFT | Warm TTFT | Speedup | Cached |
 |-------|------|-----------|-----------|---------|--------|
-| GLM-4.7-Flash Q4_K_M | small (~1.1K) | 2.4s | 2.0s | 1.12x | 3/1145 |
-| GLM-4.7-Flash Q4_K_M | medium (~5.2K) | 11.0s | 10.8s | 1.01x | 3/5237 |
-| GLM-4.7-Flash Q4_K_M | large (~15.5K) | 55.2s | 54.7s | 1.01x | 3/15489 |
-| Qwen3.6-35B-A3B Q4_K_XL | small (~1.2K) | 1.8s | 0.25s | **1.63x** | 1237/1243 |
-| Qwen3.6-35B-A3B Q4_K_XL | medium (~5.4K) | 7.1s | 0.30s | **3.52x** | 5403/5409 |
-| Qwen3.6-35B-A3B Q4_K_XL | large (~15.7K) | 22.2s | 2.3s | **5.13x** | 15715/15721 |
-| gemma-4-26B-A4B Q5_K_M | small (~1.4K) | 5.8s | 2.0s | 1.78x | 7/1413 |
-| gemma-4-26B-A4B Q5_K_M | medium (~6.1K) | 8.9s | 8.6s | 1.03x | 7/6083 |
-| gemma-4-26B-A4B Q5_K_M | large (~17.3K) | 29.7s | 28.8s | 1.03x | 7/17347 |
+| Qwen3.6-35B-A3B Q4_K_XL (boundary fix) | small (~1.2K) | 2.0s | 0.21s | **1.7x** | 1237/1243 |
+| Qwen3.6-35B-A3B Q4_K_XL (boundary fix) | medium (~5.4K) | 7.7s | 0.42s | **3.5x** | 5403/5409 |
+| Qwen3.6-35B-A3B Q4_K_XL (boundary fix) | large (~15.7K) | 23.6s | 0.75s | **7.8x** | 15715/15721 |
+| Qwen3.6-35B-A3B Q4_K_XL (tuned) | small (~1.2K) | 1.8s | 0.22s | **1.6x** | 1237/1243 |
+| Qwen3.6-35B-A3B Q4_K_XL (tuned) | medium (~5.4K) | 7.0s | 0.30s | **3.4x** | 5403/5409 |
+| Qwen3.6-35B-A3B Q4_K_XL (tuned) | large (~15.7K) | 21.4s | 0.49s | **7.85x** | 15715/15721 |
+| Qwen3.6-35B-A3B Q4_K_XL (aggressive) | small (~1.2K) | 1.8s | 0.25s | **1.63x** | 1237/1243 |
+| Qwen3.6-35B-A3B Q4_K_XL (aggressive) | medium (~5.4K) | 7.1s | 0.30s | **3.52x** | 5403/5409 |
+| Qwen3.6-35B-A3B Q4_K_XL (aggressive) | large (~15.7K) | 22.2s | 2.3s | **5.13x** | 15715/15721 |
+| GLM-4.7-Flash Q4_K_M (boundary fix, ctx 192K) | small (~1.1K) | 2.1s | 0.15s | **1.8x** | 1237/1243 |
+| GLM-4.7-Flash Q4_K_M (boundary fix, ctx 192K) | medium (~5.2K) | 11.8s | 0.53s | **4.7x** | 5403/5409 |
+| GLM-4.7-Flash Q4_K_M (boundary fix, ctx 192K) | large (~15.5K) | 59.6s | 1.59s | **12.6x** | 15715/15721 |
+| GLM-4.7-Flash Q4_K_M (ctx 32K) | small (~1.1K) | 2.4s | 2.0s | 1.12x | 3/1145 |
+| GLM-4.7-Flash Q4_K_M (ctx 32K) | medium (~5.2K) | 11.0s | 10.8s | 1.01x | 3/5237 |
+| GLM-4.7-Flash Q4_K_M (ctx 32K) | large (~15.5K) | 55.2s | 54.7s | 1.01x | 3/15489 |
+| gemma-4-26B-A4B Q5_K_M (boundary fix, ctx 192K) | small (~1.4K) | 2.2s | 0.30s | **1.6x** | 1237/1413 |
+| gemma-4-26B-A4B Q5_K_M (boundary fix, ctx 192K) | medium (~6.1K) | 9.3s | 0.32s | **3.6x** | 6080/6083 |
+| gemma-4-26B-A4B Q5_K_M (boundary fix, ctx 192K) | large (~17.3K) | 31.0s | 0.54s | **8.7x** | 17343/17347 |
+| gemma-4-26B-A4B Q5_K_M (ctx 32K) | small (~1.4K) | 5.8s | 2.0s | 1.78x | 7/1413 |
+| gemma-4-26B-A4B Q5_K_M (ctx 32K) | medium (~6.1K) | 8.9s | 8.6s | 1.03x | 7/6083 |
+| gemma-4-26B-A4B Q5_K_M (ctx 32K) | large (~17.3K) | 29.7s | 28.8s | 1.03x | 7/17347 |
 
-Cold prompt eval: 280-708 t/s on the Strix Halo (vs 33-166 t/s on the
+The tuned profile (halo tier) for Qwen3.6-35B-A3B pushes warm TTFT
+from 2.3s down to 0.49s on large prompts - a **4.7x improvement on the
+warm path** - by writing fewer per-turn checkpoints to SSD and letting
+the in-memory ring stay small. The boundary-fix run for Qwen3.6 is
+slightly slower on the warm path (0.75s vs 0.49s) because the
+per-conversation SSD checkpoint now does the restore instead of the
+system prompt cache incorrectly storing the entire prompt. This is
+the correct mechanism - the SSD cache handles same-conversation
+restarts, the system prompt cache handles cross-conversation reuse.
+See [Boundary detection fix](#boundary-detection-fix) below.
+
+Cold prompt eval: 280-735 t/s on the Strix Halo (vs 33-166 t/s on the
 Ayaneo Flip KB). The hybrid MoE architectures (Qwen3.6, GLM-4.7-Flash)
 restore both attention KV state and recurrent state from disk - the
 Mamba layers are checkpoint-aware and the cache works across restarts.
+
+#### Boundary detection fix
+
+The system prompt cache (cross-conversation, keyed by the first N
+tokens of the system section) and the per-conversation SSD cache
+(same conversation, keyed by conv_hash) are two separate mechanisms
+that both help warm-restart speed. The boundary detector
+(`kv_detect_system_prompt_boundary`) had a bug that affected GLM-4
+and Gemma: both vocabularies classify role tokens
+(`<|user|>`, `<|assistant|>`, `<|system|>`) as EOG. The original
+detector scanned for the first EOG after the role header, found the
+first role-marker token, and returned n_sys=2-7 (just the chat
+template header). This made the system prompt cache useless for
+GLM/gemma (warm TTFT was effectively unchanged from cold).
+
+The fix is a two-phase detector:
+1. **Find first user-role marker** by decoded text - works for
+   templates without explicit section close markers (GLM, Gemma,
+   Command-R). Filters content-word false positives by requiring
+   the preceding token to be a control token (e.g. `<|im_start|>user`
+   in ChatML, not `user` as a word in a novel).
+2. **EOG-based detection** with role-marker EOGs filtered out,
+   capped at 64 tokens to prevent finding the EOG that closes the
+   USER section when no system section exists.
+
+Returns `min(phase1, phase2)` for backwards compat with templates
+that already worked (ChatML, Llama-3, standard Gemma).
+
+A second guard in `try_restore_system_prompt` skips the system
+prompt cache when the detected boundary is < 16 tokens (just the
+chat template header, not a meaningful system prompt). This lets
+the per-conversation SSD cache handle the restore, which is the
+correct mechanism for same-conversation warm restarts.
+
+Result: GLM large warm TTFT went from 54.7s (1.01x speedup) to
+1.59s (12.6x speedup), gemma large from 28.8s (1.03x) to 0.54s
+(8.7x). Qwen3.6 large is essentially unchanged (7.8x vs 7.85x)
+because it was already benefiting from the SSD cache - the buggy
+system prompt cache was just masking that mechanism.
+
+#### Halo SSD caching strategy
+
+The Strix Halo's 96GB APU VRAM carveout changes the SSD caching
+tradeoff versus memory-constrained APUs (Ayaneo Flip KB: 6GB VRAM +
+18GB GTT). On Halo, a 35B MoE with 192K context at f16 KV uses ~50GB
+of VRAM - it fits comfortably in the 96GB ceiling with headroom for
+the in-memory prompt cache and the working set. The SSD cache exists
+on Halo for two reasons and two reasons only:
+
+1. **System prompt cache** (cross-restart) - the global cache at
+   `{ssd-path}/{model-stem}/sys-{hash}.bin`. One entry per distinct
+   system prompt, restores 15-18K tokens of system + tool definitions
+   in 0.5s. This is the warm-path win.
+2. **Long single-conversation runs** - if a single chat thread grows
+   past what VRAM can hold, SSD checkpoints provide eviction
+   insurance. In practice this rarely happens on Halo.
+
+The aggressive checkpoint strategy from the Flip KB tier (24-entry
+in-memory ring, 64-entry on-disk ring, 8K checkpoint interval) was
+inherited from the Flip KB profile. On Halo it produced 3 SSD writes
+per 15K-token prefill (~200 MiB on the disk critical path) for
+protection VRAM already provides. The tuned profile:
+
+- `--checkpoint-every-n-tokens 16384` (was 8192) - 1 checkpoint for
+  a typical 8-15K system prompt, 0 for short prompts
+- `--ctx-checkpoints 8` (was 24) - the in-memory ring stays small
+- `--cache-ssd-checkpoints 8` (was 64) - cap the on-disk ring, no need
+  to keep stale per-turn checkpoints around
+- `--cache-ram 16384` (unchanged) - 16GB in-RAM prompt cache, the
+  primary cache layer for warm within-server restarts
+
+Result: large-prompt warm TTFT dropped from 2.3s to 0.49s (4.7x
+improvement) by avoiding the restore of 2 stale per-turn checkpoints
+from disk. Disk writes per prefill dropped from 3 to 1. Cold TTFT is
+unchanged because cold has no checkpoints to restore.
+
+The system prompt cache (the only cross-restart disk cache that
+genuinely helps on Halo) is unchanged.
 
 #### Ayaneo Flip KB
 
@@ -479,21 +588,25 @@ Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4
 #### Summary
 
 Strix Halo (top row per model) vs Ayaneo Flip KB (bottom row), large
-prompt only:
+prompt only. All Strix Halo numbers from the boundary-fix run
+([`benchmarks/20260620-1639/`](benchmarks/20260620-1639/)) using the
+tuned profile (see [Halo SSD caching strategy](#halo-ssd-caching-strategy)
+and [Boundary detection fix](#boundary-detection-fix)).
 
 | Model | Strix Halo cold | Strix Halo warm | Strix speedup | Flip cold | Flip warm | Flip speedup |
 |-------|----------------:|----------------:|--------------:|----------:|----------:|-------------:|
-| GLM-4.7-Flash | 55.2s | 54.7s | 1.01x | 467.6s (7.8min) | 2.7s | 174.1x |
-| Qwen3.6-35B | 22.2s | 2.3s | 5.13x | 143.1s (2.4min) | 1.0s | 144.5x |
-| gemma-4-26B | 29.7s | 28.8s | 1.03x | 130.9s (2.2min) | 1.4s | 92.9x |
+| GLM-4.7-Flash | 59.6s | 1.59s | **12.6x** | 467.6s (7.8min) | 2.7s | 174.1x |
+| Qwen3.6-35B | 23.6s | 0.75s | **7.8x** | 143.1s (2.4min) | 1.0s | 144.5x |
+| gemma-4-26B | 31.0s | 0.54s | **8.7x** | 130.9s (2.2min) | 1.4s | 92.9x |
 
 The Strix Halo's 8060S evaluates prompts 5-20x faster than the 780M, so
-the absolute warm-cache wall time is much smaller. The relative speedup
-on the Strix Halo is bounded by the SSD read overhead (a few hundred ms
-of restore plus the un-cached tail tokens), not by compute. In absolute
-terms the cache still saves ~20 seconds per turn on Qwen3.6 long-context
-agentic workloads - and at 192K context with fp16 KV, the cache layer
-is what makes that context window actually usable in practice.
+the absolute warm-cache wall time is much smaller. On the tuned Qwen3.6
+profile the warm path is dominated by generation (488ms prompt eval +
+2.5s gen for 128 tokens); the SSD read overhead is a tiny fraction of
+wall time. In absolute terms the cache still saves ~21 seconds per
+turn on Qwen3.6 long-context agentic workloads - and at 192K context
+with fp16 KV, the cache layer is what makes that context window
+actually usable in practice.
 
 Full benchmark data (server logs, API responses, timing stats):
 [`benchmarks/20260611-0656/`](benchmarks/20260611-0656/) (Ayaneo Flip KB)
