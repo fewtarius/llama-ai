@@ -233,7 +233,9 @@ start_server() {
     cmd+=(--slot-save-path "$SSD_CACHE_DIR")
     cmd+=(--kv-unified)
     cmd+=(-np 1 --prio 3 --prio-batch 3 --metrics)
-    cmd+=(-ctxcp 64 --cache-reuse 512)
+    # --ctx-checkpoints: per-slot in-memory checkpoint ring for speculative decoding.
+    # Use the profile value (was hardcoded to 64, which inflated VRAM use on Halo).
+    cmd+=(--ctx-checkpoints "${SSD_CHECKPOINTS:-8}" --cache-reuse 512)
 
     if [[ -n "$EXTRA_SERVER_ARGS" ]]; then
         IFS=' ' read -ra PROFILE_ARGS <<< "$EXTRA_SERVER_ARGS"
@@ -248,6 +250,8 @@ start_server() {
         [[ -n "${SSD_WARM_WINDOW:-}" ]] && cmd+=(--cache-ssd-warm-window "$SSD_WARM_WINDOW")
         [[ -n "${SSD_MAX_COLD:-}" ]] && cmd+=(--cache-ssd-max-cold "$SSD_MAX_COLD")
         [[ -n "${SSD_PAGE_SIZE:-}" ]] && cmd+=(--cache-ssd-page-size "$SSD_PAGE_SIZE")
+        [[ -n "${SSD_HOT_RAM:-}" ]] && cmd+=(--cache-ssd-hot-ram "$SSD_HOT_RAM")
+        [[ -n "${SSD_WARM_RAM:-}" ]] && cmd+=(--cache-ssd-warm-ram "$SSD_WARM_RAM")
     fi
 
     [[ -n "$extra_flags" ]] && IFS=' ' read -ra FLAGS <<< "$extra_flags" && cmd+=("${FLAGS[@]}")

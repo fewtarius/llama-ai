@@ -376,11 +376,32 @@ assign_profile() {
                 # MoE 22GB model + 192K context f16 KV ~= 70GB total.
                 # Pushes close to the 96GB VRAM ceiling while staying under
                 # it. 256K would overflow once cache-ram is included.
+                #
+                # SSD checkpoint strategy is intentionally minimal here vs.
+                # the Flip KB tier. On Halo the 96GB VRAM/GTT budget holds
+                # the working set comfortably; SSD writes are pure overhead
+                # on the prefill critical path. Only the system prompt
+                # cache (separate, 370 MiB per distinct prompt) is worth
+                # the disk traffic for cross-restart speedup. Per-turn
+                # checkpoints add up to 3 SSD writes (62 MiB each) for a
+                # 15K-token prefill - 4s of disk time on the critical path
+                # for protection we don't need when VRAM holds everything.
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=196608
                 KV_CACHE_TYPE_K="f16"
                 KV_CACHE_TYPE_V="f16"
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 8192 --ctx-checkpoints 24 --cache-ram 16384"
+                # 16K checkpoint interval: 1 checkpoint for typical 8-15K
+                # system prompts (instead of 2-3), 0 for short prompts.
+                # --ctx-checkpoints 8 keeps the in-memory ring small enough
+                # that speculative decoding doesn't churn VRAM. The system
+                # prompt cache (separate mechanism) handles cross-restart
+                # warm-start; per-turn checkpoints are just eviction
+                # insurance for long single-conversation runs.
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 16384 --ctx-checkpoints 8 --cache-ram 16384"
+                # 8 SSD checkpoints is enough for the system prompt entry
+                # plus a couple per-turn safety nets. 64 (default) just
+                # accumulates stale checkpoints on disk.
+                SSD_CHECKPOINTS="8"
                 SSD_HOT_WINDOW="8192"
                 SSD_WARM_WINDOW="16384"
                 SSD_HOT_RAM="4096"
