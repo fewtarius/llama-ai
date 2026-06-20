@@ -30,6 +30,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 source "$PROJECT_ROOT/scripts/detect-gpu.sh"
 
+# Hardware tier informs whether the APU needs vis_vramlimit cap and how much
+# GTT to allocate. On Strix Halo the BIOS pre-allocates up to 96GB VRAM and
+# capping it to 6GB would be catastrophic; on Phoenix/Hawk Point the firmware
+# only allocates a small default and we need to grow it.
+HARDWARE_TIER="${LLAMA_HARDWARE_TIER:-handheld}"
+APU_VRAM_GB="${LLAMA_APU_VRAM_GB:-0}"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -254,7 +261,7 @@ apply_grub() {
 
 apply_params_to_entry() {
     local entry="$1"
-    local params="amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB} amdgpu.gttsize=${SIZE_MB} ttm.pages_limit=${SIZE_PAGES} ttm.page_pool_size=${SIZE_PAGES}"
+    local params="${KERNEL_PARAMS}"
 
     log_info "Target entry: $entry"
 
@@ -301,7 +308,7 @@ remove_params_from_entry() {
 
 apply_params_to_grub() {
     local file="$1"
-    local params="amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB} amdgpu.gttsize=${SIZE_MB} ttm.pages_limit=${SIZE_PAGES} ttm.page_pool_size=${SIZE_PAGES}"
+    local params="${KERNEL_PARAMS}"
 
     log_info "Target file: $file"
 
@@ -370,9 +377,11 @@ remove_params_from_grub() {
 verify_and_report() {
     local file="$1"
 
-    if grep -q "amdgpu.gttsize=${SIZE_MB}" "$file" 2>/dev/null && grep -q "amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB}" "$file" 2>/dev/null; then
+    # Verify gttsize is set; vis_vramlimit is optional (skipped on halo w/ BIOS carveout)
+    if grep -q "amdgpu.gttsize=${SIZE_MB}" "$file" 2>/dev/null \
+       && ([[ "$VIS_VRAM_LIMIT_MB" -le 0 ]] || grep -q "amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB}" "$file" 2>/dev/null); then
         log_ok "Parameters applied:"
-        grep -oE "amdgpu.vis_vramlimit=[0-9]+|amdgpu.gttsize=[0-9]+|ttm.pages_limit=[0-9]+|ttm.page_pool_size=[0-9]+" "$file" | while read -r line; do
+        grep -oE "amdgpu.vis_vramlimit=[0-9-]+|amdgpu.gttsize=[0-9]+|ttm.pages_limit=[0-9]+|ttm.page_pool_size=[0-9]+" "$file" | while read -r line; do
             echo "  $line"
         done
         echo ""
@@ -524,18 +533,51 @@ if [[ -z "$GTT_SIZE_GB" ]]; then
 fi
 
 # Calculate parameters
-# vis_vramlimit: cap visible VRAM at 6GB (firmware allocation) to prevent double-counting
-# gttsize: the actual GTT size you want from system RAM
-VIS_VRAM_LIMIT_MB=6144  # 6GB cap for firmware VRAM
+#
+# Tier-aware defaults:
+#   handheld  - Phoenix/Hawk Point. vis_vramlimit caps firmware VRAM at 6GB,
+#               GTT grows to fill remaining system RAM minus OS reserve.
+#   halo      - Strix Halo. BIOS already pre-allocates up to 96GB VRAM, so
+#               vis_vramlimit must NOT be capped (would shrink the carveout).
+#               GTT stays small (4GB) since the APU has plenty of address space.
+#   standard  - 16-32GB APU VRAM. Treat like handheld but with a larger cap.
+#
+# Override VIS_VRAM_LIMIT_MB or GTT_SIZE_GB via env var or first positional arg.
+case "$HARDWARE_TIER" in
+    halo)
+        # Leave BIOS carveout intact. -1 means "do not set vis_vramlimit"
+        VIS_VRAM_LIMIT_MB="${VIS_VRAM_LIMIT_MB:--1}"
+        GTT_SIZE_GB="${GTT_SIZE_GB:-4}"
+        ;;
+    standard)
+        VIS_VRAM_LIMIT_MB="${VIS_VRAM_LIMIT_MB:-16384}"
+        ;;
+    *)
+        VIS_VRAM_LIMIT_MB="${VIS_VRAM_LIMIT_MB:-6144}"
+        ;;
+esac
+
 SIZE_MB=$((GTT_SIZE_GB * 1024))
 SIZE_PAGES=$((GTT_SIZE_GB * 1024 * 1024 / 4))  # 4KB pages
 
-log_info "Target GPU memory: ${GTT_SIZE_GB}GB GTT + ${VIS_VRAM_LIMIT_MB}MB vis = $((GTT_SIZE_GB + VIS_VRAM_LIMIT_MB/1024))GB total"
+# Build the kernel param string. Skip vis_vramlimit when -1 (halo w/ BIOS carveout).
+_vram_param=""
+if [[ "$VIS_VRAM_LIMIT_MB" -gt 0 ]]; then
+    _vram_param="amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB}"
+fi
+KERNEL_PARAMS="${_vram_param} amdgpu.gttsize=${SIZE_MB} ttm.pages_limit=${SIZE_PAGES} ttm.page_pool_size=${SIZE_PAGES}"
+# Strip leading space if vis_vramlimit was omitted
+KERNEL_PARAMS="${KERNEL_PARAMS# }"
+unset _vram_param
+
+log_info "Hardware tier: ${HARDWARE_TIER} (APU VRAM: ${APU_VRAM_GB}GB)"
+if [[ "$VIS_VRAM_LIMIT_MB" -gt 0 ]]; then
+    log_info "Target GPU memory: ${GTT_SIZE_GB}GB GTT + ${VIS_VRAM_LIMIT_MB}MB vis = $((GTT_SIZE_GB + VIS_VRAM_LIMIT_MB/1024))GB total"
+else
+    log_info "Target GPU memory: ${GTT_SIZE_GB}GB GTT (vis_vramlimit left at BIOS default)"
+fi
 log_info "Parameters:"
-echo "  amdgpu.vis_vramlimit=${VIS_VRAM_LIMIT_MB} (cap firmware allocation)"
-echo "  amdgpu.gttsize=${SIZE_MB}"
-echo "  ttm.pages_limit=${SIZE_PAGES}"
-echo "  ttm.page_pool_size=${SIZE_PAGES}"
+echo "  ${KERNEL_PARAMS}"
 echo ""
 
 # Try amd-smi as a hint (does not persist across reboots on its own)

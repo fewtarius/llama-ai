@@ -69,11 +69,13 @@ Sets `ROCM_PATH`, `HIP_PATH`, `LD_LIBRARY_PATH`, `PATH`.
 ## GPU Detection
 
 `scripts/detect-gpu.sh` auto-detects the AMD GPU via PCI ID and sets:
-- `HSA_OVERRIDE_GFX_VERSION` (e.g. `11.0.3` for Phoenix)
-- `LLAMA_GFX_ARCH` (e.g. `gfx1103`)
-- `LLAMA_GPU_NAME` (e.g. `Radeon 780M`)
+- `HSA_OVERRIDE_GFX_VERSION` (e.g. `11.0.3` for Phoenix, `11.5.1` for Strix Halo)
+- `LLAMA_GFX_ARCH` (e.g. `gfx1103`, `gfx1151`)
+- `LLAMA_GPU_NAME` (e.g. `Radeon 780M`, `Radeon 8060S`)
 - `LLAMA_THREADS` (optimal thread count)
-- `LLAMA_TOTAL_RAM_GB` / `LLAMA_RECOMMENDED_GTT_GB`
+- `LLAMA_TOTAL_RAM_GB` / `LLAMA_APU_VRAM_GB` / `LLAMA_RECOMMENDED_GTT_GB`
+- `LLAMA_HARDWARE_TIER` (`handheld` / `standard` / `halo`) - drives
+  profile selection in `llama-run.sh`
 
 User overrides via environment:
 ```bash
@@ -108,11 +110,18 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 - `CachyLLama/` is a git submodule — use `--recurse-submodules` when cloning
 - **Vulkan (RADV) is the default backend** — ROCm has stability issues on RDNA3
   (GLM-4.7-Flash/DeepSeek2 MLA produces zero generation tokens on ROCm)
-- **Target hardware: Ayaneo Flip KB** (AYANEO FLIP KB, AMD 7840U Phoenix / gfx1103,
-   Radeon 780M iGPU, 32GB physical RAM, 6GB VRAM carveout via amdgpu.vis_vramlimit=6144,
-   18GB GTT via amdgpu.gttsize=18432, ~26GB available to OS. ROCm sees combined
-   VRAM+GTT pool of ~24167 MiB free.)
-- **Secondary: Minisforum UM580 "zaphod"** (5800H / gfx90c / 16GB RAM)
+- **Primary target: Strix Halo "max"** (AMD Ryzen AI Max+ 395, Radeon 8060S iGPU
+  on RDNA3.5 / gfx1151, 128GB unified memory with 96GB BIOS-allocated to the APU
+  and 32GB remaining to the OS). No GTT tuning needed - VRAM carveout is set in
+  firmware and `amdgpu.vis_vramlimit` is left unset to preserve it.
+- **Secondary: Ayaneo Flip KB** (7840U / gfx1103 / Radeon 780M, 32GB physical RAM,
+  6GB VRAM carveout via `amdgpu.vis_vramlimit=6144`, 18GB GTT via
+  `amdgpu.gttsize=18432`, ~26GB available to OS).
+- **Tertiary: Minisforum UM580 "zaphod"** (5800H / gfx90c / 16GB RAM)
+
+Profiles are tier-aware via `LLAMA_HARDWARE_TIER` (`handheld` / `standard` /
+`halo`), set automatically by `detect-gpu.sh` from the APU's VRAM carveout
+size. Override with `LLAMA_HARDWARE_TIER_OVERRIDE`.
 
 ## Patch management
 

@@ -32,7 +32,14 @@ VULKAN_BIN="$PROJECT_ROOT/src/cachy-llama-vulkan/build/bin"
 
 # Default settings
 PORT=9090
-CTX_SIZE=32768
+# CTX_SIZE scales with hardware tier so prompt-eval benchmarks exercise
+# realistic agentic context sizes. Handheld stays at 32K (matches Ayaneo
+# KB limits), halo pushes to 128K (well within Strix Halo's 96GB VRAM).
+case "${LLAMA_HARDWARE_TIER:-handheld}" in
+    halo)     CTX_SIZE=131072 ;;
+    standard) CTX_SIZE=49152 ;;
+    *)        CTX_SIZE=32768 ;;
+esac
 NGL=99
 MAX_TOKENS=128
 BENCH_TIMEOUT=900

@@ -9,10 +9,17 @@ default backend for best stability on RDNA3 iGPUs.
 ## Introduction
 
 llama-ai is a deployment of CachyLLama aimed at running hybrid MoE
-models on low-spec AMD APUs. The development headliner is the
-[Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U,
-Radeon 780M, 32GB). It also runs on the Minisforum UM580 (5800H,
-16GB) and similar Zen 2/3/4 APUs using the same build pipeline.
+models on AMD APUs. The primary target is the Strix Halo "max"
+platform (Ryzen AI Max+ 395, Radeon 8060S, 128GB unified memory with
+96GB pre-allocated to the APU). It also runs on the Ayaneo Flip KB
+(7840U / Radeon 780M / 32GB) and the Minisforum UM580 (5800H / 16GB),
+and any other AMD APU in the supported detection map.
+
+Profiles scale automatically with the APU's VRAM carveout via
+`LLAMA_HARDWARE_TIER` (`handheld` / `standard` / `halo`): halo gets
+192K-token context on MoE models with fp16 KV cache and 16GB cache-ram,
+handheld keeps the conservative 64K-token / q8_0 / 6GB settings tuned
+for the 780M's 6GB VRAM envelope.
 
 The fork exists so performance work on hybrid architectures (Qwen3.5/3.6,
 GLM-4.7, Gemma 4) lives as code in the
@@ -31,13 +38,22 @@ On top of CachyLLama, llama-ai adds:
 - Auto-profile model selection and a runner that strips reasoning
   blocks to keep prompt tokens small
 
-The goal: usable agentic AI on a handheld with no network and no
-per-token cost. Cached state survives power outages (the Flip has a
-battery) so an interrupted session picks up where it left off.
+The goal: usable agentic AI on AMD APU hardware with no network and
+no per-token cost. The Strix Halo's 96GB APU carveout runs 35B-class
+MoE models at 192K-token context with full fp16 KV cache and a 16GB
+in-RAM cache layer; the Ayaneo Flip KB's 780M iGPU handles the same
+workloads at 64K context with q8_0 KV and 6GB cache-ram. Cached state
+survives reboots and power outages (JELOS-based handhelds have
+batteries) so an interrupted session picks up where it left off.
 
 ## Why
 
-The goal is reasonably-performing agentic AI development on an [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB) (7840U / 32GB) handheld - usable when there is no network. No API keys, no per-token costs, no cloud dependency. Cached state survives reboots and power outages (the Flip has a battery).
+The goal is reasonably-performing agentic AI development on AMD APU
+hardware - usable when there is no network. No API keys, no per-token
+costs, no cloud dependency. Primary target is the Strix Halo "max"
+platform (Ryzen AI Max+ 395 / Radeon 8060S / 96GB APU VRAM / 128GB
+total). Also runs well on the [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB)
+(7840U / 32GB) and similar Zen 4 APUs.
 
 <p align="center">
   <img src=".images/flip.webp" alt="Ayaneo Flip KB" width="800">
@@ -110,19 +126,42 @@ Apple Silicon (M1/M2/M3/M4) and Intel Macs with Metal-capable GPUs. Build with `
 
 ## GPU memory
 
-AMD APUs share system RAM with the GPU. Use `apply-ttm-kernel-params.sh` to configure GTT:
+AMD APUs share system RAM with the GPU. Use `apply-ttm-kernel-params.sh`
+to configure GTT:
 
 ```bash
-# Set GTT to 18GB (total GPU memory: 6GB VRAM + 18GB GTT = 24GB)
+# Phoenix/Hawk Point: cap firmware VRAM at 6GB, add 18GB GTT
 sudo ./scripts/apply-ttm-kernel-params.sh 18
+
+# Strix Halo: BIOS already pre-allocates the VRAM carveout, just leave
+# the script at its auto-detected defaults (vis_vramlimit is skipped
+# entirely so the BIOS allocation is preserved)
+sudo ./scripts/apply-ttm-kernel-params.sh
 sudo reboot
 ```
 
-Writes kernel parameters (`amdgpu.gttsize`, `amdgpu.vis_vramlimit`, `ttm.pages_limit`) to your bootloader config. Also calls `amd-smi set -G` as a runtime hint, but kernel parameters are the authoritative method that persists across reboots.
+Writes kernel parameters (`amdgpu.gttsize`, `amdgpu.vis_vramlimit`,
+`ttm.pages_limit`) to your bootloader config. Also calls `amd-smi set -G`
+as a runtime hint, but kernel parameters are the authoritative method
+that persists across reboots.
 
-Supports GRUB (SteamFork 3.7) and systemd-boot (SteamFork 3.8+). Tested on SteamFork - may not work with other distributions.
+Supports GRUB (SteamFork 3.7) and systemd-boot (SteamFork 3.8+). Tested
+on JELOS - should work with any distro that exposes the AMD GPU through
+sysfs and supports `amdgpu.vis_vramlimit` / `amdgpu.gttsize` kernel
+parameters (i.e. most modern Linux distributions with a 6.x kernel).
 
-GTT size defaults to auto-detected value based on total system RAM (reserves 6GB for OS). Override with the first argument or `LLAMA_GTT_SIZE` env var.
+GTT size and `vis_vramlimit` default to tier-aware values:
+
+| Tier    | Examples                  | vis_vramlimit | GTT      |
+|---------|---------------------------|---------------|----------|
+| handheld| 780M, 890M (Phoenix/Hawk) | 6GB           | RAM-6GB  |
+| standard| 16-32GB APU VRAM          | 16GB          | 8GB      |
+| halo    | 8060S (Strix Halo)        | not set       | 4GB      |
+
+The `halo` tier skips `vis_vramlimit` because the BIOS carveout
+(typically 96GB) must be preserved - capping it would shrink the
+addressable VRAM. Override with `VIS_VRAM_LIMIT_MB` env var or the
+first positional argument.
 
 Verify after reboot:
 ```bash
@@ -131,9 +170,15 @@ cat /proc/cmdline | tr ' ' '\n' | grep -E "amdgpu|ttm"
 
 ## GPU detection
 
-Auto-detects AMD GPU via PCI device ID and sets `HSA_OVERRIDE_GFX_VERSION` for ROCm.
+Auto-detects AMD GPU via PCI device ID and sets `HSA_OVERRIDE_GFX_VERSION`
+for ROCm.
 
-Supported: Cezanne (5800H), Phoenix (780M), Hawk Point (890M/780M), Strix Point (890M/880M), Strix Halo, Sephiroth, Rembrandt (680M/660M), Mendocino (610M), Renoir, Lucienne. Falls back to `amd-smi` for authoritative detection when PCI IDs are ambiguous (e.g. Cezanne and Van Gogh share the same PCI ID). To add your device, edit the `GPU_MAP` in `scripts/detect-gpu.sh`.
+Supported: Cezanne (5800H), Phoenix (780M), Hawk Point (890M/780M),
+Strix Point (890M/880M), Strix Halo (8060S), Sephiroth, Rembrandt
+(680M/660M), Mendocino (610M), Renoir, Lucienne. Falls back to
+`amd-smi` for authoritative detection when PCI IDs are ambiguous
+(e.g. Cezanne and Van Gogh share the same PCI ID). To add your device,
+edit the `GPU_MAP` in `scripts/detect-gpu.sh`.
 
 Override detection:
 ```bash
@@ -366,7 +411,15 @@ The key metric is **TTFT** (Time To First Token) - how long before the model sta
 
 ### Results
 
-Tested on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan). 128 output tokens, ctx 32768, all GPU layers. All three sizes use SSD cold cache (server restart with checkpoint restored from disk).
+Benchmarks run on the Strix Halo "max" platform (Ryzen AI Max+ 395,
+Radeon 8060S, 128GB unified memory, 96GB APU VRAM) and the Ayaneo Flip
+KB (7840U / 780M / 32GB / Vulkan). The Ayaneo Flip KB numbers below
+are the 2026-05-03 baseline; Strix Halo re-benchmarking is in
+progress.
+
+**Ayaneo Flip KB** (7840U / 780M / 32GB / Vulkan). 128 output tokens,
+ctx 32768, all GPU layers. All three sizes use SSD cold cache (server
+restart with checkpoint restored from disk).
 
 #### GLM-4.7-Flash (Q4_K_M, 30B MoE, 3B active)
 
@@ -401,7 +454,7 @@ Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4
 
 #### Summary
 
-All models on Ayaneo Flip KB (7840U / 780M / 32GB / Vulkan):
+Baseline (Ayaneo Flip KB, 7840U / 780M / 32GB / Vulkan):
 
 | Model | Params | Active | Large cold | Large warm | Speedup | Gen TPS |
 |-------|--------|--------|------------|------------|---------|---------|
@@ -459,7 +512,11 @@ Every turn includes the same static prefix: system prompt, tool definitions, the
 
 ### Agentic workflow walkthrough
 
-A single prompt - "Please evaluate this project and share your opinion of it." - sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan, Ayaneo Flip KB). Cold server start (no cache populated), six turns, 11 minutes 55 seconds.
+A single prompt - "Please evaluate this project and share your opinion of it."
+- sent to CLIO running on Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL,
+Vulkan). Cold server start (no cache populated), six turns, 11 minutes
+55 seconds on the Ayaneo Flip KB baseline. Strix Halo timing pending
+benchmark runs at 192K context.
 
 The model explores the project autonomously: it lists the project root, reads source files, runs `git log` and `wc -l`, and gradually builds understanding before writing a detailed evaluation. Each turn sends the full conversation context (18-26K tokens) to the API. The SSD-backed KV cache determines how much of that context needs fresh evaluation on each turn.
 

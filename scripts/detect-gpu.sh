@@ -83,7 +83,8 @@ GPU_MAP=(
     # RDNA3.5 (gfx11.5 family) - use gfx120X tarball
     "1002:1681|gfx1151|11.5.1|Radeon 890M|gfx120X"                 # Strix Point (HX 370)
     "1002:1682|gfx1151|11.5.1|Radeon 880M|gfx120X"                 # Strix Point (HX 375)
-    "1002:1660|gfx1150|11.5.0|Radeon 890M|gfx120X"                 # Strix Halo
+    "1002:1586|gfx1151|11.5.1|Radeon 8060S|gfx120X"                # Strix Halo (Ryzen AI Max+ 395)
+    "1002:1660|gfx1150|11.5.0|Radeon 8060S|gfx120X"                # Strix Halo alt SKU
     "1002:1680|gfx1151|11.5.1|Radeon 890M|gfx120X"                 # Strix Point (365)
 )
 
@@ -247,7 +248,38 @@ _lookup_gpu() {
     return 1
 }
 
-# Detect total system RAM in GB
+# Detect the APU's dedicated VRAM in GB (vis_vram_total / 1024^3).
+# Returns 0 when no dedicated VRAM is reported (discrete GPU or unallocated).
+_detect_apu_vram_gb() {
+    local vram_bytes=0
+    for f in /sys/class/drm/card[0-9]/device/mem_info_vram_total; do
+        [[ -f "$f" ]] || continue
+        vram_bytes=$(cat "$f" 2>/dev/null || echo 0)
+        break
+    done
+    [[ -z "$vram_bytes" || "$vram_bytes" -eq 0 ]] && { echo 0; return; }
+    echo $(( vram_bytes / 1024 / 1024 / 1024 ))
+}
+
+# Classify the hardware into a tier that downstream scripts can branch on.
+# Tier is set from the detected APU VRAM carveout (the most reliable signal
+# for how much GPU memory is actually available to the iGPU).
+#
+#   handheld  - <=16GB APU VRAM (Phoenix/Hawk Point, 780M/890M)
+#   standard  - 16-32GB APU VRAM (future APUs, large Phoenix configs)
+#   halo      - >=64GB APU VRAM (Strix Halo with 96GB BIOS carveout)
+#
+# Override with LLAMA_HARDWARE_TIER env var.
+_detect_hardware_tier() {
+    local vram_gb="$1"
+    if [[ "$vram_gb" -ge 64 ]]; then
+        echo "halo"
+    elif [[ "$vram_gb" -ge 16 ]]; then
+        echo "standard"
+    else
+        echo "handheld"
+    fi
+}
 _detect_total_ram_gb() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         # macOS: hw.memsize reports physical RAM in bytes
@@ -263,14 +295,29 @@ _detect_total_ram_gb() {
     fi
 }
 
-# Recommend GTT size based on total RAM
-# Strategy: reserve 6GB for OS, use the rest as GTT
-# Users can override with LLAMA_GTT_SIZE env var
+# Recommend GTT size based on total RAM and current VRAM allocation.
+#
+# Strategy depends on whether VRAM has been pre-allocated (e.g. Strix Halo
+# BIOS-level 96GB carveout). When the APU already has dedicated VRAM, GTT
+# is only needed as a spillover and should stay small. Otherwise reserve
+# 6GB for OS and use the rest as GTT.
+#
+# Users can override with LLAMA_GTT_SIZE env var.
 _recommend_gtt_gb() {
     local ram_gb="$1"
+    local vram_gb="$2"
     local os_reserve=6
+
+    # If APU already has a large dedicated VRAM pool (e.g. Strix Halo with
+    # 96GB BIOS carveout), GTT is only useful as overflow. Default to 4GB
+    # so the GART table doesn't waste address space.
+    if [[ -n "$vram_gb" && "$vram_gb" -ge 32 ]]; then
+        echo 4
+        return
+    fi
+
     local gtt=$((ram_gb - os_reserve))
-    # Minimum 4GB GTT
+    # Minimum 4GB GTT for systems without dedicated VRAM
     (( gtt < 4 )) && gtt=4
     echo "$gtt"
 }
@@ -460,16 +507,20 @@ fi  # end macOS/AMD branch
 
 # Detect system resources
 LLAMA_TOTAL_RAM_GB="$(_detect_total_ram_gb)"
-LLAMA_RECOMMENDED_GTT_GB="$(_recommend_gtt_gb "$LLAMA_TOTAL_RAM_GB")"
+LLAMA_APU_VRAM_GB="$(_detect_apu_vram_gb)"
+LLAMA_RECOMMENDED_GTT_GB="$(_recommend_gtt_gb "$LLAMA_TOTAL_RAM_GB" "$LLAMA_APU_VRAM_GB")"
+LLAMA_HARDWARE_TIER="$(_detect_hardware_tier "$LLAMA_APU_VRAM_GB")"
 
 # Detect CPU ISA features (x86 SIMD level for cmake build flags)
 _detect_cpu_isa
 
 # Thread count: use nproc by default
 LLAMA_THREADS=$(nproc 2>/dev/null || echo 4)
-# On handheld APUs with <=16GB RAM, halve thread count to leave RAM for GPU
-# macOS Apple Silicon uses unified memory - no need to throttle unless truly starved
-if [[ "$LLAMA_TOTAL_RAM_GB" -le 16 && "$(uname -s)" != "Darwin" ]]; then
+# On handheld APUs (limited system RAM, no dedicated VRAM), halve the thread
+# count so OS doesn't get starved. macOS uses unified memory - no throttle
+# needed. Large-APU systems (Strix Halo, 96GB VRAM) keep all cores available
+# since OS-side RAM isn't competing with model weights.
+if [[ "$LLAMA_HARDWARE_TIER" == "handheld" && "$(uname -s)" != "Darwin" ]]; then
     LLAMA_THREADS=$(( LLAMA_THREADS / 2 ))
     (( LLAMA_THREADS < 2 )) && LLAMA_THREADS=2
 fi
@@ -494,6 +545,10 @@ if [[ -n "${LLAMA_GTT_SIZE:-}" ]]; then
     LLAMA_RECOMMENDED_GTT_GB="$LLAMA_GTT_SIZE"
 fi
 
+if [[ -n "${LLAMA_HARDWARE_TIER_OVERRIDE:-}" ]]; then
+    LLAMA_HARDWARE_TIER="$LLAMA_HARDWARE_TIER_OVERRIDE"
+fi
+
 if [[ -n "${LLAMA_CPU_ISA_OVERRIDE:-}" ]]; then
     LLAMA_CPU_ISA="$LLAMA_CPU_ISA_OVERRIDE"
 fi
@@ -503,7 +558,7 @@ fi
 # =============================================================================
 
 export LLAMA_GFX_VERSION LLAMA_GFX_ARCH LLAMA_GPU_NAME LLAMA_GPU_PCI_ID LLAMA_ROCM_VARIANT
-export LLAMA_THREADS LLAMA_TOTAL_RAM_GB LLAMA_RECOMMENDED_GTT_GB
+export LLAMA_THREADS LLAMA_TOTAL_RAM_GB LLAMA_APU_VRAM_GB LLAMA_RECOMMENDED_GTT_GB LLAMA_HARDWARE_TIER
 export LLAMA_CPU_ISA LLAMA_CMAKE_CPU_FLAGS
 export LLAMA_PLATFORM
 

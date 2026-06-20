@@ -304,7 +304,10 @@ assign_profile() {
     local size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
     MODEL_BYTES="$size_bytes"
     local size_gb=$((size_bytes / 1024 / 1024 / 1024))
-    
+
+    # Hardware tier from detect-gpu.sh (handheld / standard / halo).
+    local tier="${LLAMA_HARDWARE_TIER:-handheld}"
+
     # Reset all variables to sensible defaults
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
     KV_CACHE_TYPE_K="q8_0"
@@ -319,18 +322,28 @@ assign_profile() {
     # Detect model characteristics from filename
     local is_moe=false
     local is_ssm=false
-    
-    if echo "$filename" | grep -qiE "moe|a3b|a8b"; then
+
+    if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert"; then
         is_moe=true
     fi
-    if echo "$filename" | grep -qiE "ssm|mamba"; then
+    if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
         is_ssm=true
     fi
     
     # Profile selection based on characteristics
     if [[ "$is_ssm" == true ]]; then
         # SSM/Mamba models: cache_reuse doesn't work, need different settings
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+        # Halo pushes context much further; handheld stays at 64K.
+        case "$tier" in
+            halo)
+                # SSM hidden state is constant-size; attention KV is a small
+                # fraction of total context. 256K fits comfortably.
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=262144
+                ;;
+            *)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+                ;;
+        esac
         KV_CACHE_TYPE_K="q8_0"
         KV_CACHE_TYPE_V="q8_0"
         GPU_LAYERS=99
@@ -338,7 +351,10 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
-        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram 6144"
+        # cache-ram scales with tier: handheld 6GB, halo 16GB
+        local _ssm_cache_ram=6144
+        [[ "$tier" == "halo" ]] && _ssm_cache_ram=16384
+        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
@@ -349,16 +365,56 @@ assign_profile() {
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
         # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
-        # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
-        # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
-        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
         # Single parallel slot for MoE: 2x slots doubles KV cache memory,
         # and agentic workloads use 1 slot at a time anyway
         OVERRIDE_N_PARALLEL="1"
-       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        # Tier-aware MoE tuning. Halo has 96GB VRAM so we switch to f16 KV
+        # (no compression needed), push batch+ubatch, and widen context to 128K.
+        # Handheld stays at conservative ubatch 256 (compute-buffer safety).
+        case "$tier" in
+            halo)
+                # MoE 22GB model + 192K context f16 KV ~= 70GB total.
+                # Pushes close to the 96GB VRAM ceiling while staying under
+                # it. 256K would overflow once cache-ram is included.
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=196608
+                KV_CACHE_TYPE_K="f16"
+                KV_CACHE_TYPE_V="f16"
+                OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 8192 --ctx-checkpoints 24 --cache-ram 16384"
+                SSD_HOT_WINDOW="8192"
+                SSD_WARM_WINDOW="16384"
+                SSD_HOT_RAM="4096"
+                SSD_WARM_RAM="6144"
+                SSD_MAX_COLD="32"
+                ;;
+            standard)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 8192"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
+                ;;
+            *)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
+                # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 6144"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
+                ;;
+        esac
+        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # Sampling (Unsloth recommended for Qwen 3.6 thinking mode):
         # temp=1.0 + top_p=0.95 + top_k=20 + min_p=0.0 + no penalties.
         # Qwen3 was trained without repetition penalty - applying any
@@ -369,59 +425,95 @@ assign_profile() {
         # https://unsloth.ai/docs/models/qwen3.6
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        # Checkpoint strategy for agentic workloads:
-        # - 4096 tokens between checkpoints (balances coverage vs overhead)
-        # - 8 context checkpoints per slot (covers 32K tokens of rollback)
-        # - Each context checkpoint is ~63MB, 8 per slot = ~504 MiB
-        # - cache-ram at 6144 MiB with checkpoint savings
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 6144"
-        # SSD cache: reduced RAM budgets (fewer checkpoints at 4096-token intervals)
-        # Hot tier: 960 MiB RAM budget (~4 checkpoints, always in RAM)
-        # Warm tier: 1440 MiB RAM budget (~6 checkpoints, in RAM but lower priority)
-        # Cold tier: 32 checkpoints on SSD only
-        SSD_HOT_WINDOW="4096"
-        SSD_WARM_WINDOW="8192"
-        SSD_HOT_RAM="960"
-        SSD_WARM_RAM="1440"
-        SSD_MAX_COLD="32"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q4_0"
-        KV_CACHE_TYPE_V="q4_0"
-        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+        # Tier-aware large-dense. Halo uses q8_0 KV and bigger cache since
+        # 30B+ models fit comfortably with 96GB VRAM.
+        case "$tier" in
+            halo)
+                # Dense 20GB + 128K f16 KV ~= 52GB. Leaves headroom for
+                # the cache-ram and SSD cache layers.
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 16384"
+                ;;
+            standard)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 8192"
+                ;;
+            *)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+                KV_CACHE_TYPE_K="q4_0"
+                KV_CACHE_TYPE_V="q4_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
+                ;;
+        esac
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        # Checkpoint strategy for agentic workloads
-        EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         profile_name="large-dense"
     elif [[ $size_gb -gt 10 ]]; then
         # Medium models (10-15GB): balanced settings
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
-        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-       EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+        case "$tier" in
+            halo)
+                # Medium models (10-15GB) leave ~80GB of VRAM free, plenty
+                # for long context without compression.
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+                KV_CACHE_TYPE_K="f16"
+                KV_CACHE_TYPE_V="f16"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --cache-ram 16384"
+                ;;
+            standard)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+                EXTRA_SERVER_ARGS+=" --cache-ram 8192"
+                ;;
+            *)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+                EXTRA_SERVER_ARGS+=" --cache-ram 4096"
+                ;;
+        esac
+        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
         EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        EXTRA_SERVER_ARGS+=" --cache-ram 4096"
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         profile_name="medium-dense"
     else
         # Small models (<10GB): full power
-        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
-        EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
+        case "$tier" in
+            halo)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+                KV_CACHE_TYPE_K="f16"
+                KV_CACHE_TYPE_V="f16"
+                EXTRA_SERVER_ARGS+=" --cache-ram 16384 --slot-prompt-similarity 0.15"
+                ;;
+            *)
+                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+                KV_CACHE_TYPE_K="q8_0"
+                KV_CACHE_TYPE_V="q8_0"
+                EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
+                ;;
+        esac
         profile_name="small-efficient"
     fi
     
@@ -1205,7 +1297,7 @@ _model_size_gb=$((MODEL_BYTES / 1024 / 1024 / 1024))
 if [[ "$_model_size_gb" -gt $((_total_mem_gb - 2)) ]]; then
     # Model is more than ~92% of total RAM. Even mmap is risky on a busy system.
     echo -e "${YELLOW}Warning: model (${_model_size_gb}GB) is close to total RAM (${_total_mem_gb}GB).${NC}"
-    if echo "$(basename "$MODEL" .gguf)" | grep -qiE "moe|a3b|a8b"; then
+    if echo "$(basename "$MODEL" .gguf)" | grep -qiE "moe|a3b|a8b|flash|expert"; then
         echo -e "${YELLOW}         This is a MoE model: resident footprint is much smaller than file size.${NC}"
         echo -e "${YELLOW}         Only active experts are loaded; cold/expert pages stay on disk.${NC}"
     else
