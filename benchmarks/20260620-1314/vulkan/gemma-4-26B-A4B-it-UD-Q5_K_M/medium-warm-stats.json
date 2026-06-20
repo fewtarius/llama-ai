@@ -1,0 +1,15 @@
+{
+  "prompt_tokens": 6083,
+  "completion_tokens": 128,
+  "cached_tokens": 7,
+  "prompt_ms": 8570.6,
+  "generation_ms": 3023.5,
+  "total_ms": 11594.1,
+  "ttft_ms": 8570.6,
+  "wall_ttft_ms": 11613,
+  "tps": 42.3,
+  "prompt_tps": 709.7,
+  "prompt_per_token_ms": 1.4,
+  "predicted_per_token_ms": 23.6,
+  "wall_ms": 11613
+}

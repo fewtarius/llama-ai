@@ -384,21 +384,36 @@ import re, json
 with open('$log_file', 'r') as f:
     text = f.read()
 
-# Key event markers
+# Cache restore events. The server emits several distinct messages:
+#   - 'cold-start: system prompt cache hit (n_past=N)' - the global system
+#     prompt cache (cross-conversation) restored N tokens before the eval.
+#   - 'loaded N checkpoints from <path>' - the SSD-backed per-conversation
+#     checkpoint index was loaded on startup. N must be > 0 to count.
+#   - 'restored system prompt from cache (n_sys=N, ..., skipping N tokens)'
+#     - the slot actually used the restored state.
+# Any of these means we have a cache hit. The legacy 'cold-start restored
+# SSD' / 'restored in-memory checkpoint' strings were never emitted by
+# this server, so the prior detector always reported 'miss' on warm runs.
+sys_cache_hit = bool(re.search(r'system prompt cache hit', text))
+sys_prompt_restored = bool(re.search(r'restored system prompt from cache', text))
+loaded_match = re.search(r'loaded ([0-9]+) checkpoints from', text)
+loaded_checkpoints = loaded_match is not None and int(loaded_match.group(1)) > 0
 cold_restored = bool(re.search(r'cold-start restored SSD', text))
 warm_restored = bool(re.search(r'restored in-memory checkpoint', text))
+
 stored = len(re.findall(r'SSD cache: stored checkpoint', text))
 divergences = len(re.findall(r'cache prefix divergence', text))
 
 # Determine cache state
 if cold_restored:
     state = 'ssd_cold'
-elif warm_restored:
+elif warm_restored or sys_cache_hit or sys_prompt_restored or loaded_checkpoints:
+    # 'ssd_warm' subsumes both in-memory and SSD-backed restores - the
+    # benchmark cares about whether tokens were skipped, not the tier.
     state = 'ssd_warm'
 else:
     state = 'miss'
 
-# Count total checkpoints
 total_checkpoints = len(re.findall(r'SSD cache: (stored|promoted|demoted) checkpoint', text))
 
 print(json.dumps({

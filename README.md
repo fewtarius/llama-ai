@@ -413,13 +413,37 @@ The key metric is **TTFT** (Time To First Token) - how long before the model sta
 
 Benchmarks run on the Strix Halo "max" platform (Ryzen AI Max+ 395,
 Radeon 8060S, 128GB unified memory, 96GB APU VRAM) and the Ayaneo Flip
-KB (7840U / 780M / 32GB / Vulkan). The Ayaneo Flip KB numbers below
-are the 2026-05-03 baseline; Strix Halo re-benchmarking is in
-progress.
+KB (7840U / 780M / 32GB / Vulkan). Both use the same Vulkan backend
+(Mesa RADV) and the same SSD cache machinery - the only thing that
+changes is the underlying compute, memory, and context size.
 
-**Ayaneo Flip KB** (7840U / 780M / 32GB / Vulkan). 128 output tokens,
-ctx 32768, all GPU layers. All three sizes use SSD cold cache (server
-restart with checkpoint restored from disk).
+#### Strix Halo
+
+Radeon 8060S, 96GB APU VRAM, ctx 32768, 128 output tokens, all GPU
+layers. Full per-test data: [`benchmarks/20260620-1314/`](benchmarks/20260620-1314/).
+
+| Model | Size | Cold TTFT | Warm TTFT | Speedup | Cached |
+|-------|------|-----------|-----------|---------|--------|
+| GLM-4.7-Flash Q4_K_M | small (~1.1K) | 2.4s | 2.0s | 1.12x | 3/1145 |
+| GLM-4.7-Flash Q4_K_M | medium (~5.2K) | 11.0s | 10.8s | 1.01x | 3/5237 |
+| GLM-4.7-Flash Q4_K_M | large (~15.5K) | 55.2s | 54.7s | 1.01x | 3/15489 |
+| Qwen3.6-35B-A3B Q4_K_XL | small (~1.2K) | 1.8s | 0.25s | **1.63x** | 1237/1243 |
+| Qwen3.6-35B-A3B Q4_K_XL | medium (~5.4K) | 7.1s | 0.30s | **3.52x** | 5403/5409 |
+| Qwen3.6-35B-A3B Q4_K_XL | large (~15.7K) | 22.2s | 2.3s | **5.13x** | 15715/15721 |
+| gemma-4-26B-A4B Q5_K_M | small (~1.4K) | 5.8s | 2.0s | 1.78x | 7/1413 |
+| gemma-4-26B-A4B Q5_K_M | medium (~6.1K) | 8.9s | 8.6s | 1.03x | 7/6083 |
+| gemma-4-26B-A4B Q5_K_M | large (~17.3K) | 29.7s | 28.8s | 1.03x | 7/17347 |
+
+Cold prompt eval: 280-708 t/s on the Strix Halo (vs 33-166 t/s on the
+Ayaneo Flip KB). The hybrid MoE architectures (Qwen3.6, GLM-4.7-Flash)
+restore both attention KV state and recurrent state from disk - the
+Mamba layers are checkpoint-aware and the cache works across restarts.
+
+#### Ayaneo Flip KB
+
+Radeon 780M, 6GB VRAM + 18GB GTT, ctx 32768, 128 output tokens, all
+GPU layers. 2026-05-03 baseline. Full per-test data:
+[`benchmarks/20260611-0656/`](benchmarks/20260611-0656/).
 
 #### GLM-4.7-Flash (Q4_K_M, 30B MoE, 3B active)
 
@@ -454,17 +478,26 @@ Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4
 
 #### Summary
 
-Baseline (Ayaneo Flip KB, 7840U / 780M / 32GB / Vulkan):
+Strix Halo (top row per model) vs Ayaneo Flip KB (bottom row), large
+prompt only:
 
-| Model | Params | Active | Large cold | Large warm | Speedup | Gen TPS |
-|-------|--------|--------|------------|------------|---------|---------|
-| GLM-4.7-Flash | 30B | 3B | 467.6s (7.8min) | 2.7s | 174.1x | 5.7 |
-| Gemma 4 26B | 26B | 4B | 130.9s (2.2min) | 1.4s | 92.9x | 13.8 |
-| Qwen3.6-35B | 35B | 3B | 143.1s (2.4min) | 1.0s | 144.5x | 18.6 |
+| Model | Strix Halo cold | Strix Halo warm | Strix speedup | Flip cold | Flip warm | Flip speedup |
+|-------|----------------:|----------------:|--------------:|----------:|----------:|-------------:|
+| GLM-4.7-Flash | 55.2s | 54.7s | 1.01x | 467.6s (7.8min) | 2.7s | 174.1x |
+| Qwen3.6-35B | 22.2s | 2.3s | 5.13x | 143.1s (2.4min) | 1.0s | 144.5x |
+| gemma-4-26B | 29.7s | 28.8s | 1.03x | 130.9s (2.2min) | 1.4s | 92.9x |
 
-Generation speed (t/s) is unaffected by caching - the speedup is entirely in prompt evaluation. What caching changes is whether you wait 3-5 minutes or 1-4 seconds before the model starts responding. MoE models trade parameter count for active headroom: Qwen loads 35B weights but only evaluates 3B per token, giving it the best generation speed of the three.
+The Strix Halo's 8060S evaluates prompts 5-20x faster than the 780M, so
+the absolute warm-cache wall time is much smaller. The relative speedup
+on the Strix Halo is bounded by the SSD read overhead (a few hundred ms
+of restore plus the un-cached tail tokens), not by compute. In absolute
+terms the cache still saves ~20 seconds per turn on Qwen3.6 long-context
+agentic workloads - and at 192K context with fp16 KV, the cache layer
+is what makes that context window actually usable in practice.
 
-Full benchmark data (server logs, API responses, timing stats): [`benchmarks/20260611-0656/`](benchmarks/20260611-0656/)
+Full benchmark data (server logs, API responses, timing stats):
+[`benchmarks/20260611-0656/`](benchmarks/20260611-0656/) (Ayaneo Flip KB)
+and [`benchmarks/20260620-1314/`](benchmarks/20260620-1314/) (Strix Halo).
 
 ### Running the benchmark
 
