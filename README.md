@@ -484,8 +484,7 @@ within-server restarts — SSD is the cross-restart persistence layer.
 #### Ayaneo Flip KB
 
 Radeon 780M, 6GB VRAM + 18GB GTT, ctx 32768, 128 output tokens, all
-GPU layers. 2026-05-03 baseline. Full per-test data:
-[`benchmarks/20260611-0656/`](benchmarks/20260611-0656/).
+GPU layers. [Full per-test data](benchmarks/20260611-0656/).
 
 #### GLM-4.7-Flash (Q4_K_M, 30B MoE, 3B active)
 
@@ -547,8 +546,9 @@ comfortably at 37GB model + 16GB KV cache-ram ~53GB total, leaving 43GB
 for generation batch buffers and concurrent slots.
 
 Full benchmark data (server logs, API responses, timing stats):
-[`benchmarks/20260611-0656/`](benchmarks/20260611-0656/) (Ayaneo Flip KB)
-and [`benchmarks/20260620-1639/`](benchmarks/20260620-1639/) (Strix Halo MoE), and [`benchmarks/20260622-1702/`](benchmarks/20260622-1702/) (Strix Halo Qwen Q8).
+[Ayaneo Flip KB](benchmarks/20260611-0656/),
+[Strix Halo MoE](benchmarks/20260620-1639/),
+[Strix Halo Qwen Q8](benchmarks/20260622-1702/).
 
 ### Running the benchmark
 
