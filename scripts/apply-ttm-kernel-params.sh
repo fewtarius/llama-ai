@@ -127,6 +127,9 @@ try_amd_smi() {
     if [[ ! -x "$amd_smi_path" ]]; then
         amd_smi_path=$(command -v amd-smi 2>/dev/null || true)
     fi
+    if [[ -z "$amd_smi_path" && -x /opt/rocm/bin/amd-smi ]]; then
+        amd_smi_path=/opt/rocm/bin/amd-smi
+    fi
 
     if [[ -z "$amd_smi_path" ]]; then
         log_warn "amd-smi not found"
@@ -151,6 +154,9 @@ reset_amd_smi() {
     local amd_smi_path="$PROJECT_ROOT/deps/bin/amd-smi"
     if [[ ! -x "$amd_smi_path" ]]; then
         amd_smi_path=$(command -v amd-smi 2>/dev/null || true)
+    fi
+    if [[ -z "$amd_smi_path" && -x /opt/rocm/bin/amd-smi ]]; then
+        amd_smi_path=/opt/rocm/bin/amd-smi
     fi
 
     if [[ -z "$amd_smi_path" ]]; then
@@ -524,8 +530,13 @@ log_info "Physical system RAM: $((PHYSICAL_RAM_MB / 1024))GB"
 log_info "Current GPU allocation: ${CURRENT_GPU_ALLOC_MB}MB"
 
 if [[ -z "$GTT_SIZE_GB" ]]; then
+    if (( PHYSICAL_RAM_MB == 0 )); then
+        log_error "Could not detect physical RAM. Try running as root, or install dmidecode."
+        log_error "Or specify GTT size manually: sudo $0 <GB>"
+        exit 1
+    fi
     # Default: full physical RAM minus small OS reserve
-    local os_reserve_mb=2048
+    os_reserve_mb=2048
     if (( PHYSICAL_RAM_MB > 16384 )); then
         os_reserve_mb=4096
     fi
