@@ -130,8 +130,9 @@ build_prompt() {
     local text_file="$2"
 
     # Strip BOM and header, take first N bytes, add instruction
+    # Use process substitution to avoid SIGPIPE on sed when head exits early
     local prefix
-    prefix=$(sed '1s/^\xEF\xBB\xBF//' "$text_file" | head -c "$size_bytes")
+    prefix=$(head -c "$size_bytes" <(sed '1s/^\xEF\xBB\xBF//' "$text_file"))
     # Escape for JSON embedding
     python3 -c "
 import json, sys

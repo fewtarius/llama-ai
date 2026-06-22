@@ -323,7 +323,7 @@ assign_profile() {
     local is_moe=false
     local is_ssm=false
 
-    if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert"; then
+    if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
         is_moe=true
     fi
     if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
