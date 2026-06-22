@@ -414,14 +414,12 @@ changes is the underlying compute, memory, and context size.
 #### Strix Halo (Nimo Axis N161)
 
 Radeon 8060S, 96GB APU VRAM, 128 output tokens, all GPU layers.
-Canonical MoE results from
-[`benchmarks/20260620-1639/`](benchmarks/20260620-1639/) (MoE models,
-ctx 192K), GPT-OSS-120B from
-[`benchmarks/20260622-1436/`](benchmarks/20260622-1436/) (ctx 196K),
-GLM-4.7-Flash Q8_K_XL from
-[`benchmarks/20260622-1527/`](benchmarks/20260622-1527/), and
-Qwen3.6-35B Q8_K_XL from
-[`benchmarks/20260622-1702/`](benchmarks/20260622-1702/).
+Benchmark data:
+[GLM-4.7-Flash Q4_K_M, Qwen3.6-35B Q4_K_XL, gemma-4-26B Q5_K_M](benchmarks/20260620-1639/)
+(MoE models, ctx 192K),
+[GPT-OSS-120B Q8_K_XL](benchmarks/20260622-1436/) (ctx 196K),
+[GLM-4.7-Flash Q8_K_XL](benchmarks/20260622-1527/),
+[Qwen3.6-35B Q8_K_XL](benchmarks/20260622-1702/).
 
 | Model | Size | Cold TTFT | Warm TTFT | Speedup | Cached |
 |-------|------|-----------|-----------|---------|--------|
@@ -524,9 +522,9 @@ Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4
 
 Strix Halo (top row per model) vs Ayaneo Flip KB (bottom row), large
 prompt only. All Strix Halo numbers use prompt eval speedup (not
-wall-clock). MoE models from the boundary-fix run
-([`benchmarks/20260620-1639/`](benchmarks/20260620-1639/)), GPT-OSS-120B
-from [`benchmarks/20260622-1436/`](benchmarks/20260622-1436/)).
+wall-clock). MoE models from the
+[boundary-fix run](benchmarks/20260620-1639/),
+[GPT-OSS-120B](benchmarks/20260622-1436/).
 
 | Model | Strix Halo cold | Strix Halo warm | Strix speedup | Flip cold | Flip warm | Flip speedup |
 |-------|----------------:|----------------:|--------------:|----------:|----------:|-------------:|
