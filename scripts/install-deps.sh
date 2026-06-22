@@ -258,6 +258,80 @@ else
 fi
 
 # =============================================================================
+# Repair packages stripped from SteamOS base image
+# =============================================================================
+# SteamOS ships with package database entries for build tools (gcc, clang, etc.)
+# but the actual binary files are stripped from the base image to save space.
+# pacman -S --needed sees the DB entry and skips them, leaving nothing on disk.
+# We detect this by checking if pacman claims the package is installed but its
+# expected binary does not exist, then force-reinstall without --needed.
+
+repair_stripped_packages() {
+    log_info "Checking for packages with missing binaries (SteamOS stripped)..."
+
+    # Package -> expected binary mapping. The binary must exist for the package
+    # to be considered "actually installed" rather than just in the DB.
+    declare -A PKG_BINARIES=(
+        [gcc]="/usr/bin/gcc"
+        [clang]="/usr/bin/clang"
+        [openmp]="/usr/lib/libomp.so"
+        [ccache]="/usr/bin/ccache"
+        [make]="/usr/bin/make"
+        [cmake]="/usr/bin/cmake"
+        [ninja]="/usr/bin/ninja"
+        [pkgconf]="/usr/bin/pkg-config"
+        [git]="/usr/bin/git"
+        [curl]="/usr/bin/curl"
+        [wget]="/usr/bin/wget"
+        [bzip2]="/usr/bin/bzip2"
+        [zlib]="/usr/lib/libz.so"
+        [xz]="/usr/bin/xz"
+        [openssl]="/usr/bin/openssl"
+        [python]="/usr/bin/python"
+        [vulkan-headers]="/usr/include/vulkan/vulkan.h"
+        [vulkan-tools]="/usr/bin/vulkaninfo"
+        [vulkan-icd-loader]="/usr/lib/libvulkan.so"
+        [shaderc]="/usr/bin/glslc"
+        [spirv-tools]="/usr/bin/spirv-as"
+        [spirv-headers]="/usr/include/spirv/unified1/spirv.h"
+    )
+
+    local repaired=0
+    for pkg in "${!PKG_BINARIES[@]}"; do
+        local expected="${PKG_BINARIES[$pkg]}"
+
+        # Skip if the binary already exists
+        [[ -e "$expected" ]] && continue
+
+        # Skip if pacman doesn't even know about this package
+        pacman -Q "$pkg" &>/dev/null || continue
+
+        # Package is in the DB but its binary is missing -> SteamOS stripped it
+        log_warn "Package '$pkg' is in pacman DB but $expected is missing (stripped from base image)"
+        log_info "Force-reinstalling $pkg..."
+        if $SUDO pacman -S --noconfirm "$pkg" 2>&1 | tail -3; then
+            if [[ -e "$expected" ]]; then
+                log_ok "Repaired $pkg ($expected now exists)"
+                repaired=$((repaired + 1))
+            else
+                log_error "Reinstall of $pkg reported success but $expected still missing"
+            fi
+        else
+            log_error "Failed to reinstall $pkg"
+        fi
+    done
+
+    if [[ $repaired -gt 0 ]]; then
+        log_ok "Repaired $repaired stripped package(s)"
+    else
+        log_ok "No stripped packages found"
+    fi
+}
+
+echo ""
+repair_stripped_packages
+
+# =============================================================================
 # Repair broken pip-installed cmake wrappers in ~/bin/
 # =============================================================================
 # The PyPI "cmake" package installs entry-point scripts (cmake, ccmake, cpack,
