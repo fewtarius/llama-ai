@@ -1,0 +1,58 @@
+{
+  "size_label": "medium",
+  "size_bytes": 20480,
+  "cold": {
+    "prompt_tokens": 5409,
+    "completion_tokens": 128,
+    "cached_tokens": 0,
+    "prompt_ms": 6321.7,
+    "generation_ms": 3192.1,
+    "total_ms": 9513.8,
+    "ttft_ms": 6321.7,
+    "wall_ttft_ms": 9637,
+    "tps": 40.1,
+    "prompt_tps": 855.6,
+    "prompt_per_token_ms": 1.2,
+    "predicted_per_token_ms": 24.9,
+    "wall_ms": 9637
+  },
+  "warm": {
+    "prompt_tokens": 5409,
+    "completion_tokens": 128,
+    "cached_tokens": 5405,
+    "prompt_ms": 967.7,
+    "generation_ms": 3054.8,
+    "total_ms": 4022.5,
+    "ttft_ms": 967.7,
+    "wall_ttft_ms": 4155,
+    "tps": 41.9,
+    "prompt_tps": 5589.5,
+    "prompt_per_token_ms": 241.9,
+    "predicted_per_token_ms": 23.9,
+    "wall_ms": 4155
+  },
+  "cache_cold": {
+    "cache_state": "miss",
+    "ssd_stored": 2,
+    "divergences": 0,
+    "total_checkpoints": 2
+  },
+  "cache_warm": {
+    "cache_state": "ssd_cold",
+    "ssd_stored": 1,
+    "divergences": 0,
+    "total_checkpoints": 2
+  },
+  "prompt_eval_speedup": 6.53,
+  "ttft_speedup": 2.32,
+  "cold_prompt_tps": 855.6,
+  "warm_prompt_tps": 5589.5,
+  "cold_ppt_ms": 1.2,
+  "warm_ppt_ms": 241.9,
+  "cold_gen_ppt_ms": 24.9,
+  "warm_gen_ppt_ms": 23.9,
+  "cold_ttft_ms": 6321.7,
+  "warm_ttft_ms": 967.7,
+  "cold_wall_ttft_ms": 9637,
+  "warm_wall_ttft_ms": 4155
+}

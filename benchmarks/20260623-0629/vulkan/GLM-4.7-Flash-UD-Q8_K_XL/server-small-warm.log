@@ -1,0 +1,62 @@
+0.00.036.282 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.036.374 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.036.375 I device_info:
+0.00.036.449 I   - Vulkan0 : AMD Radeon 8060S Graphics (RADV STRIX_HALO) (114157 MiB, 113426 MiB free)
+0.00.036.455 I   - CPU     : AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (31707 MiB, 31707 MiB free)
+0.00.036.506 I system_info: n_threads = 32 (n_threads_batch = 32) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.036.649 I srv          init: running without SSL
+0.00.036.701 I srv          init: using 31 threads for HTTP server
+0.00.037.043 I srv         start: binding port with default address family
+0.00.038.190 I srv  llama_server: loading model
+0.00.038.196 I srv    load_model: loading model '/run/media/deck/internal2/llama-ai/models/GLM-4.7-Flash-UD-Q8_K_XL.gguf'
+0.00.038.248 I common_init_result: fitting params to device memory ...
+0.00.038.249 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.507.517 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.507.522 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.34.044.873 W llama_context: n_ctx_seq (196608) < n_ctx_train (202752) -- the full capacity of the model will not be utilized
+0.34.133.427 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.34.281.303 I srv    load_model: initializing slots, n_slots = 1
+0.34.413.942 I srv    load_model: SSD-backed KV cache initialized at '/home/deck/llama-ai/ssd-cache' (hot=8192, warm=16384, page=1024 tokens)
+0.34.413.944 I srv    load_model: SSD cache RAM budgets: hot=4096 MiB, warm=6144 MiB (auto-size disabled)
+0.34.413.951 I SSD cache: model compat_hash c9181c946267d7ba (arch dims + type_k=1 type_v=1)
+0.34.415.692 I system cache: initialized at /home/deck/llama-ai/ssd-cache/GLM-4.7-Flash-UD-Q8_K_XL (entries=1, bytes=0.1 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.34.415.698 I srv    load_model: global system prompt cache: dir='/home/deck/llama-ai/ssd-cache/GLM-4.7-Flash-UD-Q8_K_XL', max=8, days=30, current=1
+0.34.415.705 W common_speculative_init: no implementations specified for speculative decoding
+0.34.415.813 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 196608
+0.34.415.920 I srv    load_model: prompt cache is enabled, size limit: 16384 MiB
+0.34.415.921 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.34.415.922 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.34.415.923 I srv    load_model: context checkpoints enabled, max = 8, min spacing = 256
+0.34.416.319 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+0.34.429.394 I init: chat template, example_format: '[gMASK]<sop><|system|>You are a helpful assistant<|user|>Hello<|assistant|></think>Hi there<|user|>How are you?<|assistant|><think>'
+0.34.435.929 I srv          init: init: chat template, thinking = 1
+0.34.436.529 I srv  llama_server: model loaded
+0.34.436.534 I srv  llama_server: server is listening on http://0.0.0.0:9090
+0.34.436.542 I srv  update_slots: all slots are idle
+0.36.933.352 I srv  params_from_: Chat format: peg-native
+0.36.933.530 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.36.933.532 I srv  get_availabl: updating prompt cache
+0.36.933.678 I srv          load:  - looking for better prompt, base f_keep = -1.000, sim = 0.000
+0.36.933.683 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 16384.000 MiB, 196608 tokens, 17179869184 est)
+0.36.933.685 I srv  get_availabl: prompt cache update took 0.15 ms
+0.36.933.736 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.36.939.617 I SSD cache: continuation found conv=613096cdba128a01 overlap=100.0%
+0.36.939.618 I SSD cache: reusing conversation 613096cdba128a01 for cold restart
+0.36.939.658 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/613096cdba128a01 (next_id=3)
+0.36.939.660 I SSD cache: model compat_hash set to c9181c946267d7ba
+0.36.939.664 I SSD cache: created new conversation cache conv=613096cdba128a01 (total=1)
+0.36.939.668 I SSD cache: match checkpoint 2 conv=613096cdba128a01 turn=0 n_tokens=1141 lcp=1145
+0.36.978.482 I SSD cache: promoted checkpoint 2 cold->hot (58 MiB)
+0.37.004.104 W slot update_slots: id  0 | task 0 | cold-start restored SSD checkpoint (n_tokens=1141)
+0.37.004.388 I slot update_slots: id  0 | task 0 | prompt processing done, n_tokens = 1145, batch.n_tokens = 4
+0.37.021.870 W slot update_slots: id  0 | task 0 | created final context checkpoint 1 of 8 (pos_min = 0, pos_max = 1140, n_tokens = 1141, size = 58.930 MiB)
+0.37.112.776 I SSD cache: stored checkpoint 3 slot=0 tokens=1141 size=58 MiB (hot=117 MiB warm=0 MiB total=3)
+0.40.077.852 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  34.46 t/s
+0.40.915.878 I slot print_timing: id  0 | task 0 | prompt eval time =     242.60 ms /     4 tokens (   60.65 ms per token,    16.49 tokens per second)
+0.40.915.882 I slot print_timing: id  0 | task 0 |        eval time =    3739.52 ms /   128 tokens (   29.22 ms per token,    34.23 tokens per second)
+0.40.915.883 I slot print_timing: id  0 | task 0 |       total time =    3982.12 ms /   132 tokens
+0.40.915.886 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+0.40.919.639 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1272, truncated = 1
+0.40.919.652 I SSD cache: turn 1 complete (hot=117 MiB warm=0 MiB cold=1 checkpoints=3)
+0.40.919.660 I srv  update_slots: all slots are idle
+0.41.030.593 I srv    operator(): operator(): cleaning up before exit...

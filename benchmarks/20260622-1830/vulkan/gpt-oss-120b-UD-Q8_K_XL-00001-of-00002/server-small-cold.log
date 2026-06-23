@@ -1,0 +1,22 @@
+0.00.016.099 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.016.186 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.016.188 I device_info:
+0.00.016.252 I   - Vulkan0 : AMD Radeon 8060S Graphics (RADV STRIX_HALO) (114157 MiB, 113956 MiB free)
+0.00.016.258 I   - CPU     : AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (31707 MiB, 31707 MiB free)
+0.00.016.293 I system_info: n_threads = 32 (n_threads_batch = 32) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.016.309 I srv          init: running without SSL
+0.00.016.347 I srv          init: using 31 threads for HTTP server
+0.00.016.566 I srv         start: binding port with default address family
+0.00.017.693 I srv  llama_server: loading model
+0.00.017.698 I srv    load_model: loading model '/run/media/deck/internal2/llama-ai/models/gpt-oss-120b-UD-Q8_K_XL-00001-of-00002.gguf'
+0.00.017.740 I common_init_result: fitting params to device memory ...
+0.00.017.741 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.065.828 E llama_model_load: error loading model: tensor 'token_embd.weight' data is not within the file bounds, model is corrupted or incomplete
+0.00.065.837 E llama_model_load_from_file_impl: failed to load model
+0.00.066.003 E common_fit_params: encountered an error while trying to fit params to free device memory: failed to load model
+0.00.112.472 E llama_model_load: error loading model: tensor 'token_embd.weight' data is not within the file bounds, model is corrupted or incomplete
+0.00.112.477 E llama_model_load_from_file_impl: failed to load model
+0.00.112.479 E common_init_from_params: failed to load model '/run/media/deck/internal2/llama-ai/models/gpt-oss-120b-UD-Q8_K_XL-00001-of-00002.gguf'
+0.00.112.487 E srv    load_model: failed to load model, '/run/media/deck/internal2/llama-ai/models/gpt-oss-120b-UD-Q8_K_XL-00001-of-00002.gguf'
+0.00.112.489 I srv    operator(): operator(): cleaning up before exit...
+0.00.114.294 E srv  llama_server: exiting due to model loading error
