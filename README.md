@@ -611,57 +611,51 @@ Without caching, every turn re-evaluates both regions. The static prefix is the 
 
 ### Test scenario
 
-CLIO running Qwen3.6-35B-A3B (MoE hybrid, Q4_K_XL, Vulkan) on an Ayaneo Flip KB. Single user prompt: *"Please evaluate this project and share your opinion of it."* The model runs the project autonomously for five tool-calling turns, then writes a final evaluation. Cold server start with no cache populated.
+Same workload across all runs: CLIO with a single user prompt - *"Please evaluate this project and share your opinion of it."* The model runs the project autonomously, reading files, checking git history, and running commands, then writes a final evaluation. Cold server start with no cache populated. The prompt, tool set, and model are identical across systems - only the hardware and quantization differ.
 
-### Results: cold start (no cache)
+### Strix Halo (Nimo Axis N161) - Qwen3.6-35B Q8_K_XL
 
-Tools per turn: `file_operations`, `version_control`, `terminal_operations`. T5 has no tool calls - it writes the final evaluation directly.
+196K context, 32 threads, Vulkan backend, 120W TDP. Six turns: five tool-calling turns followed by the final evaluation.
 
 | Turn | Prompt tokens | TTFT | Gen t/s | Notes |
 |------|---------------|------|---------|-------|
-| T0 | 18,762 | 183.4s | 16.1 | Full system prompt + tools + initial user message. 102 t/s prompt eval rate. |
+| T0 | 17,396 | 22.2s | 40.5 | Full system prompt + tools + user message. 782 t/s prompt eval (1.28 ms/tok). |
+| T1 | 2,081 | 3.9s | 40.6 | Tool result reads. In-memory checkpoint restores static prefix. 533 t/s on tail. |
+| T2 | 2,559 | 4.9s | 39.8 | More file reads, git commands. 525 t/s on tail. |
+| T3 | 11,798 | 19.2s | 39.1 | Repositions to system prompt area. 616 t/s. |
+| T4 | 7,737 | 13.2s | 39.7 | Follow-up reads, terminal commands. 587 t/s. |
+| T5 | 11,894 | 19.3s | 38.7 | Writes the project evaluation. 1,070 tokens of analysis. 617 t/s. |
+
+TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = generation speed. Prompt tokens = new tokens evaluated (cached tokens excluded). Prompt eval rate for each turn shown in Notes.
+
+**Total server time: 2 minutes 21 seconds (53,465 prompt tokens + 2,314 generated).** Generation speed holds steady at 38-41 t/s across all six turns. Prompt eval runs 525-782 t/s - the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on every turn. Even when the model repositions to reprocess the full system prompt (T3, 11.8K tokens), the eval rate jumps to 616 t/s because the KV cache is fully populated. The system prompt cache created a 402.8 MiB entry on T0 (n_sys=17,280 tokens), and SSD checkpoints range from 400-635 MiB per snapshot.
+
+### Ayaneo Flip KB - Qwen3.6-35B Q4_K_XL
+
+65K context, 16 threads, Vulkan backend, 6GB VRAM + 18GB GTT. Five tool-calling turns, one evaluation turn.
+
+| Turn | Prompt tokens | TTFT | Gen t/s | Notes |
+|------|---------------|------|---------|-------|
+| T0 | 18,762 | 183.4s | 16.1 | Full system prompt + tools + initial user message. 102 t/s prompt eval. |
 | T1 | 7,001 | 84.6s | 15.1 | Tool result reads. Static prefix restored from in-memory checkpoint. |
 | T2 | 7,613 | 91.7s | 15.0 | Tool result reads, deeper into the runner script. |
 | T3 | 7,115 | 86.6s | 15.2 | Tool result reads, terminal commands. |
 | T4 | 5,784 | 69.2s | 15.1 | Final follow-up reads. Model preparing to write. |
 | T5 | 649 | 10.1s | 15.2 | Writes the project evaluation. |
 
-TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = generation speed (gen time = turn duration minus prompt eval). Prompt eval rate after T0: 82-83 t/s - the in-memory checkpoint restores the ~18K-token static prefix on each subsequent turn, so only the dynamic tail needs fresh evaluation.
+**Total: 11 minutes 55 seconds.** Prompt eval rate 82-102 t/s, generation 15-16 t/s. The system prompt cache on warm restart delivers a 54x T0 speedup (3.4s warm TTFT vs 183.4s cold) by restoring the 18,661-token system prompt from the global cross-conversation cache.
 
-**Total: 11 minutes 55 seconds with cache, vs ~42 minutes estimated without any cache.** Without caching, every turn would process all 18-26K tokens at the T0 eval rate of 102 t/s - 3 to 5 minutes of prompt eval per turn on top of generation. The 6:35 of total prompt eval time was concentrated in those per-turn TTFTs; the remaining 5:20 was generation and tool execution.
+### Ayaneo Flip KB - Qwen3.6-35B Q8_K_XL
 
-### Results: warm restart (cache populated)
-
-Same workload, same machine. The warm run does NOT restart the OS or clear the cache directory - just the server, with the SSD cache and system prompt cache already on disk from the cold run.
-
-| Turn | Cold TTFT | Cold prompt tok | Warm TTFT | Warm prompt tok | Speedup |
-|------|-----------|-----------------|-----------|-----------------|---------|
-| T0 | 183.4s | 18,762 | 3.4s | 101 | 54x |
-| T1 | 84.6s | 7,001 | 19.5s | 1,555 | 4.3x |
-| T2 | 91.7s | 7,613 | 25.0s | 1,947 | 3.7x |
-| T3 | 86.6s | 7,115 | 23.1s | 1,767 | 3.7x |
-| T4 | 69.2s | 5,784 | 64.5s | 5,380 | 1.1x |
-| T5 | 10.1s | 649 | 43.0s | 3,044 | 0.2x |
-| **Total** | **11:55 (715s)** | | **5:44 (344s)** | | **2.1x** |
-
-#### Where the speedup comes from
-
-**T0 (54x)** - the [system prompt cache](#system-prompt-cache) shines here. Cold T0 evaluates the full 18,762-token prompt from scratch. Warm T0 evaluates only 101 tokens because the 18,661-token system prompt is restored from the global cross-conversation cache. 180 seconds saved on the very first request of every server restart.
-
-**T1-T3 (3.7-4.3x)** - the [SSD checkpoint layers](#search-strategy) restore 80-90% of the conversation context. The remaining 1,500-2,000 tokens to evaluate is just the new tool result plus the assistant's tool-call response. Speedup degrades from 4.3x to 3.7x as the conversation tail grows because each turn's divergent content is slightly larger than the last.
-
-**T4 (1.1x)** - the conversation has nearly stabilized. The new tool result is similar in size to the prior turn's, so the checkpoint covers most of it. Caching and no-caching converge as the per-turn delta stops shrinking.
-
-**T5 (0.2x)** - inversion. Warm T5 is *slower* than cold T5. The warm run generated 3,044 tokens of fresh content (a longer final evaluation), the cold run only 649 (a short one). Generation time dominates this turn, and the warm model wrote more. This shape shows up in any conversation where the final response branches late.
+Coming soon.
 
 ### Takeaways
 
-- **The T0 speedup is the highest-value win.** 54x on the first request of every server restart, with no warmup needed. The system prompt cache turns "cold" server starts from a multi-minute wait into a sub-5-second response.
-- **Per-turn speedup decays as conversations diverge.** Repeated reads of the same files cache well; a fresh exploration branch does not. SSD cache hit rate stays high on focused work and drops on divergent exploration.
-- **Generation time is the floor.** Once prompt eval drops below generation time, more cache hits don't help - the model still has to write the response. The 0.2x on T5 is a feature, not a bug: it means caching isn't lying about its wins.
-- **Local inference trades latency for privacy and cost.** Cloud-hosted models evaluate prompts in seconds on GPU clusters; the local model with SSD cache runs 10-183 seconds per turn. The tradeoff is no API keys, no per-token cost, no network dependency - usable offline.
-
-The 2.1x total speedup is conservative. Longer sessions with more repeated tool calls (the common case in real agentic work) keep the SSD cache hit rate high and push the overall speedup toward 5-10x.
+- **Hardware dictates the experience.** Strix Halo Q8 finishes the same agentic session in 2.4 minutes. The Flip Q4 takes 11.9 minutes. Both use the same model architecture, same prompt, same cache machinery - the difference is compute (Radeon 8060S vs 780M) and memory bandwidth.
+- **Generation speed is nearly identical across turns.** 38-41 t/s on Halo, 15-16 t/s on Flip. Generation is not the bottleneck and caching doesn't change it - it's pure compute that's stable turn to turn.
+- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 82-102 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical - turns complete in seconds instead of minutes.
+- **The system prompt cache is the single highest-value optimization.** On warm restart, TTFT drops from 183.4s to 3.4s on the Flip. On the Halo, it would be sub-second. It turns cold server restarts from a multi-minute wait into an instant response - on any hardware.
+- **Local inference trades latency for privacy and cost.** No API keys, no per-token billing, no network dependency. Usable offline. The cache makes the tradeoff bearable even on lower-end hardware.
 
 ## What CachyLLama adds
 
