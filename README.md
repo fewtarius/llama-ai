@@ -632,28 +632,29 @@ TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = g
 
 ### Ayaneo Flip KB - Qwen3.6-35B Q4_K_XL
 
-65K context, 16 threads, Vulkan backend, 6GB VRAM + 18GB GTT. Five tool-calling turns, one evaluation turn.
+65K context, 8 threads, Vulkan backend, 6GB VRAM + 18GB GTT. Seven turns: six tool-calling turns followed by the final evaluation.
 
 | Turn | Prompt tokens | TTFT | Gen t/s | Notes |
 |------|---------------|------|---------|-------|
-| T0 | 18,762 | 183.4s | 16.1 | Full system prompt + tools + initial user message. 102 t/s prompt eval. |
-| T1 | 7,001 | 84.6s | 15.1 | Tool result reads. Static prefix restored from in-memory checkpoint. |
-| T2 | 7,613 | 91.7s | 15.0 | Tool result reads, deeper into the runner script. |
-| T3 | 7,115 | 86.6s | 15.2 | Tool result reads, terminal commands. |
-| T4 | 5,784 | 69.2s | 15.1 | Final follow-up reads. Model preparing to write. |
-| T5 | 649 | 10.1s | 15.2 | Writes the project evaluation. |
+| T0 | 19,311 | 170.6s | 20.2 | Full system prompt + tools + user message. 113 t/s prompt eval (8.84 ms/tok). |
+| T1 | 2,755 | 31.3s | 19.9 | Tool result reads. In-memory checkpoint restores static prefix. 88 t/s on tail. |
+| T2 | 3,174 | 36.3s | 19.8 | More file reads, git commands. 88 t/s on tail. |
+| T3 | 5,779 | 66.4s | 19.0 | Tool result reads, terminal commands. 87 t/s on tail. |
+| T4 | 8,744 | 99.9s | 19.1 | Follow-up reads into source scripts. 88 t/s on tail. |
+| T5 | 10,218 | 117.5s | 18.9 | Final file reads, git log inspection. 87 t/s on tail. |
+| T6 | 490 | 8.1s | 18.6 | Writes the project evaluation. 1,374 tokens of analysis. 60 t/s. |
 
-**Total: 11 minutes 55 seconds.** Prompt eval rate 82-102 t/s, generation 15-16 t/s. The system prompt cache on warm restart delivers a 54x T0 speedup (3.4s warm TTFT vs 183.4s cold) by restoring the 18,661-token system prompt from the global cross-conversation cache.
+**Total server time: 11 minutes 19 seconds (50,471 prompt tokens + 2,846 generated).** Generation speed holds steady at 18.6-20.2 t/s across all seven turns. Prompt eval rate 87-113 t/s - the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on each turn. The system prompt cache on warm restart delivers a 54x T0 speedup (3.4s warm TTFT vs 183.4s cold) by restoring the 18,661-token system prompt from the global cross-conversation cache.
 
 ### Ayaneo Flip KB - Qwen3.6-35B Q8_K_XL
 
-Coming soon.
+Won't fit in RAM. The Q8_K_XL quantization is 37 GiB; the Flip's 780M iGPU has 24 GiB of VRAM available and the system has 25.8 GiB of CPU RAM. With Vulkan offloading all layers to the GPU, the model needs ~37 GiB of contiguous device memory - 13 GiB more than available.
 
 ### Takeaways
 
-- **Hardware dictates the experience.** Strix Halo Q8 finishes the same agentic session in 2.4 minutes. The Flip Q4 takes 11.9 minutes. Both use the same model architecture, same prompt, same cache machinery - the difference is compute (Radeon 8060S vs 780M) and memory bandwidth.
-- **Generation speed is nearly identical across turns.** 38-41 t/s on Halo, 15-16 t/s on Flip. Generation is not the bottleneck and caching doesn't change it - it's pure compute that's stable turn to turn.
-- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 82-102 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical - turns complete in seconds instead of minutes.
+- **Hardware dictates the experience.** Strix Halo Q8 finishes the same agentic session in 2.4 minutes. The Flip Q4 takes 11.3 minutes. Both use the same model architecture, same prompt, same cache machinery - the difference is compute (Radeon 8060S vs 780M) and memory bandwidth.
+- **Generation speed is nearly identical across turns.** 38-41 t/s on Halo, 19-20 t/s on Flip. Generation is not the bottleneck and caching doesn't change it - it's pure compute that's stable turn to turn.
+- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 87-113 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical - turns complete in seconds instead of minutes.
 - **The system prompt cache is the single highest-value optimization.** On warm restart, TTFT drops from 183.4s to 3.4s on the Flip. On the Halo, it would be sub-second. It turns cold server restarts from a multi-minute wait into an instant response - on any hardware.
 - **Local inference trades latency for privacy and cost.** No API keys, no per-token billing, no network dependency. Usable offline. The cache makes the tradeoff bearable even on lower-end hardware.
 
