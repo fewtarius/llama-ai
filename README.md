@@ -9,8 +9,8 @@ default backend for best stability on RDNA3 iGPUs.
 ## Introduction
 
 llama-ai is a deployment of CachyLLama aimed at running MoE models
-(hybrid and dense) on AMD APUs. The primary target is the Strix Halo "max"
-platform (Ryzen AI Max+ 395, Radeon 8060S, 128GB unified memory with
+(hybrid and dense) on AMD APUs. The primary target is a Nimo Axis N161 
+ (Ryzen AI Max+ 395, Radeon 8060S, 128GB unified memory with
 96GB pre-allocated to the APU). It also runs on the Ayaneo Flip KB
 (7840U / Radeon 780M / 32GB) and the Minisforum UM580 (5800H / 16GB),
 and any other AMD APU in the supported detection map.
@@ -46,10 +46,6 @@ costs, no cloud dependency. Primary target is the Strix Halo "max"
 platform (Ryzen AI Max+ 395 / Radeon 8060S / 96GB APU VRAM / 128GB
 total). Also runs well on the [Ayaneo Flip KB](https://ayaneo.com/product/AYANEO-FLIP-KB)
 (7840U / 32GB) and similar Zen 4 APUs.
-
-<p align="center">
-  <img src=".images/flip.webp" alt="Ayaneo Flip KB" width="800">
-</p>
 
 [CLIO](https://github.com/SyntheticAutonomicMind/CLIO) is optimized for this implementation. It serializes tool definitions with deterministic JSON key ordering and reuses conversation state to maximize cache hits across agentic turns. System prompts, tool descriptions, and compressed context - the static content sent on every API call - are cached and persisted to disk so they're available immediately on the next request.
 
@@ -524,15 +520,16 @@ Strix Halo (top row per model) vs Ayaneo Flip KB (bottom row), large
 prompt only. All Strix Halo numbers use prompt eval speedup (not
 wall-clock). MoE models from the
 [boundary-fix run](benchmarks/20260620-1639/),
-[GPT-OSS-120B](benchmarks/20260622-1436/).
+[GPT-OSS-120B Q8](benchmarks/20260623-0616/),
+[Qwen3.6-35B Q8](benchmarks/20260623-0647/).
 
 | Model | Strix Halo cold | Strix Halo warm | Strix speedup | Flip cold | Flip warm | Flip speedup |
 |-------|----------------:|----------------:|--------------:|----------:|----------:|-------------:|
 | GLM-4.7-Flash | 59.6s | 1.59s | **37.5x** | 467.6s (7.8min) | 2.7s | 174.1x |
 | Qwen3.6-35B | 23.6s | 0.75s | **31.7x** | 143.1s (2.4min) | 1.0s | 144.5x |
-| Qwen3.6-35B Q8 | 27.4s | 0.94s | **29.2x** | --- | --- | --- |
+| Qwen3.6-35B Q8 | 18.7s | 1.46s | **12.9x** | --- | --- | --- |
 | gemma-4-26B | 31.0s | 0.54s | **57.5x** | 130.9s (2.2min) | 1.4s | 92.9x |
-| GPT-OSS-120B | 48.4s | 0.86s | **56.4x** | --- | --- | --- |
+| GPT-OSS-120B | 29.9s | 1.69s | **17.7x** | --- | --- | --- |
 
 The Strix Halo's 8060S evaluates MoE prompts 5-20x faster than the
 780M, so absolute warm-cache TTFT is much smaller. The large-context
@@ -549,7 +546,8 @@ for generation batch buffers and concurrent slots.
 Full benchmark data (server logs, API responses, timing stats):
 [Ayaneo Flip KB](benchmarks/20260611-0656/),
 [Strix Halo MoE](benchmarks/20260620-1639/),
-[Strix Halo Qwen Q8](benchmarks/20260622-1702/).
+[Strix Halo Qwen Q8](benchmarks/20260623-0647/),
+[Strix Halo GPT-OSS-120B](benchmarks/20260623-0616/).
 
 ### Running the benchmark
 
@@ -595,25 +593,17 @@ benchmarks/YYYYMMDD-HHMM/
 
 ## Real-world CLIO performance
 
-[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) sends 18-30K tokens of system prompt, tool definitions, and prior conversation context on every API call. Without caching, every turn would re-evaluate the whole prompt from scratch. The numbers below come from one real session to show what the cache actually buys in practice.
+[CLIO](https://github.com/SyntheticAutonomicMind/CLIO) sends 18-30K tokens of system prompt, tool definitions, and prior conversation context on every API call. Without KV caching, every turn would re-evaluate the entire prompt from scratch.
 
-### Workload profile
+Every prompt has two regions: a **static prefix** (~18K tokens - system prompt, tool definitions, initial messages) that's identical across all turns, and a **dynamic tail** (grows to ~12K tokens over the conversation) of tool results and new assistant responses. On each turn, the cache restores the static prefix entirely and whatever portion of the dynamic tail was already evaluated on prior turns. Only the genuinely new content since the last turn needs fresh evaluation.
 
-A CLIO session alternates between tool call turns (the LLM picks a tool and emits a JSON call) and response turns (the LLM writes a user-visible message). Tool call generations are short (~30-150 tokens). Response generations are longer - commands, code, explanations.
+This is the number that matters for agentic workflows: not generation speed (the model writes as fast as the GPU allows), but **prompt eval time** — how long you wait before the first token arrives.
 
-The prompt for every turn is split into two regions:
+### Test setup
 
-- **Static prefix** (~18K tokens, identical across turns): system prompt, tool definitions, the initial user message, the turn-0 assistant message, and the turn-0 tool results.
-- **Dynamic tail** (grows ~0 to ~12K tokens): tool results and assistant responses from subsequent turns.
+Same workload across both systems. CLIO with the prompt *"Please evaluate this project and share your opinion of it."* The model reads files, checks git history, runs commands, then writes a final evaluation. Cold server start, no cache populated. Same prompt, same tool set, same model architecture — only the hardware and quantization differ.
 
-
-Without caching, every turn re-evaluates both regions. The static prefix is the obvious target - it's identical across turns and dominates prompt size. The dynamic tail stabilizes once the conversation does, so most of it can be cached too once it's been seen once.
-
-### Test scenario
-
-Same workload across all runs: CLIO with a single user prompt - *"Please evaluate this project and share your opinion of it."* The model runs the project autonomously, reading files, checking git history, and running commands, then writes a final evaluation. Cold server start with no cache populated. The prompt, tool set, and model are identical across systems - only the hardware and quantization differ.
-
-### Strix Halo (Nimo Axis N161) - Qwen3.6-35B Q8_K_XL
+### Strix Halo (Nimo Axis N161) — Qwen3.6-35B Q8_K_XL
 
 196K context, 32 threads, Vulkan backend, 120W TDP. Six turns: five tool-calling turns followed by the final evaluation.
 
@@ -626,11 +616,9 @@ Same workload across all runs: CLIO with a single user prompt - *"Please evaluat
 | T4 | 7,737 | 13.2s | 39.7 | Follow-up reads, terminal commands. 587 t/s. |
 | T5 | 11,894 | 19.3s | 38.7 | Writes the project evaluation. 1,070 tokens of analysis. 617 t/s. |
 
-TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = generation speed. Prompt tokens = new tokens evaluated (cached tokens excluded). Prompt eval rate for each turn shown in Notes.
+**Total server time: 2 minutes 21 seconds** (53,465 prompt tokens + 2,314 generated). Generation speed holds steady at 38-41 t/s across all six turns. Prompt eval runs 525-782 t/s — the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on every turn. The system prompt cache created a 402.8 MiB entry on T0 (n_sys=17,280 tokens), and SSD checkpoints range from 400-635 MiB per snapshot.
 
-**Total server time: 2 minutes 21 seconds (53,465 prompt tokens + 2,314 generated).** Generation speed holds steady at 38-41 t/s across all six turns. Prompt eval runs 525-782 t/s - the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on every turn. Even when the model repositions to reprocess the full system prompt (T3, 11.8K tokens), the eval rate jumps to 616 t/s because the KV cache is fully populated. The system prompt cache created a 402.8 MiB entry on T0 (n_sys=17,280 tokens), and SSD checkpoints range from 400-635 MiB per snapshot.
-
-### Ayaneo Flip KB - Qwen3.6-35B Q4_K_XL
+### Ayaneo Flip KB — Qwen3.6-35B Q4_K_XL
 
 65K context, 8 threads, Vulkan backend, 6GB VRAM + 18GB GTT. Seven turns: six tool-calling turns followed by the final evaluation.
 
@@ -644,18 +632,18 @@ TTFT = time to first token (server-side prompt evaluation per turn). Gen t/s = g
 | T5 | 10,218 | 117.5s | 18.9 | Final file reads, git log inspection. 87 t/s on tail. |
 | T6 | 490 | 8.1s | 18.6 | Writes the project evaluation. 1,374 tokens of analysis. 60 t/s. |
 
-**Total server time: 11 minutes 19 seconds (50,471 prompt tokens + 2,846 generated).** Generation speed holds steady at 18.6-20.2 t/s across all seven turns. Prompt eval rate 87-113 t/s - the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on each turn. The system prompt cache on warm restart delivers a 54x T0 speedup (3.4s warm TTFT vs 183.4s cold) by restoring the 18,661-token system prompt from the global cross-conversation cache.
+**Total server time: 11 minutes 19 seconds** (50,471 prompt tokens + 2,846 generated). Generation holds steady at 18.6-20.2 t/s across all seven turns. Prompt eval rate 60-113 t/s — the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on each turn. The T6 drop to 60 t/s is expected: with only 490 new tokens to evaluate, overhead dominates the measurement.
 
-### Ayaneo Flip KB - Qwen3.6-35B Q8_K_XL
+### Ayaneo Flip KB — Qwen3.6-35B Q8_K_XL
 
-Won't fit in RAM. The Q8_K_XL quantization is 37 GiB; the Flip's 780M iGPU has 24 GiB of VRAM available and the system has 25.8 GiB of CPU RAM. With Vulkan offloading all layers to the GPU, the model needs ~37 GiB of contiguous device memory - 13 GiB more than available.
+Won't fit. The Q8_K_XL quantization is 37 GiB; the Flip's 780M iGPU has 24 GiB of VRAM available and the system has 25.8 GiB of CPU RAM. With Vulkan offloading all layers to the GPU, the model needs ~37 GiB of contiguous device memory — 13 GiB more than available.
 
 ### Takeaways
 
-- **Hardware dictates the experience.** Strix Halo Q8 finishes the same agentic session in 2.4 minutes. The Flip Q4 takes 11.3 minutes. Both use the same model architecture, same prompt, same cache machinery - the difference is compute (Radeon 8060S vs 780M) and memory bandwidth.
-- **Generation speed is nearly identical across turns.** 38-41 t/s on Halo, 19-20 t/s on Flip. Generation is not the bottleneck and caching doesn't change it - it's pure compute that's stable turn to turn.
-- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 87-113 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical - turns complete in seconds instead of minutes.
-- **The system prompt cache is the single highest-value optimization.** On warm restart, TTFT drops from 183.4s to 3.4s on the Flip. On the Halo, it would be sub-second. It turns cold server restarts from a multi-minute wait into an instant response - on any hardware.
+- **Hardware is the difference.** Strix Halo Q8 finishes the same session in 2.4 minutes. The Flip Q4 takes 11.3 minutes. Same model architecture, same prompt, same cache machinery — the difference is the Radeon 8060S (96GB VRAM, 120W) vs the 780M (24GB VRAM, 6-30W).
+- **Generation speed is flat across turns.** 38-41 t/s on Halo, 19-20 t/s on Flip. Generation is pure compute — caching doesn't change it, and it's stable from first turn to last.
+- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 60-113 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical — turns complete in seconds instead of minutes.
+- **The system prompt cache is the highest-value optimization.** A warm server restart restores the entire ~18K-token system prompt from the global cross-conversation cache. On the Flip, this drops TTFT from ~3 minutes to ~3 seconds on the very first request of every restart — the difference between usable and "go get coffee."
 - **Local inference trades latency for privacy and cost.** No API keys, no per-token billing, no network dependency. Usable offline. The cache makes the tradeoff bearable even on lower-end hardware.
 
 ## What CachyLLama adds
