@@ -244,6 +244,20 @@ echo -e "${CYAN}  Distro: $(grep '^PRETTY_NAME' /etc/os-release 2>/dev/null | cu
 echo -e "${CYAN}  Packages to install: ${#PACKAGES[@]}${NC}"
 echo ""
 
+# SteamOS uses an immutable root filesystem (/usr is read-only).
+# Disable it before any pacman operations so files can actually be written.
+readonly_was_enabled=false
+if command -v steamos-readonly &>/dev/null && steamos-readonly status 2>/dev/null | grep -q enabled; then
+    log_info "Disabling SteamOS read-only filesystem (needed to install packages)..."
+    $SUDO steamos-readonly disable
+    readonly_was_enabled=true
+    # Ensure readonly is re-enabled on script exit (even on error)
+    trap 'if [[ "$readonly_was_enabled" == true ]]; then
+        echo -e "${BLUE}[INFO]${NC}  Re-enabling SteamOS read-only filesystem (exit trap)..."
+        '"$SUDO"' steamos-readonly enable
+    fi' EXIT
+fi
+
 # Sync package database
 log_info "Syncing package database..."
 $SUDO pacman -Sy --noconfirm 2>&1 | tail -5
@@ -330,6 +344,13 @@ repair_stripped_packages() {
 
 echo ""
 repair_stripped_packages
+
+# Re-enable the read-only filesystem if we disabled it earlier
+if [[ "$readonly_was_enabled" == true ]]; then
+    log_info "Re-enabling SteamOS read-only filesystem..."
+    $SUDO steamos-readonly enable
+    readonly_was_enabled=false
+fi
 
 # =============================================================================
 # Repair broken pip-installed cmake wrappers in ~/bin/
