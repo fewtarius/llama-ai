@@ -354,7 +354,7 @@ assign_profile() {
         # cache-ram scales with tier: handheld 6GB, halo 16GB
         local _ssm_cache_ram=6144
         [[ "$tier" == "halo" ]] && _ssm_cache_ram=16384
-        EXTRA_SERVER_ARGS+=" --no-context-shift --checkpoint-every-n-tokens 0 --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
+        EXTRA_SERVER_ARGS+=" --no-context-shift --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
@@ -397,7 +397,7 @@ assign_profile() {
                 # prompt cache (separate mechanism) handles cross-restart
                 # warm-start; per-turn checkpoints are just eviction
                 # insurance for long single-conversation runs.
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 16384 --ctx-checkpoints 8 --cache-ram 16384"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 16384 --ctx-checkpoints 8 --cache-ram 16384"
                 # 8 SSD checkpoints is enough for the system prompt entry
                 # plus a couple per-turn safety nets. 64 (default) just
                 # accumulates stale checkpoints on disk.
@@ -413,7 +413,7 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 8192"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 8192"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -427,7 +427,7 @@ assign_profile() {
                 # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
                 # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 6144"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 6144"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -461,21 +461,21 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 8 --cache-ram 16384"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 16384"
                 ;;
             standard)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 8192"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram 8192"
                 ;;
             *)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
                 KV_CACHE_TYPE_K="q4_0"
                 KV_CACHE_TYPE_V="q4_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens 4096 --ctx-checkpoints 4 --cache-ram 6144"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram 6144"
                 ;;
         esac
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
@@ -1167,7 +1167,7 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-system-prompts) SSD_SYSTEM_PROMPTS="$2"; shift 2 ;;
         --cache-ssd-system-max-days) SSD_SYSTEM_MAX_DAYS="$2"; shift 2 ;;
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
-        --checkpoint-every-n-tokens)
+        --checkpoint-min-step)
             OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
         --ctx-checkpoints)
             OVERRIDE_CTX_CHECKPOINTS="$2"; shift 2 ;;
@@ -1252,7 +1252,7 @@ strip_and_append() {
     stripped=$(echo "${!var_name}" | sed -E "s/ ${pattern} [0-9]+//g")
     eval "$var_name=\"\$stripped \$replacement\""
 }
-[[ -n "$OVERRIDE_CHECKPOINT_EVERY"  ]] && strip_and_append --checkpoint-every-n-tokens "--checkpoint-every-n-tokens $OVERRIDE_CHECKPOINT_EVERY"
+[[ -n "$OVERRIDE_CHECKPOINT_EVERY"  ]] && strip_and_append --checkpoint-min-step "--checkpoint-min-step $OVERRIDE_CHECKPOINT_EVERY"
 [[ -n "$OVERRIDE_CTX_CHECKPOINTS"    ]] && strip_and_append --ctx-checkpoints            "--ctx-checkpoints $OVERRIDE_CTX_CHECKPOINTS"
 [[ -n "$OVERRIDE_CACHE_RAM"          ]] && strip_and_append --cache-ram                  "--cache-ram $OVERRIDE_CACHE_RAM"
 
