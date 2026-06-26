@@ -1,0 +1,73 @@
+0.00.014.320 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.014.405 I log_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.014.407 I device_info:
+0.00.014.481 I   - Vulkan0 : AMD Radeon 8060S Graphics (RADV STRIX_HALO) (114157 MiB, 113107 MiB free)
+0.00.014.487 I   - CPU     : AMD RYZEN AI MAX+ 395 w/ Radeon 8060S (31707 MiB, 31707 MiB free)
+0.00.014.527 I system_info: n_threads = 32 (n_threads_batch = 32) / 32 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.014.552 I srv          init: running without SSL
+0.00.014.598 I srv          init: using 31 threads for HTTP server
+0.00.014.851 I srv         start: binding port with default address family
+0.00.015.973 I srv  llama_server: loading model
+0.00.016.026 I srv    load_model: loading model '/run/media/deck/internal2/llama-ai/models/gemma-4-26B-A4B-it-UD-Q5_K_M.gguf'
+0.00.016.037 I common_init_result: fitting params to device memory ...
+0.00.016.039 I common_init_result: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.722.783 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.723.000 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.725.853 W load: control-looking token:      1 '<eos>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.00.733.108 W load: special_eog_ids contains '<|tool_response>', removing '</s>' token from EOG list
+0.02.719.937 W llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.02.828.611 I common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.02.887.828 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.02.887.832 I srv    load_model: initializing slots, n_slots = 1
+0.02.966.009 W common_speculative_init: no implementations specified for speculative decoding
+0.02.966.014 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 131072
+0.02.966.070 I srv    load_model: prompt cache is enabled, size limit: 16384 MiB
+0.02.966.072 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.02.966.072 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.02.966.072 I srv    load_model: context checkpoints enabled, max = 8, min spacing = 4096
+0.02.966.093 I SSD cache: model compat_hash 4db765d3d74af491 (arch dims + type_k=8 type_v=8)
+0.02.966.163 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.02.966.182 I srv          init: idle slots will be saved to prompt cache and cleared upon starting a new task
+0.02.970.510 I init: chat template, example_format: '<|turn>system
+<|think|>
+You are a helpful assistant<turn|>
+<|turn>user
+Hello<turn|>
+<|turn>model
+Hi there<turn|>
+<|turn>user
+How are you?<turn|>
+<|turn>model
+'
+0.02.970.876 I srv          init: init: chat template, thinking = 1
+0.02.970.913 I srv  llama_server: model loaded
+0.02.970.918 I srv  llama_server: server is listening on http://0.0.0.0:9090
+0.02.970.923 I srv  update_slots: all slots are idle
+0.05.068.518 I srv    operator(): Chat format: peg-gemma4
+0.05.068.833 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.05.068.837 I srv  get_availabl: updating prompt cache
+0.05.068.863 I srv          load:  - looking for better prompt, base f_keep = -1.000, sim = 0.000
+0.05.068.870 I srv        update:  - cache state: 0 prompts, 0.000 MiB (limits: 16384.000 MiB, 131072 tokens, 17179869184 est)
+0.05.068.872 I srv  get_availabl: prompt cache update took 0.03 ms
+0.05.068.993 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.05.069.152 I SSD cache: continuation found conv=613c1ef8fd10995e overlap=100.0%
+0.05.069.153 I SSD cache: reusing conversation 613c1ef8fd10995e for cold restart
+0.05.069.166 I SSD cache: auto-sized hot=713 MiB warm=256 MiB (avail=1119 MiB)
+0.05.069.167 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+0.05.069.221 I SSD cache: loaded 3 checkpoints from /home/deck/llama-ai/ssd-cache/613c1ef8fd10995e (next_id=4)
+0.05.069.224 I SSD cache: model compat_hash set to 4db765d3d74af491
+0.05.069.233 I SSD cache: created new conversation cache conv=613c1ef8fd10995e (total=1)
+0.05.069.243 I SSD cache: match checkpoint 3 conv=613c1ef8fd10995e turn=1 n_tokens=6079 lcp=4096
+0.05.087.275 I SSD cache: promoted checkpoint 3 cold->hot (169 MiB)
+0.05.109.961 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=4096 ssd_n_tokens=6079 pos=[4547,6082] n_push=6079
+0.05.109.992 I slot   operator(): id  0 | task 0 | Checking checkpoint with [0, 6079] against 5055...
+0.05.110.004 W slot   operator(): id  0 | task 0 | restored context checkpoint (pos_min = 0, pos_max = 6079, n_tokens = 6079, n_past = 6079, size = 0.000 MiB)
+0.08.071.700 I slot print_timing: id  0 | task 0 | prompt eval time =      83.12 ms /     4 tokens (   20.78 ms per token,    48.12 tokens per second)
+0.08.071.705 I slot print_timing: id  0 | task 0 |        eval time =    2919.55 ms /   128 tokens (   22.81 ms per token,    43.84 tokens per second)
+0.08.071.706 I slot print_timing: id  0 | task 0 |       total time =    3002.67 ms /   132 tokens
+0.08.071.709 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+0.08.072.073 I slot      release: id  0 | task 0 | stop processing: n_tokens = 6210, truncated = 0
+0.08.072.088 I SSD cache: turn 3 complete (hot=0 MiB warm=169 MiB cold=2 checkpoints=3)
+0.08.072.098 I srv  update_slots: all slots are idle
+0.08.072.394 I srv  stream_sessi: stream_session_attach_pipe: conv_id= (empty=1)
+0.08.141.311 I srv    operator(): operator(): cleaning up before exit...

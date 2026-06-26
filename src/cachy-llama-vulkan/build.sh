@@ -23,6 +23,18 @@ cd "$BUILD_DIR"
 # Add ROCm LLVM to PATH for Vulkan build (uses bare clang/clang++)
 export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
 
+# On SteamOS, system libraries may be in sf_root overlay
+if [[ -d "/sf_root/rootfs" ]]; then
+    sf_root_lib=""
+    for d in /sf_root/rootfs/*/usr/lib; do
+        if [[ -d "$d" ]]; then sf_root_lib="$d"; break; fi
+    done
+    if [[ -n "$sf_root_lib" ]]; then
+        export LD_LIBRARY_PATH="$sf_root_lib:$LD_LIBRARY_PATH"
+    fi
+fi
+export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
+
 cmake "$LLAMA_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang \

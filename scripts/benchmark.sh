@@ -76,14 +76,31 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_header(){ echo -e "${MAGENTA}=== $1 ===${NC}"; }
 
-# Models to test (filename:extra_flags)
-MODELS=(
-    "GLM-4.7-Flash-Q4_K_M.gguf:"
-    "Qwen3-14B-Q5_K_M.gguf:"
-    "gemma-4-26B-A4B-it-UD-Q5_K_M.gguf:"
-    "Qwen3.5-27B-UD-Q5_K_XL.gguf:"
-    "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf:"
-)
+# Models to test - auto-discovered from models/ directory.
+# Excludes GGUF split-file shards (e.g. model-00002-of-00005.gguf).
+# Set --model to test a specific model only.
+discover_models() {
+    local -a found=()
+    for f in "$MODEL_DIR"/*.gguf; do
+        [[ -f "$f" ]] || continue
+        local name
+        name=$(basename "$f")
+        # Skip split-file shards (contain -NNNNN-of-NNNNN in filename)
+        if [[ "$name" =~ -[0-9]{5}-of-[0-9]{5}\.gguf$ ]]; then
+            continue
+        fi
+        found+=("$name:")
+    done
+    printf '%s\n' "${found[@]}"
+}
+
+mapfile -t MODELS < <(discover_models)
+
+# If no models found, show error
+if [[ ${#MODELS[@]} -eq 0 ]]; then
+    log_error "No .gguf models found in $MODEL_DIR"
+    exit 1
+fi
 
 # =============================================================================
 # Helper functions
@@ -894,7 +911,7 @@ for be in rocm vulkan; do
 done
 
 # Filter models if specific one requested
-[[ -n "$TEST_MODEL" ]] && MODELS=("$TEST_MODEL:")
+[[ -n "$TEST_MODEL" ]] && MODELS=("$TEST_MODEL")
 
 # Ensure clean state
 trap 'stop_server' EXIT

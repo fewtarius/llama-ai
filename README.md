@@ -412,45 +412,54 @@ changes is the underlying compute, memory, and context size.
 Radeon 8060S, 96GB APU VRAM, 128 output tokens, all GPU layers.
 Benchmark data:
 [GPT-OSS-120B Q8_K_XL](benchmarks/20260625-1849/) (ctx 131072),
-[GLM-4.7-Flash Q8_K_XL](benchmarks/20260625-1901/) (ctx 196608),
-[Qwen3.6-35B Q8_K_XL](benchmarks/20260625-1910/) (ctx 196608),
-[gemma-4-26B Q5_K_M](benchmarks/20260625-1841/) (ctx 196608).
+[all Strix Halo models below](benchmarks/20260626-1836/) (ctx 131072-196608).
 
 | Model | Size | Cold TTFT | Warm TTFT | Speedup | Cached |
 |-------|------|-----------|-----------|---------|--------|
 | GPT-OSS-120B Q8_K_XL (120B MoE, 128 experts) | small (~1.2K) | 2.5s | 0.21s | **12.1x** | 1201/1205 |
 | | medium (~5.2K) | 9.0s | 0.62s | **14.6x** | 5246/5250 |
 | | large (~15.4K) | 27.9s | 1.46s | **19.2x** | 15376/15380 |
-| GLM-4.7-Flash Q8_K_XL (30B MoE, 3B active) | small (~1.1K) | 1.7s | 0.24s | **7.2x** | 1141/1145 |
-| | medium (~5.2K) | 8.4s | 0.83s | **10.1x** | 5233/5237 |
-| | large (~15.5K) | 42.0s | 2.67s | **15.7x** | 15485/15489 |
-| Qwen3.6-35B-A3B Q8_K_XL (35B MoE hybrid, 3B active) | small (~1.2K) | 1.7s | 0.34s | **5.0x** | 1239/1243 |
-| | medium (~5.4K) | 6.0s | 0.66s | **9.2x** | 5405/5409 |
-| | large (~15.7K) | 17.5s | 1.11s | **15.8x** | 15717/15721 |
-| gemma-4-26B-A4B Q5_K_M (26B MoE, 4B active) | small (~1.4K) | 1.9s | 0.26s | **7.5x** | 1409/1413 |
-| | medium (~6.1K) | 6.2s | 0.33s | **19.0x** | 6079/6083 |
-| | large (~17.3K) | 21.0s | 0.49s | **43.0x** | 17343/17347 |
+| gpt-oss-20b Q6_K_XL (20B dense, ctx 131072) | small (~1.2K) | 1.1s | 0.04s | **28.9x** | 1201/1205 |
+| | medium (~5.2K) | 3.7s | 0.09s | **42.4x** | 5246/5250 |
+| | large (~15.4K) | 12.4s | 0.16s | **79.1x** | 15376/15380 |
+| GLM-4.7-Flash Q8_K_XL (30B MoE, 3B active) | small (~1.1K) | 1.5s | 0.18s | **8.5x** | 1141/1145 |
+| | medium (~5.2K) | 8.0s | 0.38s | **20.7x** | 5233/5237 |
+| | large (~15.5K) | 39.0s | 1.08s | **36.0x** | 15485/15489 |
+| Qwen3.6-35B-A3B Q8_K_XL (35B MoE hybrid, 3B active) | small (~1.2K) | 2.2s | 0.16s | **14.2x** | 1239/1243 |
+| | medium (~5.4K) | 6.9s | 0.25s | **27.6x** | 5405/5409 |
+| | large (~15.7K) | 19.7s | 0.56s | **35.0x** | 15717/15721 |
+| gemma-4-26B-A4B Q5_K_M (26B MoE, 4B active) | small (~1.4K) | 1.5s | 0.07s | **21.4x** | 1409/1413 |
+| | medium (~6.1K) | 7.7s | 0.08s | **92.3x** | 6079/6083 |
+| | large (~17.3K) | 22.9s | 0.12s | **185.8x** | 17343/17347 |
+| Qwen3.6-27B Q8_K_XL (27B dense) | small (~1.2K) | 6.6s | 0.42s | **15.8x** | 1239/1243 |
+| | medium (~5.4K) | 22.8s | 0.50s | **45.5x** | 5405/5409 |
+| | large (~15.7K) | 66.6s | 1.14s | **58.4x** | 15717/15721 |
 
 Speedup is **prompt eval speedup** (cold prompt_ms / warm prompt_ms) -
 the pure measure of cache effectiveness, excluding server restart and
 generation time. Cached shows tokens restored from SSD / total tokens.
-All warm runs restore from SSD cold-start path (`ssd_cold` cache state).
+All warm runs restore from SSD (`ssd_warm` cache state; warm-tier
+in-memory checkpoints after server restart).
 
-Cold prompt eval at full TDP: 377-619 t/s for GLM-4.7 Q8 (1.6-2.7 ms/tok),
-673-898 t/s for Qwen3.6 Q8 (1.1-1.5 ms/tok), and 480-586 t/s for
-GPT-OSS-120B Q8 (1.7-2.1 ms/tok at 131K ctx). Generation speed ranges
-from 35-43 t/s across models. The warm path is SSD-bound - Q8 checkpoints
-are large but the absolute warm TTFT stays under 2.7s for all models at
+Cold prompt eval at full TDP: 398-1,433 t/s across models. MoE models
+evaluate at 398-1,433 t/s (0.7-2.5 ms/tok) with only 3-4B parameters
+active per token. The dense Qwen3.6-27B Q8 evaluates at 188-236 t/s
+(4.2-5.3 ms/tok) - every token goes through all 27B parameters.
+Generation speed: 10-58 t/s for MoE models; 5 t/s for the dense 27B.
+The warm path is SSD-bound - Q8 checkpoints are
+large but the absolute warm TTFT stays under 1.2s for all models at
 all sizes.
+gpt-oss-20b Q6 is the fastest model tested: 1,084-1,433 t/s cold eval
+and 31-58 t/s generation. Its small 20B parameter count means every
+token is cheap.
 The hybrid MoE architectures (Qwen3.6, GLM-4.7-Flash) restore both
 attention KV state and recurrent state
 from disk - Mamba layers are checkpoint-aware and the cache works
-across restarts. GPT-OSS-120B is a dense MoE (no hybrid layers):
-`cache_reuse` is not supported by the architecture but the SSD
-checkpoint machinery works identically.
-gpt-oss-120b Q8_K_XL is a 2-file split GGUF. The benchmark loads only
-part 00001; the second file provides the remaining tensor data and is
-loaded on demand during inference.
+across restarts. GPT-OSS-120B and gpt-oss-20b are dense architectures (no hybrid layers):
+`cache_reuse` is not supported but the SSD checkpoint machinery works
+identically. gpt-oss-120b Q8_K_XL is a 2-file split GGUF. The benchmark
+loads only part 00001; the second file provides the remaining tensor
+data and is loaded on demand during inference.
 
 #### Halo caching strategy
 
@@ -514,36 +523,35 @@ Cold prompt eval: 109.9-133.4 t/s. Cached: 15,717/15,721 tokens at large size (4
 
 Strix Halo (top row per model) vs Ayaneo Flip KB (bottom row), large
 prompt only. All Strix Halo numbers use prompt eval speedup (not
-wall-clock). MoE models from the
-[Q8_K_XL runs](benchmarks/20260625-1910/),
-[gemma-4 Q5 run](benchmarks/20260625-1841/),
+wall-clock). Data from
+[Strix Halo full suite](benchmarks/20260626-1836/) and
 [GPT-OSS-120B Q8](benchmarks/20260625-1849/).
 
 | Model | Strix Halo cold | Strix Halo warm | Strix speedup | Flip cold | Flip warm | Flip speedup |
 |-------|----------------:|----------------:|--------------:|----------:|----------:|-------------:|
-| GLM-4.7-Flash Q8 | 42.0s | 2.67s | **15.7x** | 467.6s (7.8min) | 2.7s | 174.1x |
-| Qwen3.6-35B Q8 | 17.5s | 1.11s | **15.8x** | 143.1s (2.4min) | 1.0s | 144.5x |
-| gemma-4-26B Q5 | 21.0s | 0.49s | **43.0x** | 130.9s (2.2min) | 1.4s | 92.9x |
+| GLM-4.7-Flash Q8 | 39.0s | 1.08s | **36.0x** | 467.6s (7.8min) | 2.7s | 174.1x |
+| Qwen3.6-35B Q8 | 19.7s | 0.56s | **35.0x** | 143.1s (2.4min) | 1.0s | 144.5x |
+| gemma-4-26B Q5 | 22.9s | 0.12s | **185.8x** | 130.9s (2.2min) | 1.4s | 92.9x |
+| gpt-oss-20b Q6 | 12.4s | 0.16s | **79.1x** | --- | --- | --- |
 | GPT-OSS-120B Q8 | 27.9s | 1.46s | **19.2x** | --- | --- | --- |
 
 The Strix Halo's 8060S evaluates MoE prompts 5-20x faster than the
-780M, so absolute warm-cache TTFT is much smaller. The large-context
-prompt eval speedups are lower in absolute terms on Halo because cold
-eval is already fast (18-42s vs 131-468s on Flip). But the cache
-still saves 17-40 seconds per turn on the Strix Halo in long-context
+780M, so absolute warm-cache TTFT is much smaller. The cache
+saves 17-68 seconds per turn on the Strix Halo in long-context
 agentic workloads. GPT-OSS-120B Q8 is the largest model tested: 120B
 parameters, 128 experts, runs comfortably in 96GB VRAM at 131K context
 with q8_0 KV cache
 (61GB model + 3.7GB KV + 16GB cache-ram = 80.7GB). Qwen3.6-35B Q8 and
 GLM-4.7 Q8 run at 196K context: 35GB model + 16GB KV cache-ram ~51GB
 total, leaving 45GB for generation batch buffers and concurrent slots.
+gpt-oss-20b Q6 is a 20B dense model, the smallest tested at only 17GB -
+the fastest cold eval (1,084-1,433 t/s) and generation (31-58 t/s) in
+this benchmark.
 
 Full benchmark data (server logs, API responses, timing stats):
 [Ayaneo Flip KB](benchmarks/20260611-0656/),
-[Strix Halo GPT-OSS-120B Q8](benchmarks/20260625-1849/),
-[Strix Halo GLM-4.7 Q8](benchmarks/20260625-1901/),
-[Strix Halo Qwen3.6 Q8](benchmarks/20260625-1910/),
-[Strix Halo gemma-4 Q5](benchmarks/20260625-1841/).
+[Strix Halo full suite](benchmarks/20260626-1836/),
+[Strix Halo GPT-OSS-120B Q8](benchmarks/20260625-1849/).
 
 ### Running the benchmark
 
