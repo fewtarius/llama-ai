@@ -153,6 +153,12 @@ PACKAGES=(
     ccache
     pkgconf
 
+    # --- Libraries ---
+    # libblake3:    BLAKE3 hashing library; required by ccache at runtime.
+    #               On SteamOS this is often stripped from the base image
+    #               even when the pacman DB says it's installed.
+    libblake3
+
     # --- Source and download tools ---
     # git:          Submodule management.
     # curl:         CLI + libcurl (HTTPS downloads, HTTP client in llama-server).
@@ -290,6 +296,7 @@ repair_stripped_packages() {
         [clang]="/usr/bin/clang"
         [openmp]="/usr/lib/libomp.so"
         [ccache]="/usr/bin/ccache"
+        [libblake3]="/usr/lib/libblake3.so"
         [make]="/usr/bin/make"
         [cmake]="/usr/bin/cmake"
         [ninja]="/usr/bin/ninja"
