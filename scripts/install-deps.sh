@@ -136,7 +136,17 @@ PACKAGES=(
     # openmp:        LLVM OpenMP runtime (libomp.so). Required when clang
     #                uses -fopenmp. libgomp from gcc is the OpenMP runtime
     #                used by GCC-built code.
+    # gmp:          GNU Multiple Precision Arithmetic Library. GCC dependency.
+    # mpfr:         Multiple Precision Floating-Point Reliable Library. GCC dependency.
+    # libmpc:       Multiple Precision Complex Library. GCC dependency.
+    # isl:          Integer Set Library - transitive dependency of GCC.
+    #               On SteamOS, this is stripped from the base image even though
+    #               gcc is in the pacman DB. GCC's cc1plus fails without it.
     gcc
+    gmp
+    mpfr
+    libmpc
+    isl
     clang
     openmp
 
@@ -154,10 +164,12 @@ PACKAGES=(
     pkgconf
 
     # --- Libraries ---
-    # libblake3:    BLAKE3 hashing library; required by ccache at runtime.
-    #               On SteamOS this is often stripped from the base image
-    #               even when the pacman DB says it's installed.
+    # ccache runtime dependencies. On SteamOS these transitively-required
+    # libraries are often stripped from the base image even when the
+    # pacman DB says they're installed.
     libblake3
+    fmt
+    hiredis
 
     # --- Source and download tools ---
     # git:          Submodule management.
@@ -292,11 +304,17 @@ repair_stripped_packages() {
     # Package -> expected binary mapping. The binary must exist for the package
     # to be considered "actually installed" rather than just in the DB.
     declare -A PKG_BINARIES=(
+        [gmp]="/usr/lib/libgmp.so.10"
+        [mpfr]="/usr/lib/libmpfr.so.6"
+        [libmpc]="/usr/lib/libmpc.so.3"
+        [isl]="/usr/lib/libisl.so.23"
         [gcc]="/usr/bin/gcc"
         [clang]="/usr/bin/clang"
         [openmp]="/usr/lib/libomp.so"
         [ccache]="/usr/bin/ccache"
         [libblake3]="/usr/lib/libblake3.so"
+        [fmt]="/usr/lib/libfmt.so"
+        [hiredis]="/usr/lib/libhiredis.so"
         [make]="/usr/bin/make"
         [cmake]="/usr/bin/cmake"
         [ninja]="/usr/bin/ninja"
@@ -349,8 +367,55 @@ repair_stripped_packages() {
     fi
 }
 
+# SteamOS can also ship binaries that exist on disk but are broken because
+# their transitive library dependencies were stripped. The -e check above
+# passes for these, but the binary doesn't actually run. We do a functional
+# test and force-reinstall the package (pulling all deps) if it fails.
+repair_broken_binaries() {
+    log_info "Checking for broken binaries (binaries that exist but don't run)..."
+
+    # Binary -> package mapping with a functional test command.
+    # The test command should exit 0 if the binary works.
+    declare -A BROKEN_CHECKS=(
+        [ccache]="ccache --version >/dev/null 2>&1"
+    )
+
+    local repaired=0
+    for pkg in "${!BROKEN_CHECKS[@]}"; do
+        local test_cmd="${BROKEN_CHECKS[$pkg]}"
+
+        # If the test passes, skip
+        if eval "$test_cmd" 2>/dev/null; then
+            continue
+        fi
+
+        # Binary exists but is broken
+        log_warn "Package '$pkg' is installed but its binary is broken (missing transitive deps)"
+        log_info "Force-reinstalling $pkg (pulls all dependencies)..."
+        if $SUDO pacman -S --noconfirm "$pkg" 2>&1 | tail -3; then
+            if eval "$test_cmd" 2>/dev/null; then
+                log_ok "Repaired $pkg"
+                repaired=$((repaired + 1))
+            else
+                log_error "Reinstall of $pkg reported success but binary still broken"
+            fi
+        else
+            log_error "Failed to reinstall $pkg"
+        fi
+    done
+
+    if [[ $repaired -gt 0 ]]; then
+        log_ok "Repaired $repaired broken binary(/ies)"
+    else
+        log_ok "No broken binaries found"
+    fi
+}
+
 echo ""
 repair_stripped_packages
+
+echo ""
+repair_broken_binaries
 
 # Re-enable the read-only filesystem if we disabled it earlier
 if [[ "$readonly_was_enabled" == true ]]; then
