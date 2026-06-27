@@ -322,12 +322,17 @@ assign_profile() {
     # Detect model characteristics from filename
     local is_moe=false
     local is_ssm=false
+    local is_qwen3=false
 
     if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
         is_moe=true
     fi
     if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
         is_ssm=true
+    fi
+    # Detect Qwen 3.x models (Qwen3, Qwen3.5, Qwen3.6) for fixed template
+    if echo "$filename" | grep -qiE "qwen3(\.|-)?(5|6)"; then
+        is_qwen3=true
     fi
     
     # Profile selection based on characteristics
@@ -1238,6 +1243,17 @@ fi
 
 # All models use dynamic profiling based on file characteristics
 assign_profile "$MODEL"
+
+# Check if this is a Qwen 3.x model and the fixed template exists
+# The fixed template fixes a looping issue with Qwen 3.x models
+MODEL_FILENAME=$(basename "$MODEL" .gguf)
+if echo "$MODEL_FILENAME" | grep -qiE "qwen3(\.|-)?(5|6|)"; then
+    FIXED_TEMPLATE="$PROJECT_ROOT/models/qwen3.5-fixed-template.jinja"
+    if [[ -f "$FIXED_TEMPLATE" ]]; then
+        EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --chat-template-file '$FIXED_TEMPLATE'"
+        log_info "Using fixed Qwen 3.x chat template: $FIXED_TEMPLATE"
+    fi
+fi
 
 # CLI overrides take precedence over profile-set values. We re-parse
 # EXTRA_SERVER_ARGS to drop matching tokens, then append the override.
