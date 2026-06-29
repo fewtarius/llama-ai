@@ -57,7 +57,7 @@ PROMPT_SIZES=(
 PROMPT_INSTRUCTION="Summarize this passage in one sentence."
 
 # Source text URL
-GUTENBERG_URL="https://www.gutenberg.org/cache/epub/1184/pg1184.txt"
+GUTENBERG_URL="http://aleph.gutenberg.org/cache/epub/1184/pg1184.txt"
 GUTENBERG_CACHE="$SCRATCH_DIR/pg1184.txt"
 
 # Color codes
@@ -70,11 +70,11 @@ MAGENTA='\033[0;35m'
 DIM='\033[2m'
 NC='\033[0m'
 
-log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}   $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
-log_header(){ echo -e "${MAGENTA}=== $1 ===${NC}"; }
+log_info()  { printf '%b[INFO]%b %s\n' "$BLUE" "$NC" "$1"; }
+log_ok()    { printf '%b[OK]%b   %s\n' "$GREEN" "$NC" "$1"; }
+log_warn()  { printf '%b[WARN]%b  %s\n' "$YELLOW" "$NC" "$1"; }
+log_error() { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$1"; }
+log_header(){ printf '%b=== %s ===%b\n' "$MAGENTA" "$1" "$NC"; }
 
 # Models to test - auto-discovered from models/ directory.
 # Excludes GGUF split-file shards (e.g. model-00002-of-00005.gguf).
@@ -804,7 +804,7 @@ fetch_source_text() {
     fi
 
     log_info "Downloading source text from Project Gutenberg..."
-    if curl -sL --max-time 30 -o "$GUTENBERG_CACHE" "$GUTENBERG_URL"; then
+    if curl -sL --max-time 120 -o "$GUTENBERG_CACHE" "$GUTENBERG_URL"; then
         local size
         size=$(wc -c < "$GUTENBERG_CACHE" 2>/dev/null || echo 0)
         log_ok "Downloaded: $size bytes"

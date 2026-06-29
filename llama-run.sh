@@ -192,10 +192,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-log_info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
-log_ok()    { echo -e "${GREEN}[OK]${NC}   $1"; }
-log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $1"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+log_info()  { printf '%b[INFO]%b %s\n' "$BLUE" "$NC" "$1"; }
+log_ok()    { printf '%b[OK]%b   %s\n' "$GREEN" "$NC" "$1"; }
+log_warn()  { printf '%b[WARN]%b  %s\n' "$YELLOW" "$NC" "$1"; }
+log_error() { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$1"; }
 
 # =============================================================================
 # Usage
@@ -560,7 +560,7 @@ assign_profile() {
         fi
     fi
 
-    echo -e "${CYAN}Auto profile: ${GREEN}$profile_name${NC} (${size_gb}GB, MoE=$is_moe, SSM=$is_ssm)"
+    printf '%bAuto profile: %b%s%b (%sGB, MoE=%s, SSM=%s)%b\n' "$CYAN" "$GREEN" "$profile_name" "$NC" "$size_gb" "$is_moe" "$is_ssm" "$NC"
 }
 
 # =============================================================================
