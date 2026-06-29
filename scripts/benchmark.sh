@@ -117,25 +117,9 @@ get_binary() {
 
 setup_backend_env() {
     local backend="$1"
-    if [[ "$backend" == "rocm" ]]; then
-        export ROCM_PATH="$PROJECT_ROOT/deps"
-        export HIP_PATH="$ROCM_PATH"
-        export HIP_PLATFORM=amd
-        export LD_LIBRARY_PATH="$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
-        source "$PROJECT_ROOT/scripts/detect-gpu.sh"
-        export HSA_OVERRIDE_GFX_VERSION="${LLAMA_GFX_VERSION:-11.0.3}"
-        export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
-        unset GGML_BACKEND
-    else
-        export GGML_BACKEND=vulkan
-        unset ROCM_PATH HIP_PATH HSA_OVERRIDE_GFX_VERSION
-        if [[ -n "${LD_LIBRARY_PATH:-}" ]]; then
-            LD_LIBRARY_PATH="${LD_LIBRARY_PATH//$PROJECT_ROOT\/deps\/lib:/}"
-        else
-            LD_LIBRARY_PATH=""
-        fi
-        export LD_LIBRARY_PATH
-    fi
+    source "$PROJECT_ROOT/scripts/env.sh" "$backend"
+    source "$PROJECT_ROOT/scripts/detect-gpu.sh"
+    [[ "$backend" == "rocm" ]] && export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1
 }
 
 # =============================================================================
@@ -195,6 +179,12 @@ wait_for_server() {
                 log_error "Server crashed: $fatal"
                 return 1
             fi
+        fi
+        # Check if server process is still alive (catches segfaults that produce no log output)
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            log_error "Server exited unexpectedly (PID $SERVER_PID)"
+            tail -20 "$SERVER_LOG" 2>/dev/null || true
+            return 1
         fi
 
         attempt=$((attempt + 1))
