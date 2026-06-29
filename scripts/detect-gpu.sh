@@ -194,6 +194,7 @@ _gfx_to_rocm_variant() {
         gfx1150) echo "gfx120X" ;;
         gfx1151) echo "gfx120X" ;;
         gfx1152) echo "gfx120X" ;;
+        gfx1153) echo "gfx120X" ;;
         gfx120*) echo "gfx120X" ;;
         *)       echo "gfx110X" ;;  # default fallback
     esac

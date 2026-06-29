@@ -40,7 +40,7 @@ if [[ "$BACKEND" == "rocm" ]]; then
     export ROCM_DIR="$ROCM_PATH"
     
     # Library paths
-    export LD_LIBRARY_PATH="$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="$ROCM_PATH/lib/llvm/lib:$ROCM_PATH/lib/rocm_sysdeps/lib:$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}"
     
     # Enable unified memory for APUs (uses GTT/system RAM via hipMallocManaged)
     export GGML_CUDA_ENABLE_UNIFIED_MEMORY=1

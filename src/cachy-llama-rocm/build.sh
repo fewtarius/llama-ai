@@ -36,6 +36,7 @@ cmake "$LLAMA_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang \
     -DCMAKE_CXX_COMPILER=clang++ \
+    -DCMAKE_HIP_COMPILER="$ROCM_PATH/lib/llvm/bin/clang++" \
     -DCMAKE_HIP_PLATFORM=amd \
     -DGGML_HIP=ON \
     -DGGML_HIPBLAS=ON \

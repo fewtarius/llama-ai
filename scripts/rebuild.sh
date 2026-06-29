@@ -28,7 +28,7 @@ DEPS_DIR="$PROJECT_ROOT/deps"
 ROCM_NIGHTLY_URL="https://rocm.nightlies.amd.com/tarball"
 
 # Default ROCm version (latest available as of 2026-05-03)
-ROCM_VERSION="${ROCM_VERSION:-7.13.0a20260502}"
+ROCM_VERSION="${ROCM_VERSION:-7.14.0a20260612}"
 
 # Color codes
 RED='\033[0;31m'
@@ -273,10 +273,12 @@ download_rocm() {
     fi
 
     # Tarball naming: gfx900 uses plain name, others use -all- suffix
+    # gfx115* and gfx9* tarballs: no suffix (native architecture)
+    # gfx110X, gfx120X and other combined variants: -all- suffix
     local tarball_suffix="-all-"
     case "$LLAMA_ROCM_VARIANT" in
         gfx900|gfx906|gfx908|gfx90a)
-            # gfx9 family tarballs don't use -all- suffix
+            # Native architecture tarballs don't use -all- suffix
             tarball_suffix="-"
             ;;
     esac
@@ -290,9 +292,13 @@ download_rocm() {
     if [[ -f "$tarball" ]]; then
         log_ok "Using existing tarball: $tarball"
     else
-        log_info "Downloading ROCm SDK: $tarball"
-        log_info "URL: $tarball_url"
-        curl -L --progress-bar -o "$tarball" "$tarball_url"
+       log_info "Downloading ROCm SDK: $tarball"
+        log_info "URL: $tarball_url (3-4 GB, this may take several minutes...)"
+        if ! curl -L --retry 3 -sS -o "$tarball" "$tarball_url"; then
+            log_error "Failed to download ROCm SDK"
+            log_error "Tarball URL: $tarball_url"
+            exit 1
+        fi
     fi
 
     # Extract
@@ -400,6 +406,7 @@ build_rocm() {
        -DCMAKE_BUILD_TYPE=Release \
        -DCMAKE_C_COMPILER=clang \
        -DCMAKE_CXX_COMPILER=clang++ \
+       -DCMAKE_HIP_COMPILER="$ROCM_PATH/lib/llvm/bin/clang++" \
       -DCMAKE_HIP_PLATFORM=amd \
       -DCMAKE_HIP_ARCHITECTURES="$hip_arch" \
        -DGGML_HIP=ON \
@@ -411,8 +418,7 @@ build_rocm() {
         $LLAMA_CMAKE_CPU_FLAGS \
         -DLLAMA_BUILD_SERVER=ON \
         -DLLAMA_BUILD_TESTS=OFF \
-        -DLLAMA_BUILD_EXAMPLES=ON \
-        2>&1 | tail -5
+        -DLLAMA_BUILD_EXAMPLES=ON
 
     # Build
     cmake --build . --config Release -j$(nproc)
