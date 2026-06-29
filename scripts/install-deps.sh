@@ -316,9 +316,10 @@ repair_stripped_packages() {
         [fmt]="/usr/lib/libfmt.so"
         [hiredis]="/usr/lib/libhiredis.so"
         [make]="/usr/bin/make"
-        [cmake]="/usr/bin/cmake"
-        [ninja]="/usr/bin/ninja"
-        [pkgconf]="/usr/bin/pkg-config"
+       [cmake]="/usr/bin/cmake"
+       [ninja]="/usr/bin/ninja"
+        [clang-libs]="/usr/lib/libclang-cpp.so.20.1"
+       [pkgconf]="/usr/bin/pkg-config"
         [git]="/usr/bin/git"
         [curl]="/usr/bin/curl"
         [wget]="/usr/bin/wget"
@@ -377,8 +378,9 @@ repair_broken_binaries() {
     # Binary -> package mapping with a functional test command.
     # The test command should exit 0 if the binary works.
     declare -A BROKEN_CHECKS=(
-        [ccache]="ccache --version >/dev/null 2>&1"
-    )
+       [ccache]="ccache --version >/dev/null 2>&1"
+        [clang]="clang --version >/dev/null 2>&1"
+   )
 
     local repaired=0
     for pkg in "${!BROKEN_CHECKS[@]}"; do
