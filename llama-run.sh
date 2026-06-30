@@ -175,6 +175,7 @@ SSD_CHECKPOINTS="64"
 # System prompt KV cache defaults (cross-conversation prompt sharing)
 # Override with --cache-ssd-system-prompts / --cache-ssd-system-max-days
 SSD_SYSTEM_PROMPTS="8"
+SSD_NO_FSYNC=""
 _SSD_DISABLE=false
 SSD_SYSTEM_MAX_DAYS="30"
 OVERRIDE_CHECKPOINT_EVERY=""
@@ -299,6 +300,32 @@ adjust_cache_ram_for_memory() {
     fi
 }
 
+# Scan the first 16KB of a GGUF file for architecture-defining keys.
+# Updates is_moe and is_ssm (caller's locals) when the filename didn't
+# already reveal the architecture (e.g. Qwen3-Coder-Next-UD uses neither
+# "moe" nor "mamba" in its filename but is a MoE+SSM hybrid).
+_scan_gguf_arch() {
+    local gguf_path="$1"
+    [[ ! -f "$gguf_path" || ! -r "$gguf_path" ]] && return 0
+    local _tmp_header
+    _tmp_header=$(mktemp /tmp/llama-scan-XXXXXX)
+    dd if="$gguf_path" of="$_tmp_header" bs=16384 count=1 2>/dev/null || { rm -f "$_tmp_header"; return 0; }
+    # MoE: any architecture with expert_count > 0
+    if grep -q 'expert_count' "$_tmp_header" 2>/dev/null; then
+        is_moe=true
+    fi
+    # Pure-SSM: has SSM layers but NO MoE experts and no attention layers
+    # (full_attention_interval >= block_count or absent = pure SSM).
+    # Hybrid MoE+SSM models like Qwen3-Coder-Next have both expert_count
+    # and full_attention_interval < block_count — those are MoE, not pure SSM.
+    if grep -q 'ssm\.' "$_tmp_header" 2>/dev/null; then
+        if [[ "$is_moe" != true ]]; then
+            is_ssm=true
+        fi
+    fi
+    rm -f "$_tmp_header"
+}
+
 assign_profile() {
     local model_path="$1"
     local filename=$(basename "$model_path")
@@ -356,7 +383,12 @@ assign_profile() {
     if echo "$filename" | grep -qiE "qwen3(\.|-)?(5|6)"; then
         is_qwen3=true
     fi
-    
+
+    # Scan GGUF metadata to correct filename-based detection.
+    # Filename keywords miss architectures like Qwen3-Coder-Next-UD
+    # (MoE+SSM hybrid that doesn't use "moe" or "mamba" in its name).
+    _scan_gguf_arch "$model_path"
+
     # Profile selection based on characteristics
     if [[ "$is_ssm" == true ]]; then
         # SSM/Mamba models: cache_reuse doesn't work, need different settings
@@ -412,8 +444,17 @@ assign_profile() {
                 # 15K-token prefill - 4s of disk time on the critical path
                 # for protection we don't need when VRAM holds everything.
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=196608
-                KV_CACHE_TYPE_K="f16"
                 KV_CACHE_TYPE_V="f16"
+                KV_CACHE_TYPE_K="f16"
+                # Large MoE models (>50GB, e.g. Qwen3-Coder-Next 80GB)
+                # fill VRAM tightly — f16 KV would overflow. Switch to
+                # q8_ and disable SSD (same reasoning as large-dense >50GB).
+                if [[ $size_gb -gt 50 ]]; then
+                    KV_CACHE_TYPE_K="q8_0"
+                    KV_CACHE_TYPE_V="q8_0"
+                    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+                    _SSD_DISABLE=true
+                fi
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
                 # 16K checkpoint interval: 1 checkpoint for typical 8-15K
                 # system prompts (instead of 2-3), 0 for short prompts.
@@ -1195,6 +1236,7 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-hot-ram) SSD_HOT_RAM="$2"; shift 2 ;;
         --cache-ssd-warm-ram) SSD_WARM_RAM="$2"; shift 2 ;;
         --cache-ssd-system-prompts) SSD_SYSTEM_PROMPTS="$2"; shift 2 ;;
+        --cache-ssd-no-fsync) SSD_NO_FSYNC="true"; shift 1 ;;
         --cache-ssd-system-max-days) SSD_SYSTEM_MAX_DAYS="$2"; shift 2 ;;
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
         --checkpoint-min-step)
@@ -1317,6 +1359,7 @@ print_profile_summary() {
     printf '  %-28s %s\n' "Cache RAM:"       "$(echo "${EXTRA_SERVER_ARGS:-}" | grep -oP -- '--cache-ram \K[0-9]+' || echo '-')"
     printf '  %-28s %s\n' "SSD cache:"       "$(if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then echo "disabled"; elif [[ -n "${SSD_PATH:-}" ]]; then echo "${SSD_PATH}"; else echo "default"; fi)"
     printf '  %-28s %s\n' "System cache:"    "$(if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then echo "disabled"; elif [[ -n "${SSD_SYSTEM_PROMPTS:-}" ]]; then echo "${SSD_SYSTEM_PROMPTS} entries"; else echo "off"; fi)"
+    printf '  %-28s %s\n' "SSD no-fsync:"   "$(if [[ "${SSD_NO_FSYNC:-}" == "true" ]]; then echo "yes"; else echo "no"; fi)"
     printf '  %-28s %s\n' "Mlock:"           "$(if [[ "$(ulimit -l 2>/dev/null)" == "unlimited" ]]; then echo "yes"; else echo "no (limit: $(ulimit -l) KiB)"; fi)"
     printf '%b──────────────────────────────────────────────────────────%b\n' "$BLUE" "$NC"
 }
@@ -1463,6 +1506,7 @@ if [[ -n "$SSD_PATH" && "${_SSD_DISABLE:-false}" != "true" ]]; then
     [[ -n "$SSD_HOT_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-hot-ram $SSD_HOT_RAM"
     [[ -n "$SSD_WARM_RAM" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-warm-ram $SSD_WARM_RAM"
     [[ -n "${SSD_SYSTEM_PROMPTS:-}" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-system-prompts $SSD_SYSTEM_PROMPTS"
+    [[ -n "$SSD_NO_FSYNC" && "$SSD_NO_FSYNC" == "true" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-no-fsync"
     [[ -n "${SSD_SYSTEM_MAX_DAYS:-}" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-system-max-days $SSD_SYSTEM_MAX_DAYS"
     [[ -n "$PROMPT_MAX" && "$PROMPT_MAX" != "0" ]] && SERVER_ARGS="$SERVER_ARGS --prompt-max $PROMPT_MAX"
 fi
