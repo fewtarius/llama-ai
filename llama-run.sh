@@ -175,6 +175,7 @@ SSD_CHECKPOINTS="64"
 # System prompt KV cache defaults (cross-conversation prompt sharing)
 # Override with --cache-ssd-system-prompts / --cache-ssd-system-max-days
 SSD_SYSTEM_PROMPTS="8"
+_SSD_DISABLE=false
 SSD_SYSTEM_MAX_DAYS="30"
 OVERRIDE_CHECKPOINT_EVERY=""
 OVERRIDE_CTX_CHECKPOINTS=""
@@ -301,7 +302,28 @@ adjust_cache_ram_for_memory() {
 assign_profile() {
     local model_path="$1"
     local filename=$(basename "$model_path")
-    local size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    local size_bytes
+    # Detect split GGUF shards (e.g., model-00001-of-00003.gguf) and sum all shards.
+    # stat on just the first shard (which may be only a few MB header) would
+    # misclassify the model into the wrong profile tier.
+    if [[ "$model_path" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
+        local shard_base="${model_path%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
+        local shard_count="${BASH_REMATCH[2]}"
+        shard_count=$((10#$shard_count))
+        size_bytes=0
+        for ((i=1; i<=shard_count; i++)); do
+            local shard_file
+            shard_file=$(printf "%s-%05d-of-%05d.gguf" "$shard_base" "$i" "$shard_count")
+            if [[ -f "$shard_file" ]]; then
+                local sb
+                sb=$(stat -c%s "$shard_file" 2>/dev/null || stat -f%z "$shard_file" 2>/dev/null || echo 0)
+                size_bytes=$((size_bytes + sb))
+            fi
+        done
+        [[ "$size_bytes" -eq 0 ]] && size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    else
+        size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    fi
     MODEL_BYTES="$size_bytes"
     local size_gb=$((size_bytes / 1024 / 1024 / 1024))
 
@@ -363,10 +385,8 @@ assign_profile() {
         OVERRIDE_REASONING="on"
         OVERRIDE_REASONING_BUDGET="2048"
         # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
-        SSD_PATH=""
-        # System prompt cache depends on KV serialization, also unavailable for SSM
-        SSD_SYSTEM_PROMPTS=""
-        SSD_SYSTEM_MAX_DAYS=""
+        # SSD cache depends on KV serialization, unavailable for SSM
+        _SSD_DISABLE=true
         profile_name="ssm-optimized"
     elif [[ "$is_moe" == true ]]; then
         # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
@@ -460,13 +480,18 @@ assign_profile() {
         # 30B+ models fit comfortably with 96GB VRAM.
         case "$tier" in
             halo)
-                # Dense 20GB + 128K f16 KV ~= 52GB. Leaves headroom for
-                # the cache-ram and SSD cache layers.
+                # Dense 15-50GB + 131K q8_0 KV fits VRAM with headroom.
+                # Larger models (>50GB at Q8_K_XL, e.g. Qwen3-Coder-Next 82GB)
+                # fill VRAM tightly; SSD writes would compete with the GTT
+                # spillover on the critical prefill path.
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
                 EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 16384"
+                if [[ $size_gb -gt 50 ]]; then
+                    _SSD_DISABLE=true
+                fi
                 ;;
             standard)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -1274,43 +1299,40 @@ strip_and_append() {
 
 # =============================================================================
 
-if [[ "$PRINT_PROFILE" == true ]]; then
+print_profile_summary() {
+    local model_name model_bytes
     model_name=$(basename "$MODEL" .gguf)
-    model_bytes=$(stat -c%s "$MODEL" 2>/dev/null || stat -f%z "$MODEL" 2>/dev/null || echo 0)
+    model_bytes=${MODEL_BYTES:-0}
+    printf '%b─── Profile ──────────────────────────────────────────────%b\n' "$BLUE" "$NC"
+    printf '  %-28s %s\n' "Model:"           "$model_name"
+    printf '  %-28s %s\n' "Profile:"         "${profile_name:-unknown}"
+    printf '  %-28s %s\n' "Model size:"      "$((model_bytes / 1073741824)) GiB"
+    printf '  %-28s %s\n' "Backend:"         "${BACKEND:-auto}"
+    printf '  %-28s %s\n' "GPU layers:"      "${GPU_LAYERS:-99}"
+    printf '  %-28s %s\n' "Context size:"    "${CTX_SIZE}"
+    printf '  %-28s %s\n' "Threads:"         "${THREADS}"
+    printf '  %-28s %s/%s\n' "KV cache type:"  "${KV_CACHE_TYPE_K}" "${KV_CACHE_TYPE_V}"
+    printf '  %-28s %s\n' "Batch/UBatch:"    "${OVERRIDE_BATCH_SIZE:---batch-size 1024 --ubatch-size 512}"
+    printf '  %-28s %s\n' "Reasoning:"       "${OVERRIDE_REASONING:-off}"
+    printf '  %-28s %s\n' "Cache RAM:"       "$(echo "${EXTRA_SERVER_ARGS:-}" | grep -oP -- '--cache-ram \K[0-9]+' || echo '-')"
+    printf '  %-28s %s\n' "SSD cache:"       "$(if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then echo "disabled"; elif [[ -n "${SSD_PATH:-}" ]]; then echo "${SSD_PATH}"; else echo "default"; fi)"
+    printf '  %-28s %s\n' "System cache:"    "$(if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then echo "disabled"; elif [[ -n "${SSD_SYSTEM_PROMPTS:-}" ]]; then echo "${SSD_SYSTEM_PROMPTS} entries"; else echo "off"; fi)"
+    printf '  %-28s %s\n' "Mlock:"           "$(if [[ "$(ulimit -l 2>/dev/null)" == "unlimited" ]]; then echo "yes"; else echo "no (limit: $(ulimit -l) KiB)"; fi)"
+    printf '%b──────────────────────────────────────────────────────────%b\n' "$BLUE" "$NC"
+}
+
+if [[ "$PRINT_PROFILE" == true ]]; then
     # Suppress the "Auto profile:" line that assign_profile echo'd to stdout
-    cat <<PROFILE_EOF
-CTX_SIZE=$CTX_SIZE
-MODEL_PATH='$MODEL'
-MODEL_NAME=$model_name
-MODEL_BYTES=$model_bytes
-GPU_LAYERS=$GPU_LAYERS
-THREADS=$THREADS
-KV_CACHE_TYPE_K=$KV_CACHE_TYPE_K
-KV_CACHE_TYPE_V=$KV_CACHE_TYPE_V
-OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 --ubatch-size 512"}'
-OVERRIDE_REASONING='${OVERRIDE_REASONING:-off}'
-OVERRIDE_REASONING_BUDGET='${OVERRIDE_REASONING_BUDGET:-0}'
-EXTRA_SERVER_ARGS='${EXTRA_SERVER_ARGS:-}'
-PRESERVE_REASONING='${PRESERVE_REASONING:-false}'
-SSD_PATH='$SSD_PATH'
-SSD_CHECKPOINTS=$SSD_CHECKPOINTS
-SSD_HOT_WINDOW=$SSD_HOT_WINDOW
-SSD_WARM_WINDOW=$SSD_WARM_WINDOW
-SSD_MAX_COLD=$SSD_MAX_COLD
-SSD_PAGE_SIZE=$SSD_PAGE_SIZE
-SSD_HOT_RAM=$SSD_HOT_RAM
-SSD_WARM_RAM=$SSD_WARM_RAM
-SSD_SYSTEM_PROMPTS='$SSD_SYSTEM_PROMPTS'
-SSD_SYSTEM_MAX_DAYS='$SSD_SYSTEM_MAX_DAYS'
-OVERRIDE_FIT='$OVERRIDE_FIT'
-PROFILE_EOF
+    print_profile_summary
     exit 0
 fi
 # Setup backend
 # =============================================================================
 
 # Default SSD cache for all non-SSM models (respects user override)
-[[ -z "$SSD_PATH" ]] && SSD_PATH="$PROJECT_ROOT/kv-cache"
+if [[ "${_SSD_DISABLE:-false}" != "true" ]]; then
+    [[ -z "$SSD_PATH" ]] && SSD_PATH="$PROJECT_ROOT/kv-cache"
+fi
 setup_backend_env
 
 # Get binary paths
@@ -1332,14 +1354,17 @@ _total_mem_bytes=$(get_total_memory_bytes)
 _total_mem_gb=$((_total_mem_bytes / 1024 / 1024 / 1024))
 _model_size_gb=$((MODEL_BYTES / 1024 / 1024 / 1024))
 if [[ "$_model_size_gb" -gt $((_total_mem_gb - 2)) ]]; then
-    # Model is more than ~92% of total RAM. Even mmap is risky on a busy system.
-    echo -e "${YELLOW}Warning: model (${_model_size_gb}GB) is close to total RAM (${_total_mem_gb}GB).${NC}"
-    if echo "$(basename "$MODEL" .gguf)" | grep -qiE "moe|a3b|a8b|flash|expert"; then
-        echo -e "${YELLOW}         This is a MoE model: resident footprint is much smaller than file size.${NC}"
-        echo -e "${YELLOW}         Only active experts are loaded; cold/expert pages stay on disk.${NC}"
-    else
-        echo -e "${YELLOW}         Dense model: full file will be resident. OOM is likely.${NC}"
-        echo -e "${YELLOW}         Use a smaller quant (Q4 or Q3) or a smaller model.${NC}"
+    # Model is more than ~92% of OS-visible RAM (not VRAM).
+    # Skip warning for GPU-offloaded models (layers in VRAM, not OS RAM).
+    if [[ "${GPU_LAYERS:-0}" -lt 99 ]]; then
+        echo -e "${YELLOW}Warning: model (${_model_size_gb}GB) is close to system RAM (${_total_mem_gb}GB).${NC}"
+        if echo "$(basename "$MODEL" .gguf)" | grep -qiE "moe|a3b|a8b|flash|expert"; then
+            echo -e "${YELLOW}         This is a MoE model: resident footprint is much smaller than file size.${NC}"
+            echo -e "${YELLOW}         Only active experts are loaded; cold/expert pages stay on disk.${NC}"
+        else
+            echo -e "${YELLOW}         Dense model: full file will be resident. OOM is likely.${NC}"
+            echo -e "${YELLOW}         Use a smaller quant (Q4 or Q3) or a smaller model.${NC}"
+        fi
     fi
 fi
 
@@ -1349,7 +1374,13 @@ apply_backend_env
 setup_performance
 
 MODEL_SIZE=$(du -h "$MODEL" 2>/dev/null | cut -f1)
-MODEL_BYTES=$(stat -c%s "$MODEL" 2>/dev/null || stat -f%z "$MODEL" 2>/dev/null || echo 0)
+# When MODEL is a split-GGUF first shard, du shows the header shard
+# size (e.g. 5.7M) while MODEL_BYTES from assign_profile has the
+# summed size of all shards. Fix the display.
+if [[ "${MODEL_SIZE: -1}" == "M" && "$MODEL_BYTES" -gt 1073741824 ]]; then
+    MODEL_SIZE="$((MODEL_BYTES / 1073741824))G"
+fi
+# MODEL_BYTES is already set by assign_profile; do not recalculate.
 MODEL_NAME=$(basename "$MODEL" .gguf)
 echo -e "${BLUE}Model: ${GREEN}$MODEL_NAME${NC} ($MODEL_SIZE)"
 
@@ -1421,7 +1452,7 @@ fi
 
 
 # SSD-backed KV cache
-if [[ -n "$SSD_PATH" ]]; then
+if [[ -n "$SSD_PATH" && "${_SSD_DISABLE:-false}" != "true" ]]; then
     mkdir -p "$SSD_PATH"
     SERVER_ARGS="$SERVER_ARGS --cache-ssd $SSD_PATH"
     [[ -n "$SSD_CHECKPOINTS" ]] && SERVER_ARGS="$SERVER_ARGS --cache-ssd-checkpoints $SSD_CHECKPOINTS"
@@ -1477,6 +1508,7 @@ fi
 
 if [[ "$SERVER_MODE" == true ]]; then
     kill_existing_server "$PORT"
+    print_profile_summary
     echo -e "${BLUE}Starting server on ${HOST}:${PORT}...${NC}"
     eval "$EXEC_ENV" "$LLAMA_SERVER" $COMMON_ARGS $SERVER_ARGS
 else
