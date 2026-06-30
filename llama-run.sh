@@ -1365,8 +1365,35 @@ print_profile_summary() {
 }
 
 if [[ "$PRINT_PROFILE" == true ]]; then
-    # Suppress the "Auto profile:" line that assign_profile echo'd to stdout
-    print_profile_summary
+    # Machine-parseable KEY=VALUE output for scripts like benchmark.sh.
+    # The assign_profile "Auto profile:" line goes to stderr, so stdout is clean.
+    cat <<PROFILE_EOF
+CTX_SIZE=$CTX_SIZE
+MODEL_PATH='$MODEL'
+MODEL_NAME=$(basename "$MODEL" .gguf)
+MODEL_BYTES=$MODEL_BYTES
+GPU_LAYERS=$GPU_LAYERS
+THREADS=$THREADS
+KV_CACHE_TYPE_K=$KV_CACHE_TYPE_K
+KV_CACHE_TYPE_V=$KV_CACHE_TYPE_V
+OVERRIDE_BATCH_SIZE='${OVERRIDE_BATCH_SIZE:-"--batch-size 1024 --ubatch-size 512"}'
+OVERRIDE_REASONING='${OVERRIDE_REASONING:-off}'
+OVERRIDE_REASONING_BUDGET='${OVERRIDE_REASONING_BUDGET:-0}'
+EXTRA_SERVER_ARGS='${EXTRA_SERVER_ARGS:-}'
+PRESERVE_REASONING='${PRESERVE_REASONING:-false}'
+SSD_PATH='${SSD_PATH:-}'
+SSD_CHECKPOINTS=$SSD_CHECKPOINTS
+SSD_HOT_WINDOW=${SSD_HOT_WINDOW:-4096}
+SSD_WARM_WINDOW=${SSD_WARM_WINDOW:-}
+SSD_MAX_COLD=${SSD_MAX_COLD:-32}
+SSD_PAGE_SIZE=${SSD_PAGE_SIZE:-}
+SSD_HOT_RAM=${SSD_HOT_RAM:-}
+SSD_WARM_RAM=${SSD_WARM_RAM:-}
+SSD_SYSTEM_PROMPTS='${SSD_SYSTEM_PROMPTS:-}'
+SSD_SYSTEM_MAX_DAYS='${SSD_SYSTEM_MAX_DAYS:-}'
+SSD_NO_FSYNC='${SSD_NO_FSYNC:-}'
+OVERRIDE_FIT='${OVERRIDE_FIT:-}'
+PROFILE_EOF
     exit 0
 fi
 # Setup backend

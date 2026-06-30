@@ -413,6 +413,7 @@ Radeon 8060S, 96GB APU VRAM, 128 output tokens, all GPU layers.
 Benchmark data:
 [GPT-OSS-120B Q8_K_XL](benchmarks/20260625-1849/) (ctx 131072),
 [Nemotron-3-Super-120B Q4_K_XL](benchmarks/20260628-1506/) (ctx 32768),
+[Qwen3-Coder-Next Q8_K_XL](benchmarks/20260630-1918/) (ctx 32768),
 [all Strix Halo models below](benchmarks/20260626-1836/) (ctx 131072-196608).
 
 | Model | Size | Cold TTFT | Warm TTFT | Speedup | Cached |
@@ -438,6 +439,9 @@ Benchmark data:
 | Qwen3.6-27B Q8_K_XL (27B dense) | small (~1.2K) | 6.6s | 0.42s | **15.8x** | 1239/1243 |
 | | medium (~5.4K) | 22.8s | 0.50s | **45.5x** | 5405/5409 |
 | | large (~15.7K) | 66.6s | 1.14s | **58.4x** | 15717/15721 |
+| Qwen3-Coder-Next Q8_K_XL (MoE hybrid) | small (~1.3K) | 2.9s | 0.16s | **18.6x** | 1247/1251 |
+| | medium (~5.4K) | 9.0s | 0.20s | **45.8x** | 5394/5398 |
+| | large (~15.7K) | 26.3s | 0.31s | **85.8x** | 15659/15663 |
 
 Speedup is **prompt eval speedup** (cold prompt_ms / warm prompt_ms) -
 the pure measure of cache effectiveness, excluding server restart and
@@ -456,7 +460,7 @@ all sizes.
 gpt-oss-20b Q6 is the fastest model tested: 1,084-1,433 t/s cold eval
 and 31-58 t/s generation. Its small 20B parameter count means every
 token is cheap.
-The hybrid MoE architectures (Qwen3.6, GLM-4.7-Flash) restore both
+The hybrid MoE architectures (Qwen3.6, Qwen3-Coder-Next, GLM-4.7-Flash) restore both
 attention KV state and recurrent state
 from disk - Mamba layers are checkpoint-aware and the cache works
 across restarts. GPT-OSS-120B, Nemotron-3-Super-120B, and gpt-oss-20b are dense architectures (no hybrid layers):
@@ -539,6 +543,7 @@ wall-clock). Data from
 | gpt-oss-20b Q6 | 12.4s | 0.16s | **79.1x** | --- | --- | --- |
 | GPT-OSS-120B Q8 | 27.9s | 1.46s | **19.2x** | --- | --- | --- |
 | Nemotron-3-Super-120B Q4 | 71.6s | 0.49s | **145.2x** | --- | --- | --- |
+| Qwen3-Coder-Next Q8 | 26.3s | 0.31s | **85.8x** | --- | --- | --- |
 
 The Strix Halo's 8060S evaluates MoE prompts 5-20x faster than the
 780M, so absolute warm-cache TTFT is much smaller. The cache
@@ -557,7 +562,8 @@ Full benchmark data (server logs, API responses, timing stats):
 [Ayaneo Flip KB](benchmarks/20260611-0656/),
 [Strix Halo full suite](benchmarks/20260626-1836/),
 [Strix Halo GPT-OSS-120B Q8](benchmarks/20260625-1849/),
-[Strix Halo Nemotron-3-Super-120B Q4](benchmarks/20260628-1506/).
+[Strix Halo Nemotron-3-Super-120B Q4](benchmarks/20260628-1506/),
+[Strix Halo Qwen3-Coder-Next Q8](benchmarks/20260630-1918/).
 
 ### Running the benchmark
 
