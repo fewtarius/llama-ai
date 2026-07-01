@@ -448,13 +448,13 @@ assign_profile() {
                 KV_CACHE_TYPE_K="f16"
                 # Large MoE models (>50GB, e.g. Qwen3-Coder-Next 80GB)
                 # fill VRAM tightly — f16 KV would overflow. Switch to
-                # q8_ and disable SSD (same reasoning as large-dense >50GB).
+                # q8_ KV and reduce ctx (same reasoning as large-dense >50GB).
                 if [[ $size_gb -gt 50 ]]; then
                     KV_CACHE_TYPE_K="q8_0"
                     KV_CACHE_TYPE_V="q8_0"
                     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-                    _SSD_DISABLE=true
                 fi
+                _SSD_DISABLE=true
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
                 # 16K checkpoint interval: 1 checkpoint for typical 8-15K
                 # system prompts (instead of 2-3), 0 for short prompts.
