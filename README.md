@@ -243,7 +243,7 @@ prompt eval speedup, not wall-clock.
 |-------|----------:|----------:|--------:|--------:|
 | GPT-OSS-120B Q8_K_XL (128-exp MoE) | 27.9s | 1.46s | **19.2x** | 9-11 |
 | Nemotron-3-Super-120B Q4_K_XL (12B active) | 71.6s | 0.49s | **145.2x** | 10-13 |
-| gpt-oss-20b Q6_K_XL (dense) | 12.7s | 0.17s | **77.0x** | 29-67 |
+| gpt-oss-20b Q6_K_XL (MoE, 3.6B active) | 12.7s | 0.17s | **77.0x** | 29-67 |
 | GLM-4.7-Flash Q8_K_XL (30B, 3B active) | 40.6s | 1.07s | **37.8x** | 29-35 |
 | Qwen3.6-35B Q8_K_XL (35B, 3B active hybrid) | 20.3s | 0.47s | **43.0x** | 35-43 |
 | gemma-4-26B Q5_K_M (26B, 4B active) | 23.6s | 0.17s | **143.0x** | 30-40 |

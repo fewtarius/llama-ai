@@ -410,8 +410,8 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
         # No checkpoint strategy - SSM models handle context internally
         # No reasoning format - SSM models don't support it
-        # cache-ram scales with tier: handheld 6GB, halo 16GB
-        local _ssm_cache_ram=6144
+        # cache-ram scales with tier: handheld VRAM-2GB for amdgpu headroom, halo 16GB
+        local _ssm_cache_ram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
         [[ "$tier" == "halo" ]] && _ssm_cache_ram=16384
         EXTRA_SERVER_ARGS+=" --no-context-shift --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
         OVERRIDE_REASONING="on"
@@ -493,7 +493,8 @@ assign_profile() {
                 # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
                 # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 6144"
+                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -546,7 +547,8 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q4_0"
                 KV_CACHE_TYPE_V="q4_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram 6144"
+                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))"
                 ;;
         esac
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
