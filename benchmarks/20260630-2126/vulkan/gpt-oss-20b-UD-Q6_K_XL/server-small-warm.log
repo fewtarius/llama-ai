@@ -1,0 +1,36 @@
+0.00.193.227 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.193.987 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.199.156 I srv    load_model: loading model '/home/deck/llama-ai/models/gpt-oss-20b-UD-Q6_K_XL.gguf'
+0.02.065.294 W load: setting token '<|message|>' (200008) attribute to USER_DEFINED (16), old attributes: 8
+0.02.065.300 W load: setting token '<|start|>' (200006) attribute to USER_DEFINED (16), old attributes: 8
+0.02.065.300 W load: setting token '<|constrain|>' (200003) attribute to USER_DEFINED (16), old attributes: 8
+0.02.067.161 W load: setting token '<|channel|>' (200005) attribute to USER_DEFINED (16), old attributes: 8
+0.02.076.104 W load: special_eog_ids contains both '<|return|>' and '<|call|>', or '<|calls|>' and '<|flush|>' tokens, removing '<|end|>' token from EOG list
+0.10.160.848 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.10.544.970 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+0.10.545.116 I SSD cache: model compat_hash 33d2904f746ae49d (arch dims + type_k=8 type_v=8)
+0.10.548.746 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+0.10.548.823 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-33d2904f746ae49d (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.10.548.825 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-33d2904f746ae49d
+0.10.552.248 I srv  llama_server: model loaded
+0.10.552.258 I srv  llama_server: listening on http://0.0.0.0:9090
+0.12.861.116 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.12.861.410 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.12.861.562 I SSD cache: continuation found conv=79c51c3a6f8b1881 overlap=100.0%
+0.12.861.566 I SSD cache: reusing conversation 79c51c3a6f8b1881 for cold restart
+0.12.861.576 I SSD cache: auto-sized hot=850 MiB warm=283 MiB (avail=1333 MiB)
+0.12.861.638 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/79c51c3a6f8b1881 (next_id=3)
+0.12.861.640 I SSD cache: model compat_hash set to 33d2904f746ae49d
+0.12.861.647 I SSD cache: created new conversation cache conv=79c51c3a6f8b1881 (total=1)
+0.12.861.652 I SSD cache: match checkpoint 2 conv=79c51c3a6f8b1881 turn=1 n_tokens=1201 lcp=1205
+0.12.873.199 I SSD cache: promoted checkpoint 2 cold->hot (16 MiB)
+0.12.877.511 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=1205 ssd_n_tokens=1201 pos=[693,1204] n_push=1201 overlap=100.0% continuation=1
+0.25.688.925 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   7.88 t/s, tg_3s =   7.88 t/s
+0.28.771.342 I slot print_timing: id  0 | task 0 | n_decoded =    124, tg =   7.86 t/s, tg_3s =   7.79 t/s
+0.29.287.720 I slot print_timing: id  0 | task 0 | prompt eval time =     131.20 ms /     4 tokens (   32.80 ms per token,    30.49 tokens per second)
+0.29.287.752 I slot print_timing: id  0 | task 0 |        eval time =   16295.03 ms /   128 tokens (  127.30 ms per token,     7.86 tokens per second)
+0.29.287.756 I slot print_timing: id  0 | task 0 |       total time =   16426.22 ms /   132 tokens
+0.29.287.768 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+0.29.288.265 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1332, truncated = 0
+0.29.288.321 I SSD cache: turn 3 complete (hot=0 MiB warm=16 MiB cold=1 checkpoints=2)
+0.29.760.042 I srv    operator(): operator(): cleaning up before exit...

@@ -1,0 +1,38 @@
+0.00.077.410 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.077.760 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.080.260 I srv    load_model: loading model '/home/deck/llama-ai/models/gpt-oss-20b-UD-Q6_K_XL.gguf'
+0.01.450.187 W load: setting token '<|message|>' (200008) attribute to USER_DEFINED (16), old attributes: 8
+0.01.450.192 W load: setting token '<|start|>' (200006) attribute to USER_DEFINED (16), old attributes: 8
+0.01.450.193 W load: setting token '<|constrain|>' (200003) attribute to USER_DEFINED (16), old attributes: 8
+0.01.451.989 W load: setting token '<|channel|>' (200005) attribute to USER_DEFINED (16), old attributes: 8
+0.01.465.237 W load: special_eog_ids contains both '<|return|>' and '<|call|>', or '<|calls|>' and '<|flush|>' tokens, removing '<|end|>' token from EOG list
+1.03.299.727 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+1.03.438.227 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+1.03.438.302 I SSD cache: model compat_hash 33d2904f746ae49d (arch dims + type_k=8 type_v=8)
+1.03.438.345 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+1.03.438.459 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-33d2904f746ae49d (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+1.03.438.460 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-33d2904f746ae49d
+1.03.505.316 I srv  llama_server: model loaded
+1.03.505.326 I srv  llama_server: listening on http://0.0.0.0:9090
+1.06.542.998 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.06.543.301 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.06.543.375 I SSD cache: auto-sized hot=512 MiB warm=256 MiB (avail=498 MiB)
+1.06.543.378 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+1.06.543.446 I SSD cache: no index file, starting fresh
+1.06.543.468 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/79c51c3a6f8b1881 (next_id=1)
+1.06.543.470 I SSD cache: model compat_hash set to 33d2904f746ae49d
+1.06.543.485 I SSD cache: created new conversation cache conv=79c51c3a6f8b1881 (total=1)
+1.07.191.413 I SSD cache: stored checkpoint 1 slot=0 tokens=61 tgt=1 dft=0 spec=0 MiB (hot=1 MiB warm=0 MiB total=1)
+1.11.172.646 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =    945, progress = 0.78, t =   4.63 s / 204.13 tokens per second
+1.12.366.295 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1201, progress = 1.00, t =   5.82 s / 206.25 tokens per second
+1.13.199.481 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 8 (pos_min = 693, pos_max = 1204, n_tokens = 1201, size = 1.596 MiB)
+1.13.239.603 I SSD cache: stored checkpoint 2 slot=0 tokens=1201 tgt=16 dft=0 spec=0 MiB (hot=18 MiB warm=0 MiB total=2)
+1.25.799.048 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   7.93 t/s, tg_3s =   7.93 t/s
+1.28.884.792 I slot print_timing: id  0 | task 0 | n_decoded =    124, tg =   7.90 t/s, tg_3s =   7.78 t/s
+1.29.397.037 I slot print_timing: id  0 | task 0 | prompt eval time =    6653.15 ms /  1205 tokens (    5.52 ms per token,   181.12 tokens per second)
+1.29.397.063 I slot print_timing: id  0 | task 0 |        eval time =   16200.48 ms /   128 tokens (  126.57 ms per token,     7.90 tokens per second)
+1.29.397.067 I slot print_timing: id  0 | task 0 |       total time =   22853.63 ms /  1333 tokens
+1.29.397.078 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+1.29.397.520 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1332, truncated = 0
+1.29.397.557 I SSD cache: turn 2 complete (hot=18 MiB warm=0 MiB cold=0 checkpoints=2)
+1.29.804.404 I srv    operator(): operator(): cleaning up before exit...

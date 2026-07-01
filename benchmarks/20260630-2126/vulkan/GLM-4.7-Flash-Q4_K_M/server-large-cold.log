@@ -1,0 +1,49 @@
+0.00.049.827 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.050.016 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.051.986 I srv    load_model: loading model '/home/deck/llama-ai/models/GLM-4.7-Flash-Q4_K_M.gguf'
+0.00.653.673 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.653.679 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+1.08.817.760 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+1.08.820.895 I SSD cache: model compat_hash 0aca70c4710ccbdb (arch dims + type_k=8 type_v=8)
+1.08.820.991 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+1.08.821.190 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-0aca70c4710ccbdb (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+1.08.821.194 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-0aca70c4710ccbdb
+1.08.829.432 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+1.08.829.488 I srv  llama_server: model loaded
+1.08.829.493 I srv  llama_server: listening on http://0.0.0.0:9090
+1.11.551.692 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.11.551.809 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.11.551.934 I SSD cache: auto-sized hot=512 MiB warm=256 MiB (avail=505 MiB)
+1.11.551.937 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+1.11.552.022 I SSD cache: no index file, starting fresh
+1.11.552.044 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/92a2e94ca340611b (next_id=1)
+1.11.552.102 I SSD cache: model compat_hash set to 0aca70c4710ccbdb
+1.11.552.114 I SSD cache: created new conversation cache conv=92a2e94ca340611b (total=1)
+1.18.803.943 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1026, progress = 0.07, t =   7.25 s / 141.48 tokens per second
+1.35.560.507 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   2050, progress = 0.13, t =  24.01 s / 85.39 tokens per second
+1.58.278.736 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   3074, progress = 0.20, t =  46.73 s / 65.79 tokens per second
+2.27.417.456 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4098, progress = 0.26, t =  75.87 s / 54.02 tokens per second
+3.03.458.247 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   5122, progress = 0.33, t = 111.91 s / 45.77 tokens per second
+3.46.032.868 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   6146, progress = 0.40, t = 154.48 s / 39.78 tokens per second
+4.34.510.719 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   7170, progress = 0.46, t = 202.96 s / 35.33 tokens per second
+5.28.788.031 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   8194, progress = 0.53, t = 257.24 s / 31.85 tokens per second
+6.28.263.044 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   9218, progress = 0.60, t = 316.71 s / 29.11 tokens per second
+7.33.801.694 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  10242, progress = 0.66, t = 382.25 s / 26.79 tokens per second
+8.43.396.526 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  11266, progress = 0.73, t = 451.84 s / 24.93 tokens per second
+9.58.292.168 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  12290, progress = 0.79, t = 526.74 s / 23.33 tokens per second
+11.19.280.811 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  13314, progress = 0.86, t = 607.73 s / 21.91 tokens per second
+12.44.478.357 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  14338, progress = 0.93, t = 692.93 s / 20.69 tokens per second
+14.14.926.754 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  15362, progress = 0.99, t = 783.37 s / 19.61 tokens per second
+14.34.853.443 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 1 of 8 (pos_min = 0, pos_max = 15488, n_tokens = 15485, size = 425.064 MiB)
+14.39.080.992 I SSD cache: stored checkpoint 1 slot=0 tokens=15485 tgt=425 dft=0 spec=0 MiB (hot=425 MiB warm=0 MiB total=1)
+15.21.306.755 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   2.10 t/s, tg_3s =   2.10 t/s
+15.24.367.937 I slot print_timing: id  0 | task 0 | n_decoded =    107, tg =   2.11 t/s, tg_3s =   2.29 t/s
+15.27.432.224 I slot print_timing: id  0 | task 0 | n_decoded =    114, tg =   2.12 t/s, tg_3s =   2.28 t/s
+15.30.491.390 I slot print_timing: id  0 | task 0 | n_decoded =    121, tg =   2.13 t/s, tg_3s =   2.29 t/s
+15.33.546.950 I slot print_timing: id  0 | task 0 | prompt eval time =  802116.05 ms / 15489 tokens (   51.79 ms per token,    19.31 tokens per second)
+15.33.546.977 I slot print_timing: id  0 | task 0 |        eval time =   59878.68 ms /   128 tokens (  467.80 ms per token,     2.14 tokens per second)
+15.33.546.981 I slot print_timing: id  0 | task 0 |       total time =  861994.73 ms / 15617 tokens
+15.33.546.993 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+15.33.649.809 I slot      release: id  0 | task 0 | stop processing: n_tokens = 15616, truncated = 0
+15.33.649.860 I SSD cache: turn 2 complete (hot=425 MiB warm=0 MiB cold=0 checkpoints=1)
+15.34.223.291 I srv    operator(): operator(): cleaning up before exit...
