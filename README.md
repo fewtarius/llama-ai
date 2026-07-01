@@ -626,18 +626,16 @@ Same workload across both systems. CLIO with the prompt *"Please evaluate this p
 
 ### Strix Halo (Nimo Axis N161) — Qwen3.6-35B Q8_K_XL
 
-196K context, 32 threads, Vulkan backend, 120W TDP. Six turns: five tool-calling turns followed by the final evaluation.
+196K context, 32 threads, Vulkan backend, 120W TDP. Four turns: three tool-calling turns followed by the final evaluation.
 
 | Turn | Prompt tokens | TTFT | Gen t/s | Notes |
 |------|---------------|------|---------|-------|
-| T0 | 17,396 | 22.2s | 40.5 | Full system prompt + tools + user message. 782 t/s prompt eval (1.28 ms/tok). |
-| T1 | 2,081 | 3.9s | 40.6 | Tool result reads. In-memory checkpoint restores static prefix. 533 t/s on tail. |
-| T2 | 2,559 | 4.9s | 39.8 | More file reads, git commands. 525 t/s on tail. |
-| T3 | 11,798 | 19.2s | 39.1 | Repositions to system prompt area. 616 t/s. |
-| T4 | 7,737 | 13.2s | 39.7 | Follow-up reads, terminal commands. 587 t/s. |
-| T5 | 11,894 | 19.3s | 38.7 | Writes the project evaluation. 1,070 tokens of analysis. 617 t/s. |
+| T0 | 21,336 | 26.5s | 36.5 | Full system prompt + tools + user message. 806 t/s prompt eval (1.24 ms/tok). SSD and system prompt cache disabled -- all 21K tokens evaluated fresh. |
+| T1 | 1,623 | 2.8s | 37.9 | Tool result reads. In-memory checkpoint restores cached prefix. 578 t/s on tail. |
+| T2 | 5,152 | 8.0s | 37.7 | More file reads, git commands. In-memory checkpoint restores. 646 t/s on tail. |
+| T3 | 4,428 | 7.5s | 38.2 | Writes the project evaluation. 1,069 tokens of analysis. 593 t/s prompt eval. |
 
-**Total server time: 2 minutes 21 seconds** (53,465 prompt tokens + 2,314 generated). Generation speed holds steady at 38-41 t/s across all six turns. Prompt eval runs 525-782 t/s — the in-memory checkpoint and LCP-based prefix matching restore the cached conversation prefix on every turn. The system prompt cache created a 402.8 MiB entry on T0 (n_sys=17,280 tokens), and SSD checkpoints range from 400-635 MiB per snapshot.
+**Total server time: 1 minute 29 seconds** (32,539 prompt tokens + 1,656 generated). The session completed in 4 turns instead of 6 -- model was more efficient with tool calls. Generation speed holds steady at 36-38 t/s across all turns. Prompt eval runs 578-806 t/s -- the in-memory checkpoint ring and LCP-based prefix matching restore the cached conversation prefix on each turn without SSD I/O overhead. SSD cache and system prompt cache are both disabled (halo MoE profile): all cache-ram (16GB) is dedicated to in-memory checkpoints, and the working set stays comfortably within 96GB VRAM.
 
 ### Ayaneo Flip KB — Qwen3.6-35B Q4_K_XL
 
@@ -661,9 +659,9 @@ Won't fit. The Q8_K_XL quantization is 37 GiB; the Flip's 780M iGPU has 24 GiB o
 
 ### Takeaways
 
-- **Hardware is the difference.** Strix Halo Q8 finishes the same session in 2.4 minutes. The Flip Q4 takes 11.3 minutes. Same model architecture, same prompt, same cache machinery — the difference is the Radeon 8060S (96GB VRAM, 120W) vs the 780M (24GB VRAM, 6-30W).
-- **Generation speed is flat across turns.** 38-41 t/s on Halo, 19-20 t/s on Flip. Generation is pure compute — caching doesn't change it, and it's stable from first turn to last.
-- **Prompt eval rate is the real differentiator.** Halo Q8: 525-782 t/s. Flip Q4: 60-113 t/s. The Halo's 5-6x lead in prompt eval is what makes agentic work practical — turns complete in seconds instead of minutes.
+- **Hardware is the difference.** Strix Halo Q8 finishes the same session in under 1.5 minutes (88s). The Flip Q4 takes 11.3 minutes. Same model architecture, same prompt, same cache machinery -- the difference is the Radeon 8060S (96GB VRAM, 120W) vs the 780M (24GB VRAM, 6-30W).
+- **Generation speed is flat across turns.** 36-38 t/s on Halo, 19-20 t/s on Flip. Generation is pure compute -- caching doesn't change it, and it's stable from first turn to last.
+- **Prompt eval rate is the real differentiator.** Halo Q8: 578-806 t/s. Flip Q4: 60-113 t/s. The Halo's 6-9x lead in prompt eval is what makes agentic work practical -- turns complete in seconds instead of minutes.
 - **The system prompt cache is the highest-value optimization.** A warm server restart restores the entire ~18K-token system prompt from the global cross-conversation cache. On the Flip, this drops TTFT from ~3 minutes to ~3 seconds on the very first request of every restart — the difference between usable and "go get coffee."
 - **Local inference trades latency for privacy and cost.** No API keys, no per-token billing, no network dependency. Usable offline. The cache makes the tradeoff bearable even on lower-end hardware.
 
