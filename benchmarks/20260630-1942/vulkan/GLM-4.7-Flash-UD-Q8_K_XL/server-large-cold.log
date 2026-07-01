@@ -1,0 +1,37 @@
+0.00.029.870 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.029.983 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.031.895 I srv    load_model: loading model '/run/media/deck/internal2/llama-ai/models/GLM-4.7-Flash-UD-Q8_K_XL.gguf'
+0.00.358.267 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.358.271 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+1.02.518.692 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 196608, kv_unified = 'true'
+1.02.518.964 I SSD cache: model compat_hash c9181c946267d7ba (arch dims + type_k=1 type_v=1)
+1.02.519.019 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=4096 MiB, warm=6144 MiB
+1.02.519.398 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-c9181c946267d7ba (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+1.02.519.402 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-c9181c946267d7ba
+1.02.533.776 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+1.02.533.942 I srv  llama_server: model loaded
+1.02.533.954 I srv  llama_server: listening on http://0.0.0.0:9090
+1.05.138.063 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.05.138.337 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.05.138.519 I SSD cache: auto-sized hot=512 MiB warm=256 MiB (avail=793 MiB)
+1.05.138.521 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+1.05.138.596 I SSD cache: no index file, starting fresh
+1.05.138.606 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/613096cdba128a01 (next_id=1)
+1.05.138.812 I SSD cache: model compat_hash set to c9181c946267d7ba
+1.05.138.821 I SSD cache: created new conversation cache conv=613096cdba128a01 (total=1)
+1.10.757.465 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   4098, progress = 0.26, t =   5.62 s / 729.32 tokens per second
+1.14.878.163 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   6146, progress = 0.40, t =   9.74 s / 631.03 tokens per second
+1.19.929.013 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   8194, progress = 0.53, t =  14.79 s / 554.00 tokens per second
+1.25.865.338 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  10242, progress = 0.66, t =  20.73 s / 494.14 tokens per second
+1.32.689.150 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  12290, progress = 0.79, t =  27.55 s / 446.09 tokens per second
+1.40.394.056 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =  14338, progress = 0.93, t =  35.26 s / 406.69 tokens per second
+1.49.478.379 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 1 of 8 (pos_min = 0, pos_max = 15488, n_tokens = 15485, size = 799.964 MiB)
+1.55.574.018 I SSD cache: stored checkpoint 1 slot=0 tokens=15485 tgt=799 dft=0 spec=0 MiB (hot=799 MiB warm=0 MiB total=1)
+1.58.986.358 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   7.54 t/s, tg_3s =   7.54 t/s
+1.59.956.496 I slot print_timing: id  0 | task 0 | prompt eval time =   40592.14 ms / 15489 tokens (    2.62 ms per token,   381.58 tokens per second)
+1.59.956.498 I slot print_timing: id  0 | task 0 |        eval time =   14225.88 ms /   128 tokens (  111.14 ms per token,     9.00 tokens per second)
+1.59.956.499 I slot print_timing: id  0 | task 0 |       total time =   54818.02 ms / 15617 tokens
+1.59.956.503 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+1.59.964.335 I slot      release: id  0 | task 0 | stop processing: n_tokens = 15616, truncated = 0
+1.59.964.348 I SSD cache: turn 2 complete (hot=799 MiB warm=0 MiB cold=0 checkpoints=1)
+2.00.105.202 I srv    operator(): operator(): cleaning up before exit...

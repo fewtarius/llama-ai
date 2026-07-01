@@ -1,0 +1,31 @@
+0.00.011.982 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.012.076 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.013.610 I srv    load_model: loading model '/run/media/deck/internal2/llama-ai/models/GLM-4.7-Flash-UD-Q8_K_XL.gguf'
+0.00.387.679 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.387.684 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+1.01.955.354 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 196608, kv_unified = 'true'
+1.01.955.519 I SSD cache: model compat_hash c9181c946267d7ba (arch dims + type_k=1 type_v=1)
+1.01.955.552 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=4096 MiB, warm=6144 MiB
+1.01.990.242 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-c9181c946267d7ba (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+1.01.990.244 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-c9181c946267d7ba
+1.02.003.844 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+1.02.004.025 I srv  llama_server: model loaded
+1.02.004.033 I srv  llama_server: listening on http://0.0.0.0:9090
+1.05.135.588 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+1.05.135.651 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+1.05.135.709 I SSD cache: auto-sized hot=512 MiB warm=256 MiB (avail=413 MiB)
+1.05.135.710 I SSD cache: floors applied (min hot=512 MiB, min warm=256 MiB)
+1.05.135.780 I SSD cache: no index file, starting fresh
+1.05.135.784 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/613096cdba128a01 (next_id=1)
+1.05.135.961 I SSD cache: model compat_hash set to c9181c946267d7ba
+1.05.135.966 I SSD cache: created new conversation cache conv=613096cdba128a01 (total=1)
+1.06.975.325 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 1 of 8 (pos_min = 0, pos_max = 1144, n_tokens = 1141, size = 59.137 MiB)
+1.07.360.478 I SSD cache: stored checkpoint 1 slot=0 tokens=1141 tgt=59 dft=0 spec=0 MiB (hot=59 MiB warm=0 MiB total=1)
+1.10.210.977 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  28.31 t/s, tg_3s =  28.31 t/s
+1.11.038.915 I slot print_timing: id  0 | task 0 | prompt eval time =    1543.27 ms /  1145 tokens (    1.35 ms per token,   741.93 tokens per second)
+1.11.038.918 I slot print_timing: id  0 | task 0 |        eval time =    4359.97 ms /   128 tokens (   34.06 ms per token,    29.36 tokens per second)
+1.11.038.919 I slot print_timing: id  0 | task 0 |       total time =    5903.23 ms /  1273 tokens
+1.11.038.923 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+1.11.041.698 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1272, truncated = 0
+1.11.041.709 I SSD cache: turn 2 complete (hot=59 MiB warm=0 MiB cold=0 checkpoints=1)
+1.11.532.505 I srv    operator(): operator(): cleaning up before exit...
