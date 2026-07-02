@@ -455,19 +455,19 @@ assign_profile() {
                     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
                 fi
                 _SSD_DISABLE=true
-                OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-                # 16K checkpoint interval: 1 checkpoint for typical 8-15K
-                # system prompts (instead of 2-3), 0 for short prompts.
-                # --ctx-checkpoints 8 keeps the in-memory ring small enough
-                # that speculative decoding doesn't churn VRAM. The system
-                # prompt cache (separate mechanism) handles cross-restart
-                # warm-start; per-turn checkpoints are just eviction
-                # insurance for long single-conversation runs.
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 16384 --ctx-checkpoints 8 --cache-ram 16384"
-                # 8 SSD checkpoints is enough for the system prompt entry
-                # plus a couple per-turn safety nets. 64 (default) just
-                # accumulates stale checkpoints on disk.
-                SSD_CHECKPOINTS="8"
+               OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+               # Large-MoE VRAM budget (models >50GB, e.g. MiniMax M2.7
+                # 70GB, Qwen3-Coder-Next 82GB): model + 131K q8_ KV +
+                # checkpoint ring must fit 96GB VRAM. Each checkpoint for
+                # these wide models is 3-4 GiB at moderate context — two
+                # slots is ~8 GiB vs ~31 GiB for the default 8. Rarer
+                # checkpoints (32K step) reduce per-turn fsync overhead
+                # and SSD cache is already disabled (_SSD_DISABLE=true).
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192"
+                # SSD settings unused (_SSD_DISABLE prevents per-turn SSD
+                # and system prompt caches). In-memory checkpoints handle
+                # prefix reuse.
+                SSD_CHECKPOINTS="0"
                 SSD_HOT_WINDOW="8192"
                 SSD_WARM_WINDOW="16384"
                 SSD_HOT_RAM="4096"
