@@ -248,12 +248,21 @@ prompt eval speedup, not wall-clock.
 | Qwen3.6-35B Q8_K_XL (35B, 3B active hybrid) | 20.3s | 0.47s | **43.0x** | 35-43 |
 | gemma-4-26B Q5_K_M (26B, 4B active) | 23.6s | 0.17s | **143.0x** | 30-40 |
 | Qwen3-Coder-Next Q8_K_XL (MoE hybrid) | 26.3s | 0.31s | **85.8x** | 21-34 |
+| MiniMax-M2.7 Q2_K_XL (230B, 10B active MoE) | 107.3s | 18.4s | **5.8x** | 4-26 |
+
+The MiniMax-M2.7 entry is frontier-scale - 230B parameters, 256 experts,
+10B active per token. At Q2_K_XL quantization it fits in 96GB VRAM and
+runs at usable speed for non-interactive workloads. Generation is
+heavily context-dependent: cold prompt eval and generation are both
+slower (4-10 t/s on large prompts) due to the model's weight, but warm
+generation via the SSD cache reaches 26-31 t/s.
 
 All warm runs restore from SSD, cold from scratch. Warm TTFT stays
-under 1.5s across all models. The 120B models run comfortably in 96GB
-VRAM at 131K context. Additional benchmark sets for GPT-OSS-120B,
-Nemotron-3-Super, and Qwen3-Coder-Next are linked from the
-[full data directory](benchmarks/20260630-1942/).
+under 1.5s across most models. The 120B-class models run comfortably
+in 96GB VRAM at 131K context, and the MiniMax-M2.7 (230B) runs at
+Q2_K_XL with usable generation. Additional benchmark sets for
+GPT-OSS-120B, Nemotron-3-Super, Qwen3-Coder-Next, and MiniMax-M2.7 are
+linked from their respective [full data directories](benchmarks/).
 
 ### Ayaneo Flip KB
 
