@@ -8,6 +8,9 @@ rocm/
 src/*/build/
 CachyLLama/build/
 
+# CMake artifacts (should never be committed)
+__cmake_systeminformation/
+
 # Llama.cpp source (managed as git submodules)
 
 # Python venv (if using)
