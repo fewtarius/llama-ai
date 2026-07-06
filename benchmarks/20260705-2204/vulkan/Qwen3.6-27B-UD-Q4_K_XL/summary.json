@@ -1,0 +1,21 @@
+{
+  "model": "Qwen3.6-27B-UD-Q4_K_XL",
+  "backend": "vulkan",
+  "context": 65536,
+  "max_tokens": 128,
+  "timestamp": "20260705-2204",
+  "results": [
+    {
+      "size_label": "large",
+      "error": "test failed"
+    },
+    {
+      "size_label": "medium",
+      "error": "test failed"
+    },
+    {
+      "size_label": "small",
+      "error": "test failed"
+    }
+  ]
+}
