@@ -314,13 +314,17 @@ _scan_gguf_arch() {
     if grep -q 'expert_count' "$_tmp_header" 2>/dev/null; then
         is_moe=true
     fi
-    # Pure-SSM: has SSM layers but NO MoE experts and no attention layers
-    # (full_attention_interval >= block_count or absent = pure SSM).
-    # Hybrid MoE+SSM models like Qwen3-Coder-Next have both expert_count
-    # and full_attention_interval < block_count — those are MoE, not pure SSM.
+    # Pure-SSM: has SSM layers but NO MoE experts and no attention layers.
+    # Hybrid attention+SSM models (Qwen3.6-27B, GLM-4.7, etc.) have both
+    # ssm.* and full_attention_interval < block_count — those need SSD
+    # cache and context shifting, same as dense models.
     if grep -q 'ssm\.' "$_tmp_header" 2>/dev/null; then
-        if [[ "$is_moe" != true ]]; then
-            is_ssm=true
+        # Check for hybrid: if full_attention_interval is present, some
+        # layers use full attention (hybrid), not pure SSM.
+        if ! grep -q 'full_attention_interval' "$_tmp_header" 2>/dev/null; then
+            if [[ "$is_moe" != true ]]; then
+                is_ssm=true
+            fi
         fi
     fi
     rm -f "$_tmp_header"
