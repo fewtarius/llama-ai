@@ -267,11 +267,12 @@ linked from their respective [full data directories](benchmarks/).
 ### Ayaneo Flip KB
 
 Radeon 780M, 6GB VRAM + 18GB GTT, Vulkan backend, ctx 32768. Large
-prompt results - [full data](benchmarks/20260630-2126/).
+prompt results - [full data](benchmarks/20260706-0758/).
 
 | Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
 |-------|----------:|----------:|--------:|--------:|
 | GLM-4.7-Flash Q4_K_M | 802.1s (13.4min) | 1.6s | **487.8x** | 3.1 |
+| Qwen3.6-27B Q4_K_XL | 271.5s (4.5min) | 1.03s | **264.3x** | 4.4 |
 | Qwen3.6-35B Q4_K_XL | 199.1s (3.3min) | 0.49s | **409.2x** | 9.9 |
 | gemma-4-26B Q5_K_M | 253.2s (4.2min) | 0.65s | **387.9x** | 6.7 |
 | gpt-oss-20b Q6_K_XL | 169.5s (2.8min) | 0.73s | **232.3x** | 6.0 |
