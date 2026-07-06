@@ -448,7 +448,7 @@ assign_profile() {
                 KV_CACHE_TYPE_K="f16"
                 # Large MoE models (>50GB, e.g. Qwen3-Coder-Next 80GB)
                 # fill VRAM tightly — f16 KV would overflow. Switch to
-                # q8_ KV and reduce ctx (same reasoning as large-dense >50GB).
+                # q8_ KV and reduce ctx (all dense models disable SSD on halo).
                 if [[ $size_gb -gt 50 ]]; then
                     KV_CACHE_TYPE_K="q8_0"
                     KV_CACHE_TYPE_V="q8_0"
@@ -522,18 +522,21 @@ assign_profile() {
         # 30B+ models fit comfortably with 96GB VRAM.
         case "$tier" in
             halo)
-                # Dense 15-50GB + 131K q8_0 KV fits VRAM with headroom.
-                # Larger models (>50GB at Q8_K_XL, e.g. Qwen3-Coder-Next 82GB)
-                # fill VRAM tightly; SSD writes would compete with the GTT
-                # spillover on the critical prefill path.
+                # Dense models on Strix Halo: 96GB VRAM holds the working set
+                # comfortably. Per-turn SSD writes are pure overhead on the
+                # prefill critical path - same reasoning as MoE halo.
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
                 EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 16384"
-                if [[ $size_gb -gt 50 ]]; then
-                    _SSD_DISABLE=true
-                fi
+                _SSD_DISABLE=true
+                SSD_CHECKPOINTS=""
+                SSD_HOT_WINDOW="8192"
+                SSD_WARM_WINDOW="16384"
+                SSD_HOT_RAM="4096"
+                SSD_WARM_RAM="6144"
+                SSD_MAX_COLD="32"
                 ;;
             standard)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -541,6 +544,11 @@ assign_profile() {
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
                 EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram 8192"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
                 ;;
             *)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -549,6 +557,11 @@ assign_profile() {
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
                 # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
                 EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
                 ;;
         esac
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
@@ -563,12 +576,20 @@ assign_profile() {
         case "$tier" in
             halo)
                 # Medium models (10-15GB) leave ~80GB of VRAM free, plenty
-                # for long context without compression.
+                # for long context without compression. Per-turn SSD writes
+                # are pure overhead on 96GB VRAM.
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
                 KV_CACHE_TYPE_K="f16"
                 KV_CACHE_TYPE_V="f16"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
                 EXTRA_SERVER_ARGS+=" --cache-ram 16384"
+                _SSD_DISABLE=true
+                SSD_CHECKPOINTS=""
+                SSD_HOT_WINDOW="8192"
+                SSD_WARM_WINDOW="16384"
+                SSD_HOT_RAM="4096"
+                SSD_WARM_RAM="6144"
+                SSD_MAX_COLD="32"
                 ;;
             standard)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -576,6 +597,11 @@ assign_profile() {
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
                 EXTRA_SERVER_ARGS+=" --cache-ram 8192"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
                 ;;
             *)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
@@ -583,6 +609,11 @@ assign_profile() {
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
                 EXTRA_SERVER_ARGS+=" --cache-ram 4096"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
                 ;;
         esac
         EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
@@ -600,12 +631,24 @@ assign_profile() {
                 KV_CACHE_TYPE_K="f16"
                 KV_CACHE_TYPE_V="f16"
                 EXTRA_SERVER_ARGS+=" --cache-ram 16384 --slot-prompt-similarity 0.15"
+                _SSD_DISABLE=true
+                SSD_CHECKPOINTS=""
+                SSD_HOT_WINDOW="8192"
+                SSD_WARM_WINDOW="16384"
+                SSD_HOT_RAM="4096"
+                SSD_WARM_RAM="6144"
+                SSD_MAX_COLD="32"
                 ;;
             *)
                 [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
+                SSD_HOT_WINDOW="4096"
+                SSD_WARM_WINDOW="8192"
+                SSD_HOT_RAM="960"
+                SSD_WARM_RAM="1440"
+                SSD_MAX_COLD="32"
                 ;;
         esac
         profile_name="small-efficient"
