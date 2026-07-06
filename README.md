@@ -21,10 +21,12 @@ Profiles scale automatically with the APU's VRAM carveout via
 192K-token context on MoE models and 196K on GPT-OSS, handheld keeps
 conservative 64K-token settings tuned for the 780M's 6GB VRAM envelope.
 
-[CachyLLama](https://github.com/fewtarius/CachyLLama) is a direct fork
-of llama.cpp, not a patchset. Performance work on hybrid architectures -
-Qwen3.6, GLM-4.7, Gemma 4 - lives as commits in that repo's git history.
-The submodule here points at the fork, not at ggml-org/llama.cpp.
+Performance work on hybrid architectures - Qwen3.6, Qwen3-Coder-Next,
+and Nemotron-3-Super (attention+Mamba MoE) - lives as commits in the
+[CachyLLama](https://github.com/fewtarius/CachyLLama) git history. GLM-4.7
+uses MLA (multi-head latent attention, similar to DeepSeek) and Gemma 4
+uses sliding-window/global attention; neither is a Mamba hybrid. The
+submodule here points at the fork, not at ggml-org/llama.cpp.
 
 ## Quick start
 
@@ -157,11 +159,11 @@ MoE=true, SSM=false)`).
 
 ### Hybrid MoE architectures
 
-Qwen3.6, GLM-4.7, and Gemma 4 mix attention layers with recurrent
-(Mamba) layers. CachyLLama handles these correctly: KV cache shifting,
-attention-only memory clearing that preserves recurrent state, and
-checkpoint overflow prevention so same-conversation state is always
-accepted regardless of size.
+Qwen3.6, Qwen3-Coder-Next, and Nemotron-3-Super mix attention layers
+with recurrent (Mamba) layers. CachyLLama handles these correctly: KV
+cache shifting, attention-only memory clearing that preserves recurrent
+state, and checkpoint overflow prevention - so same-conversation state
+is always accepted regardless of size.
 
 ### MoE expert tracking
 
@@ -213,7 +215,9 @@ evaluation. The rest loads from disk in 1-5 seconds.
   pressure pushes them to cold.
 - **Cold** - On disk. Survives server restarts.
 
-Tiers promote and demote automatically based on turn activity.
+Tiers promote and demote automatically based on turn activity. Old
+checkpoints are evicted when the ring buffer fills. The cache just
+works - no manual management needed.
 
 ### System prompt cache
 
@@ -226,43 +230,50 @@ The cache lives at `kv-cache/{model-stem}/sys-{hash}.bin`, keyed by
 the first N tokens of the prompt. Defaults to 8 entries per model
 with 30-day expiry.
 
-### No manual management needed
-
-Checkpoints save automatically after each turn. Old ones are evicted
-when the ring buffer fills. The cache just works.
-
 ## Benchmarks
 
 ### Strix Halo (Nimo Axis N161)
 
 Radeon 8060S, 96GB APU VRAM, Vulkan backend. Large prompt results
-only - [full data](benchmarks/20260630-1942/) with all sizes and per-model breakdowns. Speedup is
+only - [full data](benchmarks/) with all sizes and per-model breakdowns. Speedup is
 prompt eval speedup, not wall-clock.
 
 | Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
 |-------|----------:|----------:|--------:|--------:|
-| GPT-OSS-120B Q8_K_XL (128-exp MoE) | 27.9s | 1.46s | **19.2x** | 9-11 |
-| Nemotron-3-Super-120B Q4_K_XL (12B active) | 71.6s | 0.49s | **145.2x** | 10-13 |
-| gpt-oss-20b Q6_K_XL (MoE, 3.6B active) | 12.7s | 0.17s | **77.0x** | 29-67 |
-| GLM-4.7-Flash Q8_K_XL (30B, 3B active) | 40.6s | 1.07s | **37.8x** | 29-35 |
-| Qwen3.6-35B Q8_K_XL (35B, 3B active hybrid) | 20.3s | 0.47s | **43.0x** | 35-43 |
-| gemma-4-26B Q5_K_M (26B, 4B active) | 23.6s | 0.17s | **143.0x** | 30-40 |
-| Qwen3-Coder-Next Q8_K_XL (MoE hybrid) | 26.3s | 0.31s | **85.8x** | 21-34 |
+| GPT-OSS-120B Q8_K_XL (117B, 5B active MoE) | 27.9s | 1.46s | **19.2x** | 9-11 |
+| Nemotron-3-Super-120B Q4_K_XL (120B, 12B active MoE) | 71.6s | 0.49s | **145.2x** | 10-13 |
+| gpt-oss-20b Q6_K_XL (20B, 3.6B active MoE) | 12.7s | 0.17s | **77.0x** | 29-67 |
+| GLM-4.7-Flash Q8_K_XL (30B, 3B active MoE) | 40.6s | 1.07s | **37.8x** | 29-35 |
+| Qwen3.6-35B Q8_K_XL (35B, 3B active MoE) | 20.3s | 0.47s | **43.0x** | 35-43 |
+| Qwen3.6-27B Q4_K_XL (27B, dense) | 55.8s | 0.31s | **179.2x** | 8-10 |
+| gemma-4-26B Q5_K_M (26B, 4B active MoE) | 23.6s | 0.17s | **143.0x** | 30-40 |
+| Qwen3-Coder-Next Q8_K_XL (80B, 3B active MoE) | 26.3s | 0.31s | **85.8x** | 21-34 |
 | MiniMax-M2.7 Q2_K_XL (230B, 10B active MoE) | 107.3s | 18.4s | **5.8x** | 4-26 |
 
-The MiniMax-M2.7 entry is frontier-scale - 230B parameters, 256 experts,
-10B active per token. At Q2_K_XL quantization it fits in 96GB VRAM and
-runs at usable speed for non-interactive workloads. Generation is
-heavily context-dependent: cold prompt eval and generation are both
-slower (4-10 t/s on large prompts) due to the model's weight, but warm
-generation via the SSD cache reaches 26-31 t/s.
+### Architecture notes
+
+**Dense vs MoE.** Qwen3.6-27B is the only dense model in the table -
+all 27B parameters activate per token, trading generation speed (8-10
+t/s) for prompt eval throughput. MoE models activate 3-12B parameters
+per token, hitting 29-67 t/s. Dense models show the largest speedup
+numbers from SSD caching (179x) because cold eval is proportionally
+slower, but generation speed is the real-world tradeoff.
+
+**Mamba hybrids.** Qwen3.6-35B, Qwen3-Coder-Next, and Nemotron-3-Super
+interleave attention layers with recurrent (Mamba-2) layers. These
+require attention-only KV cache clearing to preserve recurrent state
+across cache restores. GLM-4.7 uses MLA (multi-head latent attention,
+no Mamba), and Gemma 4 uses interleaved sliding-window/global
+attention. Neither is a Mamba hybrid.
+
+**Quantization.** Most models run at Q8_K_XL (30-82GB on disk).
+Qwen3.6-27B at Q4_K_XL fits comfortably alongside a full 32K KV cache.
+MiniMax-M2.7 at Q2_K_XL pushes the frontier - 230B parameters, 256
+experts, 10B active per token, running at 4-26 t/s in 96GB VRAM.
 
 All warm runs restore from SSD, cold from scratch. Warm TTFT stays
-under 1.5s across most models. The 120B-class models run comfortably
-in 96GB VRAM at 131K context, and the MiniMax-M2.7 (230B) runs at
-Q2_K_XL with usable generation. Additional benchmark sets for
-GPT-OSS-120B, Nemotron-3-Super, Qwen3-Coder-Next, and MiniMax-M2.7 are
-linked from their respective [full data directories](benchmarks/).
+under 1.5s across most models. See [benchmarks/](benchmarks/) for full
+results with per-model breakdowns and all prompt sizes.
 
 ### Ayaneo Flip KB
 
@@ -271,11 +282,11 @@ prompt results - [full data](benchmarks/20260706-0758/).
 
 | Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
 |-------|----------:|----------:|--------:|--------:|
-| GLM-4.7-Flash Q4_K_M | 802.1s (13.4min) | 1.6s | **487.8x** | 3.1 |
-| Qwen3.6-27B Q4_K_XL | 271.5s (4.5min) | 1.03s | **264.3x** | 4.4 |
-| Qwen3.6-35B Q4_K_XL | 199.1s (3.3min) | 0.49s | **409.2x** | 9.9 |
-| gemma-4-26B Q5_K_M | 253.2s (4.2min) | 0.65s | **387.9x** | 6.7 |
-| gpt-oss-20b Q6_K_XL | 169.5s (2.8min) | 0.73s | **232.3x** | 6.0 |
+| GLM-4.7-Flash Q4_K_M (30B, 3B active MoE) | 802.1s (13.4min) | 1.6s | **487.8x** | 3.1 |
+| Qwen3.6-27B Q4_K_XL (27B, dense) | 271.5s (4.5min) | 1.03s | **264.3x** | 4.4 |
+| Qwen3.6-35B Q4_K_XL (35B, 3B active MoE) | 199.1s (3.3min) | 0.49s | **409.2x** | 9.9 |
+| gemma-4-26B Q5_K_M (26B, 4B active MoE) | 253.2s (4.2min) | 0.65s | **387.9x** | 6.7 |
+| gpt-oss-20b Q6_K_XL (20B, 3.6B active MoE) | 169.5s (2.8min) | 0.73s | **232.3x** | 6.0 |
 
 On memory-constrained hardware the cache is the difference between
 usable and unusable. Cold prompts take minutes. Warm TTFT converges
