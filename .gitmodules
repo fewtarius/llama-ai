@@ -1,3 +1,4 @@
 [submodule "CachyLLama"]
 	path = CachyLLama
 	url = git@github.com:fewtarius/CachyLLama.git
+	branch = master
