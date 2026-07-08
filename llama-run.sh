@@ -231,6 +231,7 @@ ${YELLOW}Options:${NC}
     --no-preserve-reasoning Strip reasoning from prior assistant messages (default)
     --reasoning-budget N    Max thinking tokens per response (default: 2048)
     --no-reasoning-budget   Disable thinking token limit
+    --no-ssd-cache          Disable SSD KV cache entirely (RAM prefix cache stays active)
     -h, --help              Show this help
 
 ${YELLOW}Download Model:${NC}
@@ -1287,6 +1288,7 @@ while [[ $# -gt 0 ]]; do
         --cache-ssd-system-prompts) SSD_SYSTEM_PROMPTS="$2"; shift 2 ;;
         --cache-ssd-no-fsync) SSD_NO_FSYNC="true"; shift 1 ;;
         --cache-ssd-system-max-days) SSD_SYSTEM_MAX_DAYS="$2"; shift 2 ;;
+        --no-ssd-cache) _SSD_DISABLE=true; shift ;;
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
         --checkpoint-min-step)
             OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
