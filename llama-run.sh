@@ -484,7 +484,10 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 8192"
+                # --no-checkpoint-near-end opts out of upstream's always-fire
+                # near-end checkpoint (PR #25472) which doubles per-request SSD
+                # write and warm restore I/O on dense+SWA models.
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 8192 --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -499,7 +502,7 @@ assign_profile() {
                 # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
                 # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 )) --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -534,7 +537,7 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 8 --cache-ram 16384"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 16384 --no-checkpoint-near-end"
                 _SSD_DISABLE=true
                 SSD_CHECKPOINTS=""
                 SSD_HOT_WINDOW="8192"
@@ -548,7 +551,7 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q8_0"
                 KV_CACHE_TYPE_V="q8_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram 8192"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram 8192 --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -561,7 +564,7 @@ assign_profile() {
                 KV_CACHE_TYPE_V="q4_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
                 # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 4096 --ctx-checkpoints 4 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))"
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 )) --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
