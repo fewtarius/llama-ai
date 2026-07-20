@@ -828,6 +828,14 @@ setup_vulkan_env() {
     mkdir -p "$MESA_SHADER_CACHE_DIR"
     # RADV performance tuning for compute workloads
     export RADV_PERFTEST="${RADV_PERFTEST:-gplp}"
+    # CachyLLAMA RDNA3 (gfx1103, 7840U): measured +4.5% tg64 at nps=64 vs the
+    # conservative nps=8 default. nps=100 gets another +0.1% but triples the
+    # lockup_timeout risk on slower APUs. 64 is the sweet spot. See RDNA3_NOTES.md.
+    # Only auto-sets on Phoenix; other RDNA3 silicon keeps the nps=8 default.
+    # Manual override: export GGML_VK_NODES_PER_SUBMIT=N before invoking.
+    if [[ "${LLAMA_GFX_ARCH:-}" == "gfx1103" ]] && [[ -z "${GGML_VK_NODES_PER_SUBMIT:-}" ]]; then
+        export GGML_VK_NODES_PER_SUBMIT=64
+    fi
 }
 
 setup_metal_env() {
