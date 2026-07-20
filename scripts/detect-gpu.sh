@@ -264,18 +264,31 @@ _detect_apu_vram_gb() {
 
 # Classify the hardware into a tier that downstream scripts can branch on.
 # Tier is set from the detected APU VRAM carveout (the most reliable signal
-# for how much GPU memory is actually available to the iGPU).
+# for how much GPU memory is actually available to the iGPU). For mini-PCs
+# with a tiny VRAM carveout but desktop-class system RAM (e.g. Cezanne
+# 5800H with 512 MiB carveout and 30 GB RAM), we fall back to total RAM to
+# avoid misclassifying them as handhelds.
 #
-#   handheld  - <=16GB APU VRAM (Phoenix/Hawk Point, 780M/890M)
-#   standard  - 16-32GB APU VRAM (future APUs, large Phoenix configs)
+#   handheld  - <=16GB APU VRAM AND <24GB system RAM
+#                (Phoenix/Hawk Point, 780M/890M; Steam Deck class)
+#   standard  - 16-64GB APU VRAM, OR mini-PC class (>=24GB system RAM
+#                with sub-GB VRAM carveout - e.g. Minisforum UM580+)
 #   halo      - >=64GB APU VRAM (Strix Halo with 96GB BIOS carveout)
 #
 # Override with LLAMA_HARDWARE_TIER env var.
 _detect_hardware_tier() {
     local vram_gb="$1"
+    local ram_gb="${2:-0}"
     if [[ "$vram_gb" -ge 64 ]]; then
         echo "halo"
     elif [[ "$vram_gb" -ge 16 ]]; then
+        echo "standard"
+    elif [[ "$vram_gb" -lt 1 && "$ram_gb" -ge 24 ]]; then
+        # Mini-PC class: tiny BIOS VRAM carveout but desktop-class RAM.
+        # zaphod (Minisforum UM580+, 512 MiB carveout, 30 GB RAM) hits this
+        # branch and gets the standard profile instead of being misclassified
+        # as a Steam Deck. The 7840U (6 GB VRAM) is unaffected because its
+        # VRAM is well above the 1 GB threshold.
         echo "standard"
     else
         echo "handheld"
@@ -510,7 +523,7 @@ fi  # end macOS/AMD branch
 LLAMA_TOTAL_RAM_GB="$(_detect_total_ram_gb)"
 LLAMA_APU_VRAM_GB="$(_detect_apu_vram_gb)"
 LLAMA_RECOMMENDED_GTT_GB="$(_recommend_gtt_gb "$LLAMA_TOTAL_RAM_GB" "$LLAMA_APU_VRAM_GB")"
-LLAMA_HARDWARE_TIER="$(_detect_hardware_tier "$LLAMA_APU_VRAM_GB")"
+LLAMA_HARDWARE_TIER="$(_detect_hardware_tier "$LLAMA_APU_VRAM_GB" "$LLAMA_TOTAL_RAM_GB")"
 
 # Detect CPU ISA features (x86 SIMD level for cmake build flags)
 _detect_cpu_isa

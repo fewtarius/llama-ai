@@ -501,8 +501,14 @@ assign_profile() {
                 # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
                 # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 )) --no-checkpoint-near-end"
+                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB).
+                # Floor at 1024 MiB so sub-2GB-VRAM systems (e.g. Cezanne
+                # 512 MiB carveout, which would otherwise produce -2048)
+                # get a sensible default. The adjust_cache_ram_for_memory
+                # step below further clamps to available RAM.
+                local _cram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
+                (( _cram < 1024 )) && _cram=1024
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram $_cram --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -563,8 +569,13 @@ assign_profile() {
                 KV_CACHE_TYPE_K="q4_0"
                 KV_CACHE_TYPE_V="q4_0"
                 OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB)
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram $(( LLAMA_APU_VRAM_GB * 1024 - 2048 )) --no-checkpoint-near-end"
+                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB).
+                # Floor at 1024 MiB so sub-2GB-VRAM systems (e.g. Cezanne
+                # 512 MiB carveout) get a sane value. See moe-optimized above
+                # for the matching fix and adjust_cache_ram_for_memory clamping.
+                local _cram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
+                (( _cram < 1024 )) && _cram=1024
+                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram $_cram --no-checkpoint-near-end"
                 SSD_HOT_WINDOW="4096"
                 SSD_WARM_WINDOW="8192"
                 SSD_HOT_RAM="960"
@@ -832,6 +843,11 @@ setup_vulkan_env() {
     # conservative nps=8 default. nps=100 gets another +0.1% but triples the
     # lockup_timeout risk on slower APUs. 64 is the sweet spot. See RDNA3_NOTES.md.
     # Only auto-sets on Phoenix; other RDNA3 silicon keeps the nps=8 default.
+    # Cezanne (gfx90c) is intentionally NOT overridden: 2026-07-20 sweep on
+    # zaphod (Minisforum UM580+, 8 Vega CUs) showed NPS sweep 1-100 gives
+    # <3% tg variation across 7b/14b/27b/35B-A3B - within noise. The 7840U's
+    # 12 RDNA3 CUs benefit from deeper submit queues; 8 Vega CUs don't.
+    # See CachyLLama/CEZANNE_NOTES.md.
     # Manual override: export GGML_VK_NODES_PER_SUBMIT=N before invoking.
     if [[ "${LLAMA_GFX_ARCH:-}" == "gfx1103" ]] && [[ -z "${GGML_VK_NODES_PER_SUBMIT:-}" ]]; then
         export GGML_VK_NODES_PER_SUBMIT=64
