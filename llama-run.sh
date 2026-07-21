@@ -199,6 +199,32 @@ log_ok()    { printf '%b[OK]%b   %s\n' "$GREEN" "$NC" "$1"; }
 log_warn()  { printf '%b[WARN]%b  %s\n' "$YELLOW" "$NC" "$1"; }
 log_error() { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$1"; }
 
+# Check whether the system is plugged into AC power. Returns 0 (true) when
+# on AC, 1 (false) when on battery or when the state can't be determined.
+#
+# Linux: reads /sys/class/power_supply/AC*/online and /sys/class/power_supply/BAT*/status
+# macOS: uses pmset -g batt; AC when "AC Power" appears in the output.
+# Falls back to "AC assumed" on systems without either interface (desktops,
+# servers) so the residency check doesn't block the standard tiers.
+check_ac_power() {
+    local on_ac=0
+    if [[ -d /sys/class/power_supply ]]; then
+        # Linux: any AC-type supply with online=1 means plugged in
+        for ps in /sys/class/power_supply/AC*/online; do
+            [[ -r "$ps" && "$(cat "$ps" 2>/dev/null)" == "1" ]] && on_ac=1
+        done
+        # Some handhelds (e.g. Ayaneo Flip KB) label AC as Mains or ADP.
+        for ps in /sys/class/power_supply/{Mains,ADP}*/online; do
+            [[ -r "$ps" && "$(cat "$ps" 2>/dev/null)" == "1" ]] && on_ac=1
+        done
+    fi
+    if command -v pmset &>/dev/null && [[ $on_ac -eq 0 ]]; then
+        # macOS: pmset shows "AC Power" line when plugged in
+        pmset -g batt 2>/dev/null | grep -q "AC Power" && on_ac=1
+    fi
+    return $((1 - on_ac))
+}
+
 # =============================================================================
 # Usage
 # =============================================================================
@@ -529,6 +555,23 @@ assign_profile() {
         EXTRA_SERVER_ARGS+=" --reasoning-format auto"
         # SSD cache enabled by global default
         OVERRIDE_REASONING="on"
+        # MoE expert SSD residency — enables running MoE models larger than
+        # physical RAM by keeping only hot experts paged in and evicting
+        # cold ones to SSD via madvise. Most valuable on the handheld tier
+        # where VRAM is small and the active subset of a sparse MoE model
+        # (typically 1-3% of total) is the only thing that needs to be
+        # resident.
+        #
+        # Battery guard: on the handheld profile, the heavy SSD I/O from
+        # expert eviction drains the battery quickly and adds noticeable
+        # latency from NVMe page faults. Require AC power before enabling.
+        if [[ "$tier" == "handheld" ]] && ! check_ac_power; then
+            log_warn "MoE expert SSD residency skipped: handheld tier is on battery power"
+            log_warn "  SSD I/O during eviction drains battery and adds latency"
+            log_warn "  Plug in AC power and re-run to enable --moe-expert-residency"
+        else
+            EXTRA_SERVER_ARGS+=" --moe-expert-residency"
+        fi
         OVERRIDE_REASONING_BUDGET="2048"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then
