@@ -173,6 +173,26 @@ MoE models activate only a subset of experts per token - typically
 instrumentation for now; future work will use it to reorder experts
 for cache locality.
 
+### MoE expert residency (run models larger than RAM)
+
+Standard loading OOMs when a MoE model exceeds physical memory, even
+though only 1-3% of its weights are touched per token. CachyLLama's
+residency subsystem keeps only the active subset paged in via
+`madvise(MADV_WILLNEED / MADV_DONTNEED)` and lets cold pages spill
+to SSD. On the Flip KB (25 GB RAM), this loads and runs MoE models up
+to 86 GB (Qwen3-Coder-Next Q8_K_XL).
+
+A per-layer recency+frequency cache scores and evicts cold experts
+(FlashMoE showed pure LRU evicts hot experts 34% of the time).
+A co-activation matrix persists across sessions at
+`~/.cachylla/coactivation/{model}.json` and informs future prewarm.
+
+Enabled in `llama-run.sh` automatically for the MoE profile when the
+handheld tier is plugged into AC (heavy SSD I/O drains battery).
+CLI: `--moe-expert-residency [--moe-resident-per-layer N] [--moe-prewarm-top-k N]`.
+See [CachyLLama docs/moe-expert-residency.md](CachyLLama/docs/moe-expert-residency.md)
+for architecture, API, tuning, and limitations.
+
 ### User isolation
 
 Multi-tenant deployments get per-user KV cache namespacing,
