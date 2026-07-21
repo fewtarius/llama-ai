@@ -324,12 +324,12 @@ Qwen3.6-35B generation also doubled (9.9 -> 18-21 t/s). MoE expert
 residency keeps hot experts paged in via `madvise(MADV_WILLNEED)`,
 so cold-path expert loads no longer dominate decode.
 
-GLM-4.7-Flash and gpt-oss-20b currently hang on Flip cold start
-(curl timeout 900s) - both completed in earlier benchmarks with the
-same prompt sizes, so this is a regression to investigate. Qwen3.6-27B
-cold eval succeeds at all sizes, but the warm server restart hits a
-Vulkan device-lost error during model load - only the small (1244
-token) warm run completed.
+Qwen3.6-27B cold eval succeeds at all sizes, but the warm server
+restart hits a Vulkan device-lost error during model load - only the
+small (1244 token) warm run completed. GLM-4.7-Flash and gpt-oss-20b
+timed out at 900s in this run; both are fixed in the next CachyLLama
+bump (commit 86855c4 - empty MoE routing tensor segfault in
+`track_expert_activations`).
 
 On memory-constrained hardware the cache is the difference between
 usable and unusable. Cold prompts take a fraction of what they used
