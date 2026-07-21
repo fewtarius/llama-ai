@@ -239,6 +239,12 @@ Tiers promote and demote automatically based on turn activity. Old
 checkpoints are evicted when the ring buffer fills. The cache just
 works - no manual management needed.
 
+By default nothing caps total disk usage - a long MoE conversation
+can grow to hundreds of GiB on its own. Set `--cache-ssd-cold-maxsize`
+(MiB) to bound the global cold tier footprint; when the cap is hit,
+the oldest conversation directories get evicted first. Pair it with
+`--cache-ssd-max-cold` for per-conversation checkpoint count limits.
+
 ### System prompt cache
 
 A global cross-conversation cache stores the system section of any
