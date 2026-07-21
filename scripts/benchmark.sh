@@ -270,7 +270,15 @@ start_server() {
             printf " %q" "$arg"
         done
         printf "\n"
-    } >> "$SERVER_LOG"
+    } > "$SERVER_LOG.cmd"
+
+    # Also dump into the server log itself - the server's > redirect below
+    # truncates it, so we keep a sidecar for the parser to find.
+    printf "BENCHMARK COMMAND:" >> "$SERVER_LOG"
+    for arg in "${cmd[@]}"; do
+        printf " %q" "$arg" >> "$SERVER_LOG"
+    done
+    printf "\n" >> "$SERVER_LOG"
 
     "${cmd[@]}" > "$SERVER_LOG" 2>&1 &
     SERVER_PID=$!
@@ -438,6 +446,131 @@ print(json.dumps({
 }
 
 # =============================================================================
+# MoE expert residency stats. The server emits periodic warnings like:
+#   W moe-residency: decodes=16 touches=1372 hits=3504 misses=636 evictions=4 hit_rate=84.6%
+# We capture the last one per run (final stats) plus the activation info.
+# Empty result when residency is disabled or no MoE layers.
+# =============================================================================
+
+detect_moe_residency_stats() {
+    local log_file="$1"
+    python3 -c "
+import re, json
+
+with open('$log_file', 'r') as f:
+    text = f.read()
+
+enabled = bool(re.search(r'moe-residency: enabled for', text))
+
+# Find ALL hit_rate lines and take the last one (most recent decodes).
+stats_lines = re.findall(
+    r'moe-residency:\s+decodes=(\d+)\s+touches=(\d+)\s+hits=(\d+)\s+misses=(\d+)\s+evictions=(\d+)\s+hit_rate=([\d.]+)%',
+    text
+)
+
+result = {'enabled': enabled, 'present': bool(stats_lines)}
+if stats_lines:
+    decodes, touches, hits, misses, evictions, hit_rate = stats_lines[-1]
+    result.update({
+        'decodes': int(decodes),
+        'touches': int(touches),
+        'hits': int(hits),
+        'misses': int(misses),
+        'evictions': int(evictions),
+        'hit_rate_pct': float(hit_rate),
+    })
+
+# Activation info from the 'enabled for' line.
+act_match = re.search(
+    r'moe-residency:\s+enabled for\s+(\d+)\s+MoE layers\s+\((\d+)\s+experts,\s+(\d+)\s+used/token\)',
+    text
+)
+if act_match:
+    result['moe_layers'] = int(act_match.group(1))
+    result['n_expert'] = int(act_match.group(2))
+    result['n_expert_used'] = int(act_match.group(3))
+
+print(json.dumps(result))
+"
+}
+
+# =============================================================================
+# Profile detection from the persisted benchmark command sidecar. We look for
+# distinctive flags set by llama-run.sh's profile logic:
+#   --moe-expert-residency      -> 'moe-optimized'
+#   --no-checkpoint-near-end    -> 'standard' or larger
+#   --cache-ram 16384           -> 'halo' tier
+#   --cache-ram 4096            -> 'handheld' or 'standard'
+# Plus ngl / batch-size heuristics.
+# =============================================================================
+
+detect_profile() {
+    local cmd_file="$1"
+    python3 -c "
+import re, json, os
+
+if not os.path.exists('$cmd_file'):
+    print(json.dumps({'profile': 'unknown'}))
+    exit()
+
+with open('$cmd_file', 'r') as f:
+    text = f.read()
+
+profile = 'unknown'
+features = []
+
+if '--moe-expert-residency' in text:
+    profile = 'moe-optimized'
+    features.append('moe-residency')
+elif re.search(r'--ctx-checkpoints 64', text):
+    profile = 'dense-large'
+elif re.search(r'--cache-ram 16384', text):
+    profile = 'halo-tier'
+elif re.search(r'--cache-ram 4096', text):
+    profile = 'standard'
+else:
+    profile = 'default'
+
+# Detect other notable features
+if '--no-checkpoint-near-end' in text:
+    features.append('no-checkpoint-near-end')
+if '--kv-unified' in text:
+    features.append('kv-unified')
+if 'cache-ssd-cold-maxsize' in text:
+    m = re.search(r'--cache-ssd-cold-maxsize\s+(\d+)', text)
+    if m:
+        features.append(f'ssd-cold-maxsize={m.group(1)}MiB')
+
+print(json.dumps({'profile': profile, 'features': features}))
+"
+}
+
+# Measure SSD cache directory footprint in MiB. Helps track capacity growth
+# across runs and verify cap behavior.
+# =============================================================================
+
+measure_ssd_cache() {
+    local path="$1"
+    python3 -c "
+import os, json
+total = 0
+file_count = 0
+try:
+    for root, dirs, files in os.walk('$path'):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                total += os.path.getsize(fp)
+                file_count += 1
+            except OSError:
+                pass
+except OSError:
+    pass
+print(json.dumps({'bytes': total, 'mib': round(total / 1024 / 1024, 1), 'files': file_count}))
+"
+}
+
+# =============================================================================
 # Run a single test: cold + warm for one prompt size
 # =============================================================================
 
@@ -483,6 +616,10 @@ run_size_test() {
 
     local cache_cold
     cache_cold=$(detect_cache_state "$SERVER_LOG") || cache_cold='{"cache_state":"unknown"}'
+    local moe_cold
+    moe_cold=$(detect_moe_residency_stats "$SERVER_LOG") || moe_cold='{"enabled":false}'
+    local profile
+    profile=$(detect_profile "$SERVER_LOG.cmd") || profile='{"profile":"unknown"}'
     stop_server
 
     # ── Warm run: restart with SSD cache ─────────────────────────────────
@@ -503,11 +640,17 @@ run_size_test() {
 
     local cache_warm
     cache_warm=$(detect_cache_state "$SERVER_LOG") || cache_warm='{"cache_state":"unknown"}'
+    local moe_warm
+    moe_warm=$(detect_moe_residency_stats "$SERVER_LOG") || moe_warm='{"enabled":false}'
     stop_server
+
+    # Measure SSD cache footprint after both runs.
+    local ssd_size
+    ssd_size=$(measure_ssd_cache "$SSD_CACHE_DIR") || ssd_size='{"mib":0,"files":0}'
 
     # ── Assemble result via temp file (no shell JSON embedding) ───────────
     local result_file="$out_dir/${size_label}-result.json"
-    python3 - "$out_dir" "$size_label" "$size_bytes" "$cold_pass" "$warm_pass" "$cache_cold" "$cache_warm" "$result_file" << 'PYEOF'
+    python3 - "$out_dir" "$size_label" "$size_bytes" "$cold_pass" "$warm_pass" "$cache_cold" "$cache_warm" "$moe_cold" "$moe_warm" "$profile" "$ssd_size" "$result_file" << 'PYEOF'
 import json, sys, os
 
 out_dir = sys.argv[1]
@@ -517,7 +660,11 @@ cold_pass = sys.argv[4] == 'true'
 warm_pass = sys.argv[5] == 'true'
 cache_cold = json.loads(sys.argv[6])
 cache_warm = json.loads(sys.argv[7])
-result_file = sys.argv[8]
+moe_cold = json.loads(sys.argv[8])
+moe_warm = json.loads(sys.argv[9])
+profile = json.loads(sys.argv[10])
+ssd_size = json.loads(sys.argv[11])
+result_file = sys.argv[12]
 
 def load_stats(label):
     path = os.path.join(out_dir, f'{label}-stats.json')
@@ -547,6 +694,10 @@ result = {
     'warm': warm,
     'cache_cold': cache_cold,
     'cache_warm': cache_warm,
+    'moe_cold': moe_cold,
+    'moe_warm': moe_warm,
+    'profile': profile,
+    'ssd_size': ssd_size,
     'prompt_eval_speedup': speedup,
     'ttft_speedup': ttft_speedup,
     'cold_prompt_tps': cold.get('prompt_tps', 0),
@@ -605,15 +756,20 @@ run_model_benchmark() {
         # Show inline result from the result file (not shell variables)
         local result_file="$out_dir/${size_label}-result.json"
         if [[ -f "$result_file" ]]; then
-            local speedup warm_state cold_ppt warm_ppt cold_ttft warm_ttft
+            local speedup warm_state cold_ppt warm_ppt cold_ttft warm_ttft moe_hit residency_str
             speedup=$(python3 -c "import json; print(json.load(open('$result_file')).get('prompt_eval_speedup', 0))" 2>/dev/null || echo 0)
             warm_state=$(python3 -c "import json; print(json.load(open('$result_file')).get('cache_warm',{}).get('cache_state','?'))" 2>/dev/null || echo "?")
             cold_ppt=$(python3 -c "import json; print(json.load(open('$result_file')).get('cold_ppt_ms', 0))" 2>/dev/null || echo 0)
             warm_ppt=$(python3 -c "import json; print(json.load(open('$result_file')).get('warm_ppt_ms', 0))" 2>/dev/null || echo 0)
             cold_ttft=$(python3 -c "import json; print(json.load(open('$result_file')).get('cold_ttft_ms', 0))" 2>/dev/null || echo 0)
             warm_ttft=$(python3 -c "import json; print(json.load(open('$result_file')).get('warm_ttft_ms', 0))" 2>/dev/null || echo 0)
-            printf "    -> ${GREEN}%s${NC}: warm=${CYAN}%s${NC} speedup=${MAGENTA}%.1fx${NC} TTFT=${DIM}%s/%sms${NC} eval=${DIM}%.1f/%.1f ms/tok${NC}\n" \
-                "$size_label" "$warm_state" "$speedup" "$cold_ttft" "$warm_ttft" "$cold_ppt" "$warm_ppt"
+            moe_hit=$(python3 -c "import json; d=json.load(open('$result_file')).get('moe_warm',{}); print(f\"{d.get('hit_rate_pct',0):.1f}%\" if d.get('present') else '-')" 2>/dev/null || echo "-")
+            residency_str=""
+            if [[ "$moe_hit" != "-" ]]; then
+                residency_str=" residency=${YELLOW}${moe_hit}${NC}"
+            fi
+            printf "    -> ${GREEN}%s${NC}: warm=${CYAN}%s${NC} speedup=${MAGENTA}%.1fx${NC} TTFT=${DIM}%s/%sms${NC} eval=${DIM}%.1f/%.1f ms/tok${NC}%s\n" \
+                "$size_label" "$warm_state" "$speedup" "$cold_ttft" "$warm_ttft" "$cold_ppt" "$warm_ppt" "$residency_str"
         fi
     done
 
@@ -650,29 +806,47 @@ with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
     json.dump(summary, f, indent=2)
 
 # Generate summary.md
+profile_name = ''
+profile_features = []
+if results:
+    p = results[0].get('profile', {})
+    profile_name = p.get('profile', '')
+    profile_features = p.get('features', [])
+ssd_total_mib = 0
+if results:
+    ssd_total_mib = results[-1].get('ssd_size', {}).get('mib', 0)
+
+profile_line = f' | **Profile:** {profile_name}'
+if profile_features:
+    profile_line += f' (features: {", ".join(profile_features)})'
+
 md = f'''# {model_name} ({backend})
 
-**Context:** {ctx_size} | **Output tokens/req:** {max_tokens}
+**Context:** {ctx_size} | **Output tokens/req:** {max_tokens}{profile_line}
+**SSD cache footprint after run:** {ssd_total_mib} MiB
 
 ## Prompt Cache Performance
 
-| Size | Cold Tok | Cold TTFT | Warm Tok | Warm TTFT | TTFT Speedup | Cold ms/tok | Warm ms/tok | Gen ms/tok | Cache |
-|------|----------|-----------|----------|-----------|-------------|-------------|-------------|------------|-------|
+| Size | Cold Tok | Cold TTFT | Warm Tok | Warm TTFT | TTFT Speedup | Cold ms/tok | Warm ms/tok | Gen ms/tok | Cache | MoE hit |
+|------|----------|-----------|----------|-----------|-------------|-------------|-------------|------------|-------|---------|
 '''
 
 for r in results:
     if r.get('error'):
-        md += f'| {r.get("size_label", "?")} | - | - | - | - | - | - | - | - | error |\n'
+        md += f'| {r.get("size_label", "?")} | - | - | - | - | - | - | - | - | error | - |\n'
         continue
     c = r.get('cold', {})
     w = r.get('warm', {})
     cw = r.get('cache_warm', {})
-    md += f'| {r["size_label"]} | {c.get("prompt_tokens", 0)} | {r.get("cold_ttft_ms", 0)}ms | {w.get("prompt_tokens", 0)} | {r.get("warm_ttft_ms", 0)}ms | {r.get("ttft_speedup", 0)}x | {r.get("cold_ppt_ms", 0)}ms | {r.get("warm_ppt_ms", 0)}ms | {r.get("cold_gen_ppt_ms", 0)}ms | {cw.get("cache_state", "?")} |\n'
+    moe = r.get('moe_warm', {})
+    moe_hit = f"{moe.get('hit_rate_pct', 0):.1f}%" if moe.get('present') else '-'
+    md += f'| {r["size_label"]} | {c.get("prompt_tokens", 0)} | {r.get("cold_ttft_ms", 0)}ms | {w.get("prompt_tokens", 0)} | {r.get("warm_ttft_ms", 0)}ms | {r.get("ttft_speedup", 0)}x | {r.get("cold_ppt_ms", 0)}ms | {r.get("warm_ppt_ms", 0)}ms | {r.get("cold_gen_ppt_ms", 0)}ms | {cw.get("cache_state", "?")} | {moe_hit} |\n'
 
 md += '''
 **Cache states:** `ssd_cold` = restored from SSD after restart, `ssd_warm` = in-memory checkpoint, `miss` = no cache hit
 **TTFT** = Time To First Token (server-side prompt eval time)
 **TTFT Speedup** = cold TTFT / warm TTFT
+**MoE hit** = warm-run MoE expert residency hit rate (only for MoE models with --moe-expert-residency enabled)
 '''
 
 with open(os.path.join(out_dir, 'summary.md'), 'w') as f:
@@ -753,22 +927,53 @@ md += '''
 **Format:** TTFT speedup (cold_ms/warm_ms, cache_state)
 **Cache states:** `ssd_cold` = restored from SSD after restart, `ssd_warm` = in-memory cache, `miss` = no hit
 
-## Per-Model Detail
+## MoE Expert Residency (warm run)
+
+Hit rate is the percent of expert lookups served from the in-RAM madvise
+cache (vs falling through to SSD/weights). Only meaningful for MoE models
+with `--moe-expert-residency` enabled; '-' otherwise.
+
+| Model | Small (1K tok) | Medium (5K tok) | Large (15K tok) |
+|-------|---------------|-----------------|-----------------|
 '''
 
 for m in data['models']:
-    md += f'''
-### {m['model']}
+    row = [m['model']]
+    for label in ['small', 'medium', 'large']:
+        found = [r for r in m['results'] if r.get('size_label') == label]
+        if found:
+            moe = found[0].get('moe_warm', {})
+            if moe.get('present'):
+                hit = moe.get('hit_rate_pct', 0)
+                hits = moe.get('hits', 0)
+                misses = moe.get('misses', 0)
+                row.append(f'{hit:.1f}% ({hits}h/{misses}m)')
+            else:
+                row.append('-')
+        else:
+            row.append('-')
+    md += '| ' + ' | '.join(row) + ' |\n'
 
-| Size | Cold TTFT | Warm TTFT | TTFT Speedup | Cold ms/tok | Warm ms/tok | Gen ms/tok | Cache |
-|------|-----------|-----------|-------------|-------------|-------------|------------|-------|
+md += '\n## Per-Model Detail\n'
+
+for m in data['models']:
+    profile_name = ''
+    if m['results']:
+        profile_name = m['results'][0].get('profile', {}).get('profile', '')
+    md += f'''
+### {m['model']} (profile: {profile_name})
+
+| Size | Cold TTFT | Warm TTFT | TTFT Speedup | Cold ms/tok | Warm ms/tok | Gen ms/tok | Cache | MoE hit |
+|------|-----------|-----------|-------------|-------------|-------------|------------|-------|---------|
 '''
     for r in m['results']:
         if r.get('error'):
-            md += f'| {r.get("size_label", "?")} | - | - | - | - | - | - | error |\n'
+            md += f'| {r.get("size_label", "?")} | - | - | - | - | - | - | error | - |\n'
             continue
         cw = r.get('cache_warm', {})
-        md += f'| {r["size_label"]} | {r.get("cold_ttft_ms", 0)}ms | {r.get("warm_ttft_ms", 0)}ms | {r.get("ttft_speedup", 0)}x | {r.get("cold_ppt_ms", 0)}ms | {r.get("warm_ppt_ms", 0)}ms | {r.get("cold_gen_ppt_ms", 0)}ms | {cw.get("cache_state", "?")} |\n'
+        moe = r.get('moe_warm', {})
+        moe_hit = f"{moe.get('hit_rate_pct', 0):.1f}%" if moe.get('present') else '-'
+        md += f'| {r["size_label"]} | {r.get("cold_ttft_ms", 0)}ms | {r.get("warm_ttft_ms", 0)}ms | {r.get("ttft_speedup", 0)}x | {r.get("cold_ppt_ms", 0)}ms | {r.get("warm_ppt_ms", 0)}ms | {r.get("cold_gen_ppt_ms", 0)}ms | {cw.get("cache_state", "?")} | {moe_hit} |\n'
 
 with open(agg_md, 'w') as f:
     f.write(md)
