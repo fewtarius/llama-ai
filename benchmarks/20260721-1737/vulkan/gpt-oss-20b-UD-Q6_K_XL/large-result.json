@@ -1,0 +1,34 @@
+{
+  "size_label": "large",
+  "size_bytes": 61440,
+  "cold": {
+    "error": "failed"
+  },
+  "warm": {
+    "error": "failed"
+  },
+  "cache_cold": {
+    "cache_state": "miss",
+    "ssd_stored": 0,
+    "divergences": 0,
+    "total_checkpoints": 0
+  },
+  "cache_warm": {
+    "cache_state": "miss",
+    "ssd_stored": 0,
+    "divergences": 0,
+    "total_checkpoints": 0
+  },
+  "prompt_eval_speedup": 0,
+  "ttft_speedup": 0,
+  "cold_prompt_tps": 0,
+  "warm_prompt_tps": 0,
+  "cold_ppt_ms": 0,
+  "warm_ppt_ms": 0,
+  "cold_gen_ppt_ms": 0,
+  "warm_gen_ppt_ms": 0,
+  "cold_ttft_ms": 0,
+  "warm_ttft_ms": 0,
+  "cold_wall_ttft_ms": 0,
+  "warm_wall_ttft_ms": 0
+}

@@ -1,0 +1,32 @@
+0.00.030.166 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.030.304 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.030.753 W srv  llama_server: -----------------
+0.00.030.755 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.030.755 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.030.756 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.030.756 W srv  llama_server: -----------------
+0.00.032.085 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.6-27B-UD-Q4_K_XL.gguf'
+radv/amdgpu: Not enough memory for command submission.
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-base.so.0(+0x3b788) [0x7f2328b72788]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-base.so.0(ggml_print_backtrace+0x231) [0x7f2328b72761]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-base.so.0(+0x52c96) [0x7f2328b89c96]
+/usr/lib/libstdc++.so.6(+0xb1c1a) [0x7f23244b1c1a]
+/usr/lib/libstdc++.so.6(_ZSt10unexpectedv+0x0) [0x7f23244975db]
+/usr/lib/libstdc++.so.6(+0xb1ed6) [0x7f23244b1ed6]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-vulkan.so.0(+0x307cd45) [0x7f2327e7cd45]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-vulkan.so.0(+0x308eea6) [0x7f2327e8eea6]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-vulkan.so.0(+0x3085780) [0x7f2327e85780]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libggml-base.so.0(ggml_backend_sched_graph_compute_async+0x3ce) [0x7f2328b93cde]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama.so.0(_ZN13llama_context13graph_computeEP11ggml_cgraphb+0x91) [0x7f232833e811]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama.so.0(_ZN13llama_context14process_ubatchERK12llama_ubatch14llm_graph_typeP22llama_memory_context_iR11ggml_status+0x12b) [0x7f232833e42b]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama.so.0(_ZN13llama_context6decodeERK11llama_batch+0x7f5) [0x7f232833fc45]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama.so.0(llama_decode+0xb) [0x7f232834522b]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama-common.so.0(_Z23common_init_from_paramsR13common_paramsb+0x69d) [0x7f23288d924d]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama-server-impl.so(_ZN19server_context_impl10load_modelER13common_params+0x11f0) [0x7f2329195e20]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama-server-impl.so(_Z12llama_serverR13common_paramsiPPc+0x90a4) [0x7f2328ff2574]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/libllama-server-impl.so(_Z12llama_serveriPPc+0x70) [0x7f2328fe94a0]
+/usr/lib/libc.so.6(+0x276b5) [0x7f23242376b5]
+/usr/lib/libc.so.6(__libc_start_main+0x89) [0x7f2324237769]
+/home/deck/llama-ai/src/cachy-llama-vulkan/build/bin/llama-server(+0x17b5) [0x5641b8a397b5]
+terminate called after throwing an instance of 'vk::DeviceLostError'
+  what():  vk::Queue::submit: ErrorDeviceLost

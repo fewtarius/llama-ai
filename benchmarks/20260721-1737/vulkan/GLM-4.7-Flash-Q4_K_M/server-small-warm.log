@@ -1,0 +1,30 @@
+0.00.031.632 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.031.751 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.032.666 W srv  llama_server: -----------------
+0.00.032.669 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.032.669 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.032.669 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.032.670 W srv  llama_server: -----------------
+0.00.033.969 I srv    load_model: loading model '/home/deck/llama-ai/models/GLM-4.7-Flash-Q4_K_M.gguf'
+0.00.461.731 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.461.734 W load: special_eom_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.17.225.136 W moe-residency: enabled for 46 MoE layers (64 experts, 4 used/token)
+0.17.700.503 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+0.17.701.796 I SSD cache: model compat_hash 0aca70c4710ccbdb (arch dims + type_k=8 type_v=8)
+0.17.701.871 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+0.17.701.896 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-0aca70c4710ccbdb (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.17.701.901 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-0aca70c4710ccbdb
+0.17.711.627 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+0.17.711.682 I srv  llama_server: model loaded
+0.17.711.686 I srv  llama_server: listening on http://0.0.0.0:9090
+0.20.540.625 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.20.540.638 I slot launch_slot_: id  0 | task -1 | [PROBE] launch_slot_with_task: slot.prompt=0 is_processing=0 seq_pos_min=-1 seq_pos_max=-1
+0.20.540.687 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.20.540.700 I slot   operator(): id  0 | task 0 | [PROBE] prefill-init n_past=0 slot.prompt=0 ssd_page_manager=1 cache_prompt=1
+0.20.540.790 I SSD cache: no index file, starting fresh
+0.20.540.809 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/92a2e94ca340611b (next_id=1)
+0.20.540.810 I SSD cache: model compat_hash set to 0aca70c4710ccbdb
+0.20.540.815 I SSD cache: created new conversation cache conv=92a2e94ca340611b (total=1)
+0.20.540.823 I slot   operator(): id  0 | task 0 | [PROBE] LCP n_past=0 slot.prompt=0 task=1145
+0.20.540.826 I slot   operator(): id  0 | task 0 | [PROBE] pre-reset n_past=0 pos_next=0 n_swa=0 has_new=1 pos_min_thold=0 n_ckpts=0 ssd_cold=0
+0.20.540.827 I slot   operator(): id  0 | task 0 | [PROBE] FINAL n_past=0 task.n=1145 slot.prompt=0
