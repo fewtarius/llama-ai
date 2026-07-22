@@ -1,0 +1,57 @@
+0.00.032.075 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.032.207 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.032.702 W srv  llama_server: -----------------
+0.00.032.703 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.032.704 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.032.704 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.032.704 W srv  llama_server: -----------------
+0.00.034.022 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf'
+0.00.674.402 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --no-mmap for better performance
+0.11.193.206 W moe-residency: enabled for 40 MoE layers (256 experts, 8 used/token)
+0.11.579.507 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.11.913.392 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+0.11.914.528 I SSD cache: model compat_hash 837fe38ab874800d (arch dims + type_k=8 type_v=8)
+0.11.915.348 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+0.11.916.781 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-837fe38ab874800d (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.11.916.784 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-837fe38ab874800d
+0.11.932.317 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+0.11.933.053 I srv  llama_server: model loaded
+0.11.933.058 I srv  llama_server: listening on http://0.0.0.0:9090
+0.14.956.721 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.14.957.229 I slot launch_slot_: id  0 | task -1 | [PROBE] launch_slot_with_task: slot.prompt=0 is_processing=0 seq_pos_min=-1 seq_pos_max=-1
+0.14.957.679 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.14.957.700 I slot   operator(): id  0 | task 0 | [PROBE] prefill-init n_past=0 slot.prompt=0 ssd_page_manager=1 cache_prompt=1
+0.14.958.133 I SSD cache: no index file, starting fresh
+0.14.958.147 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/11aa8b1970d45b55 (next_id=1)
+0.14.958.149 I SSD cache: model compat_hash set to 837fe38ab874800d
+0.14.958.153 I SSD cache: created new conversation cache conv=11aa8b1970d45b55 (total=1)
+0.14.958.182 I slot   operator(): id  0 | task 0 | [PROBE] LCP n_past=0 slot.prompt=0 task=1244
+0.14.958.185 I slot   operator(): id  0 | task 0 | [PROBE] pre-reset n_past=0 pos_next=0 n_swa=0 has_new=1 pos_min_thold=0 n_ckpts=0 ssd_cold=0
+0.14.958.185 I slot   operator(): id  0 | task 0 | [PROBE] FINAL n_past=0 task.n=1244 slot.prompt=0
+0.37.828.508 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =    984, progress = 0.79, t =  22.87 s / 43.02 tokens per second
+0.44.151.629 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1240, progress = 1.00, t =  29.19 s / 42.47 tokens per second
+0.44.902.872 I SSD cache: stored checkpoint 1 slot=0 tokens=1240 tgt=75 dft=0 spec=0 MiB (hot=75 MiB warm=0 MiB total=1)
+0.46.680.804 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 8 (pos_min = 1243, pos_max = 1243, n_tokens = 1240, size = 62.813 MiB)
+0.47.162.073 I SSD cache: stored checkpoint 2 slot=0 tokens=1240 tgt=75 dft=0 spec=0 MiB (hot=151 MiB warm=0 MiB total=2)
+0.54.920.316 W moe-residency: decodes=16 touches=349652 hits=19884 misses=349012 evictions=348632 hit_rate=5.4%
+1.09.937.360 W moe-residency: decodes=32 touches=840532 hits=28716 misses=839892 evictions=839512 hit_rate=3.3%
+1.24.794.160 W moe-residency: decodes=48 touches=1331412 hits=37548 misses=1330772 evictions=1330392 hit_rate=2.7%
+1.39.556.658 W moe-residency: decodes=64 touches=1822292 hits=46380 misses=1821652 evictions=1821272 hit_rate=2.5%
+1.54.297.252 W moe-residency: decodes=80 touches=2313172 hits=55212 misses=2312532 evictions=2312152 hit_rate=2.3%
+2.09.108.601 W moe-residency: decodes=96 touches=2804052 hits=64044 misses=2803412 evictions=2803032 hit_rate=2.2%
+2.19.252.619 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   1.08 t/s, tg_3s =   1.08 t/s
+2.22.943.885 I slot print_timing: id  0 | task 0 | n_decoded =    104, tg =   1.08 t/s, tg_3s =   1.08 t/s
+2.23.869.030 W moe-residency: decodes=112 touches=3294932 hits=72876 misses=3294292 evictions=3293912 hit_rate=2.2%
+2.26.633.719 I slot print_timing: id  0 | task 0 | n_decoded =    108, tg =   1.08 t/s, tg_3s =   1.08 t/s
+2.30.308.219 I slot print_timing: id  0 | task 0 | n_decoded =    112, tg =   1.08 t/s, tg_3s =   1.09 t/s
+2.33.999.076 I slot print_timing: id  0 | task 0 | n_decoded =    116, tg =   1.08 t/s, tg_3s =   1.08 t/s
+2.37.674.134 I slot print_timing: id  0 | task 0 | n_decoded =    120, tg =   1.08 t/s, tg_3s =   1.09 t/s
+2.38.600.610 W moe-residency: decodes=128 touches=3785812 hits=81708 misses=3785172 evictions=3784792 hit_rate=2.1%
+2.41.361.605 I slot print_timing: id  0 | task 0 | n_decoded =    124, tg =   1.08 t/s, tg_3s =   1.08 t/s
+2.45.046.163 I slot print_timing: id  0 | task 0 | prompt eval time =   31440.21 ms /  1244 tokens (   25.27 ms per token,    39.57 tokens per second)
+2.45.046.169 I slot print_timing: id  0 | task 0 |        eval time =  118648.23 ms /   128 tokens (  926.94 ms per token,     1.08 tokens per second)
+2.45.046.170 I slot print_timing: id  0 | task 0 |       total time =  150088.44 ms /  1372 tokens
+2.45.046.174 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+2.45.055.979 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1371, truncated = 0
+2.45.055.995 I SSD cache: turn 2 complete (hot=151 MiB warm=0 MiB cold=0 checkpoints=2)
+2.45.164.483 I srv    operator(): operator(): cleaning up before exit...

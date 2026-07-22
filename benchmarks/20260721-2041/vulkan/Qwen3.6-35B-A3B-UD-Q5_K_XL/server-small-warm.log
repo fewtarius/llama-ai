@@ -1,0 +1,56 @@
+0.00.040.506 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.040.637 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.041.124 W srv  llama_server: -----------------
+0.00.041.126 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.041.126 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.041.126 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.041.127 W srv  llama_server: -----------------
+0.00.042.469 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.6-35B-A3B-UD-Q5_K_XL.gguf'
+0.00.669.439 W llama_model_loader: tensor overrides to CPU are used with mmap enabled - consider using --no-mmap for better performance
+0.09.627.065 W moe-residency: enabled for 40 MoE layers (256 experts, 8 used/token)
+0.10.353.042 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.10.823.895 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'
+0.10.826.196 I SSD cache: model compat_hash 837fe38ab874800d (arch dims + type_k=8 type_v=8)
+0.10.829.796 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=960 MiB, warm=1440 MiB
+0.10.829.824 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-837fe38ab874800d (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.10.829.826 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-837fe38ab874800d
+0.10.843.357 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+0.10.843.412 I srv  llama_server: model loaded
+0.10.843.416 I srv  llama_server: listening on http://0.0.0.0:9090
+0.13.864.315 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.13.864.331 I slot launch_slot_: id  0 | task -1 | [PROBE] launch_slot_with_task: slot.prompt=0 is_processing=0 seq_pos_min=-1 seq_pos_max=-1
+0.13.864.464 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.13.864.480 I slot   operator(): id  0 | task 0 | [PROBE] prefill-init n_past=0 slot.prompt=0 ssd_page_manager=1 cache_prompt=1
+0.13.864.623 I SSD cache: continuation found conv=11aa8b1970d45b55 overlap=100.0%
+0.13.864.624 I SSD cache: reusing conversation 11aa8b1970d45b55 for cold restart
+0.13.864.689 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/11aa8b1970d45b55 (next_id=3)
+0.13.864.692 I SSD cache: model compat_hash set to 837fe38ab874800d
+0.13.864.697 I SSD cache: created new conversation cache conv=11aa8b1970d45b55 (total=1)
+0.13.864.702 I SSD cache: match checkpoint 2 conv=11aa8b1970d45b55 turn=1 n_tokens=1240 lcp=1244
+0.13.936.838 I SSD cache: promoted checkpoint 2 cold->hot (75 MiB)
+0.13.974.520 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=1244 ssd_n_tokens=1240 pos=[1243,1243] n_push=1240 overlap=100.0% continuation=1
+0.13.974.553 I slot   operator(): id  0 | task 0 | [PROBE] LCP n_past=1240 slot.prompt=1240 task=1244
+0.13.974.558 I slot   operator(): id  0 | task 0 | [PROBE] pre-reset n_past=1240 pos_next=1240 n_swa=0 has_new=1 pos_min_thold=1240 n_ckpts=1 ssd_cold=1
+0.13.974.562 I slot   operator(): id  0 | task 0 | [PROBE] in-block n_past=1240 pos_min=1243 pos_min_thold=1240
+0.13.974.568 I slot   operator(): id  0 | task 0 | [PROBE] ckpt-restored n_past=1240 ckpt=[0,1240]
+0.13.974.568 I slot   operator(): id  0 | task 0 | [PROBE] FINAL n_past=1240 task.n=1244 slot.prompt=1240
+0.13.974.877 W find_slot: non-consecutive token position 1243 after 1243 for sequence 0 with 4 new tokens
+0.13.974.894 W find_slot: non-consecutive token position 1243 after 1243 for sequence 0 with 4 new tokens
+0.14.628.268 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 8 (pos_min = 1243, pos_max = 1243, n_tokens = 1240, size = 62.813 MiB)
+0.15.084.673 I SSD cache: stored checkpoint 3 slot=0 tokens=1240 tgt=75 dft=0 spec=0 MiB (hot=151 MiB warm=0 MiB total=3)
+0.16.995.850 W moe-residency: decodes=16 touches=904 hits=3992 misses=264 evictions=22 hit_rate=93.8%
+0.18.875.447 W moe-residency: decodes=32 touches=904 hits=8600 misses=264 evictions=22 hit_rate=97.0%
+0.20.558.445 W moe-residency: decodes=48 touches=904 hits=13208 misses=264 evictions=22 hit_rate=98.0%
+0.22.300.187 W moe-residency: decodes=64 touches=904 hits=17816 misses=264 evictions=22 hit_rate=98.5%
+0.23.978.198 W moe-residency: decodes=80 touches=904 hits=22424 misses=264 evictions=22 hit_rate=98.8%
+0.25.545.972 W moe-residency: decodes=96 touches=904 hits=27032 misses=264 evictions=22 hit_rate=99.0%
+0.26.150.435 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   8.47 t/s, tg_3s =   8.47 t/s
+0.27.116.684 W moe-residency: decodes=112 touches=904 hits=31640 misses=264 evictions=22 hit_rate=99.2%
+0.28.631.536 W moe-residency: decodes=128 touches=904 hits=36248 misses=264 evictions=22 hit_rate=99.3%
+0.28.819.700 I slot print_timing: id  0 | task 0 | prompt eval time =     476.09 ms /     4 tokens (  119.02 ms per token,     8.40 tokens per second)
+0.28.819.706 I slot print_timing: id  0 | task 0 |        eval time =   14479.11 ms /   128 tokens (  113.12 ms per token,     8.84 tokens per second)
+0.28.819.707 I slot print_timing: id  0 | task 0 |       total time =   14955.20 ms /   132 tokens
+0.28.819.710 I slot print_timing: id  0 | task 0 |    graphs reused =        126
+0.28.824.674 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1371, truncated = 0
+0.28.824.690 I SSD cache: turn 3 complete (hot=75 MiB warm=75 MiB cold=1 checkpoints=3)
+0.28.924.299 I srv    operator(): operator(): cleaning up before exit...

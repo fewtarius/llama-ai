@@ -572,6 +572,24 @@ assign_profile() {
         else
             EXTRA_SERVER_ARGS+=" --moe-expert-residency"
         fi
+        # Large MoE on handheld tier: when the model exceeds available
+        # VRAM+GTT (e.g. Qwen3.6-35B Q5_K_XL = 26 GB on Flip's 24 GB
+        # budget), -ngl 99 tries to put every layer on GPU and the
+        # driver returns ErrorDeviceLost on command submission. --cpu-moe
+        # pins only the MoE expert weights to host RAM (madvise-paged by
+        # residency), letting -ngl 99 still offload the attention and
+        # embedding layers to the iGPU for the parts that benefit most
+        # from GPU compute. Threshold matches the LTM rule "MoE Q4_K_M
+        # > 26GB can't fit even partially" - leave the 22-24 GB Q4_K_M
+        # class on the original path since those do fit on Flip GTT.
+        # Note: size_gb is integer-divided so the 26 GB Q5_K_XL reports as
+        # 24 GB - the comparison below uses the raw byte count via MODEL_BYTES
+        # which is computed in scan_models(). Threshold is 23 GiB to cover
+        # Q5_K_XL on Flip (24 GB after integer truncation = ~25 GB on disk).
+        if [[ "$tier" == "handheld" ]] && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
+            EXTRA_SERVER_ARGS+=" --cpu-moe"
+            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
+        fi
         OVERRIDE_REASONING_BUDGET="2048"
         profile_name="moe-optimized"
     elif [[ $size_gb -gt 15 ]]; then

@@ -115,6 +115,44 @@ get_binary() {
     fi
 }
 
+# =============================================================================
+# Model-size helpers. Large MoE models (>=20 GB) take 10+ minutes just to
+# mmap the weight file on memory-constrained systems; the curl-timeout
+# scaling in run_size_test() and the server-startup wait timeout below both
+# consult this so the benchmark doesn't give up on models that are valid but
+# slow to load.
+# =============================================================================
+
+get_model_size_bytes() {
+    local model="$1"
+    local path="$MODEL_DIR/$model"
+    [[ -f "$path" ]] || { echo 0; return; }
+    stat -c %s "$path" 2>/dev/null || stat -f %z "$path" 2>/dev/null || echo 0
+}
+
+scale_timeout_for_model() {
+    local model="$1"
+    local base_timeout="$2"
+    local size_bytes
+    size_bytes=$(get_model_size_bytes "$model")
+    local size_gb=$(( size_bytes / 1024 / 1024 / 1024 ))
+
+    # Per-model multiplier on top of the prompt-size multiplier.
+    #  20 GB  -> 2x (MoE residency models take 5-10 min to mmap on Flip)
+    #  30 GB  -> 3x
+    #  50 GB+ -> 4x
+    local model_mult=1
+    if [[ $size_gb -ge 50 ]]; then
+        model_mult=4
+    elif [[ $size_gb -ge 30 ]]; then
+        model_mult=3
+    elif [[ $size_gb -ge 20 ]]; then
+        model_mult=2
+    fi
+
+    echo $(( base_timeout * model_mult ))
+}
+
 setup_backend_env() {
     local backend="$1"
     source "$PROJECT_ROOT/scripts/env.sh" "$backend"
@@ -155,7 +193,10 @@ get_server_status() {
 }
 
 wait_for_server() {
-    local max_attempts=900
+    # Caller can override via $1; defaults to 900s. The actual server-startup
+    # time depends on model size (mmap of a 26 GB Q5_K_XL takes ~30 min on
+    # the Flip), so start_server() passes a scaled value when model is large.
+    local max_attempts="${1:-900}"
     local attempt=0
 
     printf "    Waiting for server"
@@ -172,19 +213,26 @@ wait_for_server() {
             return 0
         fi
 
-        if [[ -f "$SERVER_LOG" ]]; then
-            local fatal
-            fatal=$(grep -iE "killed|signal|segfault|segmentation fault|abort" "$SERVER_LOG" 2>/dev/null | tail -1 || echo "")
-            if [[ -n "$fatal" ]]; then
-                log_error "Server crashed: $fatal"
-                return 1
-            fi
-        fi
-        # Check if server process is still alive (catches segfaults that produce no log output)
+        # Check if server process is still alive - this is the only reliable
+        # fatal signal. The log-based check below is a backup for cases
+        # where the process is alive but stuck (e.g. deadlocked on a hang).
+        # Log lines like "fit_params: ... abort" or "cache_reuse is not
+        # supported" are normal warnings and must not be treated as fatal.
         if ! kill -0 "$SERVER_PID" 2>/dev/null; then
             log_error "Server exited unexpectedly (PID $SERVER_PID)"
             tail -20 "$SERVER_LOG" 2>/dev/null || true
             return 1
+        fi
+
+        if [[ -f "$SERVER_LOG" ]]; then
+            # Look for unambiguous crash markers only. The word "abort"
+            # appears in legitimate fit_params warnings and must not match.
+            local fatal
+            fatal=$(grep -iE "SIGSEGV|SIGABRT|segfault|segmentation fault|killed \(signal|out of memory|Out of memory|Killed process" "$SERVER_LOG" 2>/dev/null | tail -1 || echo "")
+            if [[ -n "$fatal" ]]; then
+                log_error "Server crashed: $fatal"
+                return 1
+            fi
         fi
 
         attempt=$((attempt + 1))
@@ -214,8 +262,12 @@ start_server() {
     sleep 3
 
     # Get profile from llama-run.sh
+    # --print-profile prints "Auto profile: ..." to stdout (for human reading)
+    # plus the exportable variable assignments. Some llama-run.sh paths emit
+    # additional [INFO] lines on stdout for large-MoE handling - skip them
+    # by skipping every line that doesn't look like a variable assignment.
     local profile
-    profile=$(./llama-run.sh --print-profile --server --model "$MODEL_DIR/$model" --backend "$backend" | tail -n +2) || {
+    profile=$(./llama-run.sh --print-profile --server --model "$MODEL_DIR/$model" --backend "$backend" | grep -E '^[A-Z_][A-Z0-9_]*=') || {
         log_error "Failed to get profile from llama-run.sh"
         return 1
     }
@@ -284,7 +336,20 @@ start_server() {
     SERVER_PID=$!
 
     export API_BASE="http://localhost:$PORT"
-    if ! wait_for_server; then
+    # Scale the server-startup wait by model size: a 26 GB Q5_K_XL takes
+    # ~30 min to mmap on Flip with --moe-expert-residency, vs ~3 min for a
+    # 12 GB gpt-oss. Without this, the benchmark aborts before the server
+    # finishes loading the larger MoE models.
+    local model_bytes
+    model_bytes=$(get_model_size_bytes "$model")
+    local wait_timeout=900
+    if [[ $model_bytes -ge $((30 * 1024 * 1024 * 1024)) ]]; then
+        wait_timeout=2700
+    elif [[ $model_bytes -ge $((20 * 1024 * 1024 * 1024)) ]]; then
+        wait_timeout=1800
+    fi
+
+    if ! wait_for_server "$wait_timeout"; then
         log_error "Server failed to start"
         tail -30 "$SERVER_LOG"
         return 1
@@ -536,6 +601,11 @@ if '--no-checkpoint-near-end' in text:
     features.append('no-checkpoint-near-end')
 if '--kv-unified' in text:
     features.append('kv-unified')
+# --cpu-moe pins MoE expert weights to host RAM (combined with
+# --moe-expert-residency, enables running models that exceed the iGPU's
+# VRAM+GTT budget - e.g. Q5_K_XL/Q8_K_XL on Flip's 24 GB iGPU budget).
+if '--cpu-moe' in text or '--cmoe' in text:
+    features.append('cpu-moe')
 if 'cache-ssd-cold-maxsize' in text:
     m = re.search(r'--cache-ssd-cold-maxsize\s+(\d+)', text)
     if m:
@@ -589,13 +659,16 @@ run_size_test() {
 
     local cold_pass=true warm_pass=true
 
-    # Scale timeout by prompt size (large prompts need more eval time)
+    # Scale timeout by prompt size (large prompts need more eval time) and
+    # by model size (large MoE models are slower to evaluate due to
+    # sparse expert routing and madvise-based residency paging).
     local timeout=$BENCH_TIMEOUT
     if [[ "$size_bytes" -ge 40000 ]]; then
         timeout=$((BENCH_TIMEOUT * 3))
     elif [[ "$size_bytes" -ge 15000 ]]; then
         timeout=$((BENCH_TIMEOUT * 2))
     fi
+    timeout=$(scale_timeout_for_model "$model" "$timeout")
 
     # ── Cold run: empty SSD cache ───────────────────────────────────────
     rm -rf "$SSD_CACHE_DIR"
