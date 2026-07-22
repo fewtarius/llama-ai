@@ -25,6 +25,8 @@ llama-ai/
 ├── models/                   # GGUF files (gitignored)
 ├── kv-cache/                 # Persistent KV cache (gitignored)
 ├── ssd-cache/                # SSD-backed KV cache (gitignored)
+├── tests/
+│   └── test-download-integrity.sh  # Download cache and split-shard validation
 ├── scratch/                  # Transient working files (gitignored)
 └── patches/                  # DEPRECATED - kept for historical reference only
 ```
@@ -53,6 +55,15 @@ Build scripts in `src/cachy-llama-rocm/build.sh` and `src/cachy-llama-vulkan/bui
 `scripts/rebuild.sh` automatically applies patches from `patches/` to the submodule before building. Patches are checked for idempotency — if already applied, they're skipped.
 Note: patch application is deprecated since we now maintain CachyLLama directly.
 The `patches/` directory is kept for historical reference only.
+
+## Tests
+
+Run the model download integrity tests after changing Hugging Face discovery,
+cache handling, or download verification in `llama-run.sh`:
+
+```bash
+./tests/test-download-integrity.sh
+```
 
 ## Environment
 

@@ -960,12 +960,11 @@ hf_list_files() {
         jq -r '.siblings[].rfilename // empty' 2>/dev/null
 }
 
-# Get metadata for a specific file in a repo
-# Returns JSON with size, etag, etc.
+# Extract metadata for a specific file from Hugging Face model metadata on stdin.
 hf_file_info() {
-    local repo="$1"
-    local filename="$2"
-    hf_api_get "repo_info?repo_id=$repo&repoType=model&file=$filename" 2>/dev/null
+    local filename="$1"
+    jq -c --arg filename "$filename" \
+        'first(.siblings[]? | select(.rfilename == $filename)) // empty' 2>/dev/null
 }
 
 # Find GGUF files in a repo matching a quantization pattern
@@ -1181,11 +1180,41 @@ download_model() {
     echo -e "  ${GREEN}Target:${NC}   $target_dir"
     echo ""
 
-    # Check which files already exist
+    # Check which files already exist. A filename alone is not enough: an
+    # interrupted download can leave a truncated GGUF that the loader rejects.
     local files_to_download=()
-    for f in "${sorted_files[@]}"; do
+    local expected_sizes=()
+    local repo_metadata=""
+    local i
+
+    repo_metadata=$(hf_api_get "models/$repo?blobs=true" 2>/dev/null || true)
+    for ((i = 0; i < ${#sorted_files[@]}; i++)); do
+        local f="${sorted_files[$i]}"
+        local file_info=""
+        local expected_size=""
+
+        if [[ -n "$repo_metadata" ]]; then
+            file_info=$(printf '%s' "$repo_metadata" | hf_file_info "$f" || true)
+        fi
+        if [[ -n "$file_info" ]]; then
+            expected_size=$(printf '%s' "$file_info" | jq -r '.size // .lfs.size // empty' 2>/dev/null || true)
+        fi
+        if [[ ! "$expected_size" =~ ^[0-9]+$ ]]; then
+            expected_size=""
+        fi
+        expected_sizes[$i]="$expected_size"
+
         if [[ -f "$target_dir/$f" ]]; then
-            echo -e "${GREEN}Already exists: $f${NC}"
+            local local_size
+            local_size=$(stat -c %s "$target_dir/$f" 2>/dev/null || stat -f %z "$target_dir/$f")
+            if [[ -n "$expected_size" ]] && [[ "$local_size" != "$expected_size" ]]; then
+                echo -e "${YELLOW}Cached file has wrong size: $f${NC}"
+                echo -e "${YELLOW}  Local: $local_size bytes; expected: $expected_size bytes. Redownloading.${NC}"
+                rm -f -- "$target_dir/$f"
+                files_to_download+=("$f")
+            else
+                echo -e "${GREEN}Already exists: $f${NC}"
+            fi
         else
             files_to_download+=("$f")
         fi
@@ -1274,16 +1303,28 @@ PYEOF
         done
     fi
 
-    # Verify all files exist
-    local missing=0
-    for f in "${files_to_download[@]}"; do
+    # Verify every selected shard, including files that were already cached.
+    local invalid=0
+    for ((i = 0; i < ${#sorted_files[@]}; i++)); do
+        local f="${sorted_files[$i]}"
+        local expected_size="${expected_sizes[$i]}"
         if [[ ! -f "$target_dir/$f" ]]; then
             echo -e "${RED}Missing: $f${NC}"
-            missing=1
+            invalid=1
+            continue
+        fi
+
+        if [[ -n "$expected_size" ]]; then
+            local local_size
+            local_size=$(stat -c %s "$target_dir/$f" 2>/dev/null || stat -f %z "$target_dir/$f")
+            if [[ "$local_size" != "$expected_size" ]]; then
+                echo -e "${RED}Invalid size: $f ($local_size bytes; expected $expected_size)${NC}"
+                invalid=1
+            fi
         fi
     done
 
-    if [[ $missing -eq 0 ]]; then
+    if [[ $invalid -eq 0 ]]; then
         echo ""
         echo -e "${GREEN}All files downloaded successfully!${NC}"
         return 0
