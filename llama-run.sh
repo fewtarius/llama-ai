@@ -1659,8 +1659,9 @@ fi
 MEMLOCK_LIMIT_BYTES=$((MEMLOCK_LIMIT_KB * 1024))
 if [[ "$MODEL_BYTES" -gt 0 && "$MODEL_BYTES" -gt "$MEMLOCK_LIMIT_BYTES" ]]; then
     log_info "mlock disabled: model ($((MODEL_BYTES / 1048576)) MiB) larger than memlock limit ($((MEMLOCK_LIMIT_BYTES / 1048576)) MiB)"
+    # default is --load-mode mmap, nothing to add
 else
-    COMMON_ARGS="$COMMON_ARGS --mlock"
+    COMMON_ARGS="$COMMON_ARGS --load-mode mlock"
 fi
 COMMON_ARGS="$COMMON_ARGS -c $CTX_SIZE --threads $THREADS --threads-batch $THREADS"
 COMMON_ARGS="$COMMON_ARGS ${OVERRIDE_BATCH_SIZE:---batch-size 1024 --ubatch-size 512} -ngl $GPU_LAYERS"
