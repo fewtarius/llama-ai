@@ -1763,6 +1763,7 @@ fi
 if [[ "$SERVER_MODE" == true ]]; then
     kill_existing_server "$PORT"
     print_profile_summary
+    log_info "Server args: ${EXTRA_SERVER_ARGS}"
     echo -e "${BLUE}Starting server on ${HOST}:${PORT}...${NC}"
     eval "$EXEC_ENV" "$LLAMA_SERVER" $COMMON_ARGS $SERVER_ARGS
 else
