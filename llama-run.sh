@@ -579,14 +579,18 @@ assign_profile() {
         # pins only the MoE expert weights to host RAM (madvise-paged by
         # residency), letting -ngl 99 still offload the attention and
         # embedding layers to the iGPU for the parts that benefit most
-        # from GPU compute. Threshold matches the LTM rule "MoE Q4_K_M
-        # > 26GB can't fit even partially" - leave the 22-24 GB Q4_K_M
-        # class on the original path since those do fit on Flip GTT.
-        # Note: size_gb is integer-divided so the 26 GB Q5_K_XL reports as
-        # 24 GB - the comparison below uses the raw byte count via MODEL_BYTES
-        # which is computed in scan_models(). Threshold is 23 GiB to cover
-        # Q5_K_XL on Flip (24 GB after integer truncation = ~25 GB on disk).
-        if [[ "$tier" == "handheld" ]] && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
+        # from GPU compute. The model mmap alone takes most of the OS-visible
+        # RAM on Flip (32 GB total, 6 GB VRAM carveout -> 25 GB to OS), so
+        # any large MoE needs --cpu-moe to keep expert weights off the GPU
+        # and avoid kernel paging churn when KV cache + SSD cache grow.
+        # Note: size_gb is integer-divided so a 22 GB model reports as 22 GB
+        # but is compared by MODEL_BYTES (raw bytes from scan_models()).
+        # Threshold is 18 GiB: covers the Q4_K_XL class (20-22 GiB on disk)
+        # which slipped under the original 23 GiB floor and OOMed the Flip
+        # on 2026-07-26 when KV cache + SSD cache + system prompt cache plus
+        # model mmap overran the 25 GiB OS-visible budget. Anything below
+        # 18 GiB fits on Flip GTT without --cpu-moe.
+        if [[ "$tier" == "handheld" ]] && [[ ${MODEL_BYTES:-0} -ge $((18 * 1024 * 1024 * 1024)) ]]; then
             EXTRA_SERVER_ARGS+=" --cpu-moe"
             log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
         fi
