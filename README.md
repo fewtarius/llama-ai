@@ -245,6 +245,22 @@ can grow to hundreds of GiB on its own. Set `--cache-ssd-cold-maxsize`
 the oldest conversation directories get evicted first. Pair it with
 `--cache-ssd-max-cold` for per-conversation checkpoint count limits.
 
+### Per-tier policy
+
+The cache is configured per hardware tier. On memory-constrained
+hardware (handheld Flip KB, 26 GB OS-visible) the SSD tiers pay for
+themselves - cold TTFT drops from minutes to seconds. On Strix Halo
+(96 GB VRAM) the SSD cache is **disabled** for every profile (SSM,
+MoE, large-dense, medium-dense, small). The 96 GB VRAM budget holds
+the working set comfortably, and SSD writes are pure overhead on the
+prefill critical path (3 SSD writes per turn at 62 MiB each = 4s of
+disk time on a 15K-token prefill). In-memory checkpoints (`--cache-ram`
+plus `--ctx-checkpoints`) handle prefix reuse within a server run; cold
+TTFT is already fast enough that disk checkpoints don't pay off.
+
+The `--no-ssd-cache` flag forces the same behavior on any tier if you
+want to skip SSD caching manually.
+
 ### System prompt cache
 
 A global cross-conversation cache stores the system section of any

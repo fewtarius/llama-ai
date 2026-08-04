@@ -115,6 +115,14 @@ detect_boot_method() {
         return 0
     fi
 
+    # systemd-boot runtime vars are present even when the ESP holding
+    # loader/entries is not mounted (dual-ESP SteamFork installs where /boot
+    # is a redundant empty ESP and the real entries live on an unmounted one).
+    if [[ -e /sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f ]]; then
+        echo "systemd-boot"
+        return 0
+    fi
+
     echo "unknown"
 }
 
@@ -217,6 +225,46 @@ apply_systemd_boot() {
         done
         [[ -n "$loader_entry" ]] && break
     done
+
+    # Some SteamFork installs (e.g. Nimo with dual ESPs in RAID1) keep the
+    # loader entries on an ESP that is NOT mounted - the mounted /boot can be
+    # a redundant empty ESP. Probe the other vfat partitions for the real
+    # entries and edit them in place (mount rw, apply, unmount).
+    if [[ -z "$loader_entry" || ! -f "$loader_entry" ]]; then
+        log_info "No loader entries on mounted ESP, probing other vfat partitions..."
+        local probe_mnt="/mnt/esp-probe-ttm"
+        mkdir -p "$probe_mnt"
+        local probed=0
+        while read -r _dev; do
+            [[ -n "$_dev" ]] || continue
+            [[ "/dev/$_dev" == "$efi_part" ]] && continue
+            mount -o rw "/dev/$_dev" "$probe_mnt" 2>/dev/null || continue
+            probed=1
+            loader_entry=""
+            for dir in "$probe_mnt/loader/entries" "$probe_mnt/EFI/steamfork/loader/entries"; do
+                [[ -d "$dir" ]] || continue
+                for f in "$dir"/*.conf; do
+                    [[ -f "$f" ]] || continue
+                    local name=$(basename "$f")
+                    [[ "$name" =~ fallback|previous|verbose ]] && continue
+                    loader_entry="$f"
+                    break
+                done
+                [[ -n "$loader_entry" ]] && break
+            done
+            if [[ -n "$loader_entry" && -f "$loader_entry" ]]; then
+                log_info "Found loader entries on /dev/$_dev"
+                apply_params_to_entry "$loader_entry"
+                umount "$probe_mnt" 2>/dev/null || true
+                return 0
+            fi
+            umount "$probe_mnt" 2>/dev/null || true
+        done < <(lsblk -l -n -o NAME,FSTYPE 2>/dev/null | awk '$2=="vfat" {print $1}')
+        if [[ "$probed" -eq 0 ]]; then
+            log_error "Could not mount any vfat ESP to search for loader entries"
+            return 1
+        fi
+    fi
 
     if [[ -z "$loader_entry" || ! -f "$loader_entry" ]]; then
         log_error "Could not find systemd-boot loader entry"
@@ -472,6 +520,44 @@ remove_from_bootloader() {
                 done
                 [[ -n "$loader_entry" ]] && break
             done
+
+            # Same dual-ESP fallback as apply_systemd_boot: probe unmounted
+            # vfat partitions for the real loader entries.
+            if [[ -z "$loader_entry" || ! -f "$loader_entry" ]]; then
+                log_info "No loader entries on mounted ESP, probing other vfat partitions..."
+                local probe_mnt="/mnt/esp-probe-ttm"
+                mkdir -p "$probe_mnt"
+                local probed=0
+                while read -r _dev; do
+                    [[ -n "$_dev" ]] || continue
+                    [[ "/dev/$_dev" == "$efi_part" ]] && continue
+                    mount -o rw "/dev/$_dev" "$probe_mnt" 2>/dev/null || continue
+                    probed=1
+                    loader_entry=""
+                    for dir in "$probe_mnt/loader/entries" "$probe_mnt/EFI/steamfork/loader/entries"; do
+                        [[ -d "$dir" ]] || continue
+                        for f in "$dir"/*.conf; do
+                            [[ -f "$f" ]] || continue
+                            local name=$(basename "$f")
+                            [[ "$name" =~ fallback|previous|verbose ]] && continue
+                            loader_entry="$f"
+                            break
+                        done
+                        [[ -n "$loader_entry" ]] && break
+                    done
+                    if [[ -n "$loader_entry" && -f "$loader_entry" ]]; then
+                        log_info "Found loader entries on /dev/$_dev"
+                        remove_params_from_entry "$loader_entry"
+                        umount "$probe_mnt" 2>/dev/null || true
+                        return 0
+                    fi
+                    umount "$probe_mnt" 2>/dev/null || true
+                done < <(lsblk -l -n -o NAME,FSTYPE 2>/dev/null | awk '$2=="vfat" {print $1}')
+                if [[ "$probed" -eq 0 ]]; then
+                    log_error "Could not mount any vfat ESP to search for loader entries"
+                    return 1
+                fi
+            fi
 
             if [[ -z "$loader_entry" || ! -f "$loader_entry" ]]; then
                 log_error "Could not find systemd-boot loader entry"

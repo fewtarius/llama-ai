@@ -262,6 +262,48 @@ _detect_apu_vram_gb() {
     echo $(( vram_bytes / 1024 / 1024 / 1024 ))
 }
 
+# Detect Strix Halo. Strix Halo ships with 64-128 GB of unified LPDDR5X
+# memory and a 40-CU RDNA3.5 iGPU. The hallmark is the Radeon 8060S/8050S
+# die on a Ryzen AI Max+ 395/390/388 SoC - a unique silicon combination.
+# Detection key: PCI device ID is exclusive to Strix Halo (no other APU
+# shares 1002:1586 or 1002:1660). GFX arch gfx1150/1/2 alone is not
+# sufficient (Strix Point HX 370/375 is also gfx1151, but caps at 32 GB
+# RAM), so we cross-check with total system RAM >= 64 GB which only
+# Strix Halo boards reach.
+#
+# BIOS caveat: some firmware ships without the 96 GB VRAM carveout,
+# leaving only 512 MiB BIOS-allocated and relying on GTT for the rest.
+# This function ignores VRAM entirely - the PCI ID + RAM size signal is
+# definitive. The result feeds LLAMA_IS_STRIX_HALO which llama-run.sh
+# uses to select the halo preset (SSD off, f16 KV, big cache-ram).
+_detect_strix_halo() {
+    local pci_id="${LLAMA_GPU_PCI_ID:-}"
+    local ram_gb="${LLAMA_TOTAL_RAM_GB:-0}"
+    local gfx_arch="${LLAMA_GFX_ARCH:-}"
+
+    case "$pci_id" in
+        1002:1586|1002:1660)
+            # Strix Halo-exclusive PCI IDs
+            echo 1
+            return 0
+            ;;
+    esac
+
+    # Secondary signal: gfx1150/1/2 family + RAM >= 64 GB. Catches future
+    # boards that might share the same silicon but get new PCI IDs.
+    case "$gfx_arch" in
+        gfx1150|gfx1151|gfx1152)
+            if [[ "$ram_gb" -ge 64 ]]; then
+                echo 1
+                return 0
+            fi
+            ;;
+    esac
+
+    echo 0
+    return 1
+}
+
 # Classify the hardware into a tier that downstream scripts can branch on.
 # Tier is set from the detected APU VRAM carveout (the most reliable signal
 # for how much GPU memory is actually available to the iGPU). For mini-PCs
@@ -523,6 +565,7 @@ fi  # end macOS/AMD branch
 LLAMA_TOTAL_RAM_GB="$(_detect_total_ram_gb)"
 LLAMA_APU_VRAM_GB="$(_detect_apu_vram_gb)"
 LLAMA_RECOMMENDED_GTT_GB="$(_recommend_gtt_gb "$LLAMA_TOTAL_RAM_GB" "$LLAMA_APU_VRAM_GB")"
+LLAMA_IS_STRIX_HALO="$(_detect_strix_halo)"
 LLAMA_HARDWARE_TIER="$(_detect_hardware_tier "$LLAMA_APU_VRAM_GB" "$LLAMA_TOTAL_RAM_GB")"
 
 # Detect CPU ISA features (x86 SIMD level for cmake build flags)
@@ -562,6 +605,12 @@ fi
 if [[ -n "${LLAMA_HARDWARE_TIER_OVERRIDE:-}" ]]; then
     LLAMA_HARDWARE_TIER="$LLAMA_HARDWARE_TIER_OVERRIDE"
 fi
+# Honor LLAMA_IS_STRIX_HALO_OVERRIDE for testing (e.g. Apple Silicon with
+# 64+ GB unified memory, where the unified-memory heuristic should still
+# pick "halo"-equivalent settings but the auto-detect sees gfx!=1150/1/2).
+if [[ -n "${LLAMA_IS_STRIX_HALO_OVERRIDE:-}" ]]; then
+    LLAMA_IS_STRIX_HALO="$LLAMA_IS_STRIX_HALO_OVERRIDE"
+fi
 
 if [[ -n "${LLAMA_CPU_ISA_OVERRIDE:-}" ]]; then
     LLAMA_CPU_ISA="$LLAMA_CPU_ISA_OVERRIDE"
@@ -573,6 +622,7 @@ fi
 
 export LLAMA_GFX_VERSION LLAMA_GFX_ARCH LLAMA_GPU_NAME LLAMA_GPU_PCI_ID LLAMA_ROCM_VARIANT
 export LLAMA_THREADS LLAMA_TOTAL_RAM_GB LLAMA_APU_VRAM_GB LLAMA_RECOMMENDED_GTT_GB LLAMA_HARDWARE_TIER
+export LLAMA_IS_STRIX_HALO
 export LLAMA_CPU_ISA LLAMA_CMAKE_CPU_FLAGS
 export LLAMA_PLATFORM
 

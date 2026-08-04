@@ -257,6 +257,9 @@ ${YELLOW}Options:${NC}
     --no-preserve-reasoning Strip reasoning from prior assistant messages (default)
     --reasoning-budget N    Max thinking tokens per response (default: 2048)
     --no-reasoning-budget   Disable thinking token limit
+    --hardware-tier TIER    Override detected tier: halo, standard, or handheld
+    --is-strix-halo         Force Strix Halo preset (shorthand for --hardware-tier halo)
+    --no-strix-halo         Force non-Strix-Halo preset (shorthand for --hardware-tier standard)
     --no-ssd-cache          Disable SSD KV cache entirely (RAM prefix cache stays active)
     -h, --help              Show this help
 
@@ -356,10 +359,10 @@ _scan_gguf_arch() {
     fi
     rm -f "$_tmp_header"
 }
-
 assign_profile() {
     local model_path="$1"
-    local filename=$(basename "$model_path")
+    local filename
+    filename=$(basename "$model_path")
     local size_bytes
     # Detect split GGUF shards (e.g., model-00001-of-00003.gguf) and sum all shards.
     # stat on just the first shard (which may be only a few MB header) would
@@ -385,10 +388,13 @@ assign_profile() {
     MODEL_BYTES="$size_bytes"
     local size_gb=$((size_bytes / 1024 / 1024 / 1024))
 
-    # Hardware tier from detect-gpu.sh (handheld / standard / halo).
-    local tier="${LLAMA_HARDWARE_TIER:-handheld}"
+    # Two-axis dispatch: is_strix_halo (PCI 1002:1586/1660) and model kind.
+    # is_strix_halo is set by detect-gpu.sh; LLAMA_HARDWARE_TIER_OVERRIDE
+    # can force it via env (e.g. for testing on Apple Silicon with >64GB).
+    local is_strix_halo="false"
+    [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] && is_strix_halo="true"
 
-    # Reset all variables to sensible defaults
+    # Reset defaults. Profile presets override these as needed.
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
     KV_CACHE_TYPE_K="q8_0"
     KV_CACHE_TYPE_V="q8_0"
@@ -397,345 +403,69 @@ assign_profile() {
     EXTRA_SERVER_ARGS=""
     OVERRIDE_REASONING=""
     OVERRIDE_BATCH_SIZE=""
+    OVERRIDE_N_PARALLEL="1"
     EXTRA_SERVER_ARGS+=" --no-mmproj"
-    
-    # Detect model characteristics from filename
-    local is_moe=false
-    local is_ssm=false
-    local is_qwen3=false
+    _SSD_DISABLE=false
+    SSD_HOT_WINDOW=""
+    SSD_WARM_WINDOW=""
+    SSD_HOT_RAM=""
+    SSD_WARM_RAM=""
+    SSD_MAX_COLD=""
 
+    # Detect model characteristics from filename. _scan_gguf_arch promotes
+    # these for files whose names lack the keywords (e.g. Qwen3-Coder-Next-UD
+    # is a MoE+SSM hybrid without "moe" or "mamba" in its filename).
     if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
         is_moe=true
     fi
     if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
         is_ssm=true
     fi
-    # Detect Qwen 3.x models (Qwen3, Qwen3.5, Qwen3.6) for fixed template
-    if echo "$filename" | grep -qiE "qwen3(\.|-)?(5|6)"; then
-        is_qwen3=true
-    fi
 
-    # Scan GGUF metadata to correct filename-based detection.
-    # Filename keywords miss architectures like Qwen3-Coder-Next-UD
-    # (MoE+SSM hybrid that doesn't use "moe" or "mamba" in its name).
     _scan_gguf_arch "$model_path"
 
-    # Profile selection based on characteristics
+    # Pick the preset function. Branches are flat - one selection per row.
+    is_moe="${is_moe:-false}"
+    is_ssm="${is_ssm:-false}"
+    local preset
     if [[ "$is_ssm" == true ]]; then
-        # SSM/Mamba models: cache_reuse doesn't work, need different settings
-        # Halo pushes context much further; handheld stays at 64K.
-        case "$tier" in
-            halo)
-                # SSM hidden state is constant-size; attention KV is a small
-                # fraction of total context. 256K fits comfortably.
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=262144
-                ;;
-            *)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-                ;;
-        esac
-        KV_CACHE_TYPE_K="q8_0"
-        KV_CACHE_TYPE_V="q8_0"
-        GPU_LAYERS=99
-        OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        # No checkpoint strategy - SSM models handle context internally
-        # No reasoning format - SSM models don't support it
-        # cache-ram scales with tier: handheld VRAM-2GB for amdgpu headroom, halo 16GB
-        local _ssm_cache_ram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
-        [[ "$tier" == "halo" ]] && _ssm_cache_ram=16384
-        EXTRA_SERVER_ARGS+=" --no-context-shift --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
-        OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="2048"
-        # SSM models don't support llama_state_seq_set_data_ext, so no SSD cache
-        # SSD cache depends on KV serialization, unavailable for SSM
-        _SSD_DISABLE=true
-        profile_name="ssm-optimized"
+        preset="_preset_ssm"
+    elif [[ "$is_strix_halo" == "true" && "$is_moe" == true ]]; then
+        if [[ $size_gb -gt 50 ]]; then preset="_preset_halo_moe_large"
+        else preset="_preset_halo_moe_small"; fi
+    elif [[ "$is_strix_halo" == "true" ]]; then
+        preset="_preset_halo_dense"
     elif [[ "$is_moe" == true ]]; then
-        # MoE models: balanced batch size for GPU utilization, q8_0 KV cache saves memory
-        # Single parallel slot for MoE: 2x slots doubles KV cache memory,
-        # and agentic workloads use 1 slot at a time anyway
-        OVERRIDE_N_PARALLEL="1"
-        # Tier-aware MoE tuning. Halo has 96GB VRAM so we switch to f16 KV
-        # (no compression needed), push batch+ubatch, and widen context to 128K.
-        # Handheld stays at conservative ubatch 256 (compute-buffer safety).
-        case "$tier" in
-            halo)
-                # MoE 22GB model + 192K context f16 KV ~= 70GB total.
-                # Pushes close to the 96GB VRAM ceiling while staying under
-                # it. 256K would overflow once cache-ram is included.
-                #
-                # SSD checkpoint strategy is intentionally minimal here vs.
-                # the Flip KB tier. On Halo the 96GB VRAM/GTT budget holds
-                # the working set comfortably; SSD writes are pure overhead
-                # on the prefill critical path. Only the system prompt
-                # cache (separate, 370 MiB per distinct prompt) is worth
-                # the disk traffic for cross-restart speedup. Per-turn
-                # checkpoints add up to 3 SSD writes (62 MiB each) for a
-                # 15K-token prefill - 4s of disk time on the critical path
-                # for protection we don't need when VRAM holds everything.
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=196608
-                KV_CACHE_TYPE_V="f16"
-                KV_CACHE_TYPE_K="f16"
-                # Large MoE models (>50GB, e.g. Qwen3-Coder-Next 80GB)
-                # fill VRAM tightly — f16 KV would overflow. Switch to
-                # q8_ KV and reduce ctx (all dense models disable SSD on halo).
-                if [[ $size_gb -gt 50 ]]; then
-                    KV_CACHE_TYPE_K="q8_0"
-                    KV_CACHE_TYPE_V="q8_0"
-                    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-                fi
-                _SSD_DISABLE=true
-               OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-               # Large-MoE VRAM budget (models >50GB, e.g. MiniMax M2.7
-                # 70GB, Qwen3-Coder-Next 82GB): model + 131K q8_ KV +
-                # checkpoint ring must fit 96GB VRAM. Each checkpoint for
-                # these wide models is 3-4 GiB at moderate context — two
-                # slots is ~8 GiB vs ~31 GiB for the default 8. Rarer
-                # checkpoints (32K step) reduce per-turn fsync overhead
-                # and SSD cache is already disabled (_SSD_DISABLE=true).
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192"
-                # SSD settings unused (_SSD_DISABLE prevents per-turn SSD
-                # and system prompt caches). In-memory checkpoints handle
-                # prefix reuse.
-                SSD_CHECKPOINTS="0"
-                SSD_HOT_WINDOW="8192"
-                SSD_WARM_WINDOW="16384"
-                SSD_HOT_RAM="4096"
-                SSD_WARM_RAM="6144"
-                SSD_MAX_COLD="32"
-                ;;
-            standard)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                # --no-checkpoint-near-end opts out of upstream's always-fire
-                # near-end checkpoint (PR #25472) which doubles per-request SSD
-                # write and warm restore I/O on dense+SWA models.
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 8192 --no-checkpoint-near-end"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-            *)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                # batch 1024 for throughput, ubatch 256 for VRAM safety on iGPUs
-                # ubatch 512 causes GPU hard-lock at ~3K tokens (compute buffers exceed VRAM)
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB).
-                # Floor at 1024 MiB so sub-2GB-VRAM systems (e.g. Cezanne
-                # 512 MiB carveout, which would otherwise produce -2048)
-                # get a sensible default. The adjust_cache_ram_for_memory
-                # step below further clamps to available RAM.
-                local _cram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
-                (( _cram < 1024 )) && _cram=1024
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram $_cram --no-checkpoint-near-end"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-        esac
-        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        # Sampling (Unsloth recommended for Qwen 3.6 thinking mode):
-        # temp=1.0 + top_p=0.95 + top_k=20 + min_p=0.0 + no penalties.
-        # Qwen3 was trained without repetition penalty - applying any
-        # value >1.0 degrades the model and causes repetitive tool call
-        # loops in agentic workloads. presence_penalty=0.0 is also required;
-        # the non-thinking (instruct) mode uses 1.5 but that mode strips
-        # reasoning and is not what CLIO sends.
-        # https://unsloth.ai/docs/models/qwen3.6
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
-        EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        # SSD cache enabled by global default
-        OVERRIDE_REASONING="on"
-        # MoE expert SSD residency — enables running MoE models larger than
-        # physical RAM by keeping only hot experts paged in and evicting
-        # cold ones to SSD via madvise. Most valuable on the handheld tier
-        # where VRAM is small and the active subset of a sparse MoE model
-        # (typically 1-3% of total) is the only thing that needs to be
-        # resident.
-        #
-        # Battery guard: on the handheld profile, the heavy SSD I/O from
-        # expert eviction drains the battery quickly and adds noticeable
-        # latency from NVMe page faults. Require AC power before enabling.
-        if [[ "$tier" == "handheld" ]] && ! check_ac_power; then
-            log_warn "MoE expert SSD residency skipped: handheld tier is on battery power"
-            log_warn "  SSD I/O during eviction drains battery and adds latency"
-            log_warn "  Plug in AC power and re-run to enable --moe-expert-residency"
-        else
-            EXTRA_SERVER_ARGS+=" --moe-expert-residency"
-        fi
-        # Large MoE on handheld tier: when the model exceeds available
-        # VRAM+GTT (e.g. Qwen3.6-35B Q5_K_XL = 26 GB on Flip's 24 GB
-        # budget), -ngl 99 tries to put every layer on GPU and the
-        # driver returns ErrorDeviceLost on command submission. --cpu-moe
-        # pins only the MoE expert weights to host RAM (madvise-paged by
-        # residency), letting -ngl 99 still offload the attention and
-        # embedding layers to the iGPU for the parts that benefit most
-        # from GPU compute. Threshold matches the LTM rule "MoE Q4_K_M
-        # > 26GB can't fit even partially" - leave the 22-24 GB Q4_K_M
-        # class on the original path since those do fit on Flip GTT.
-        # Note: size_gb is integer-divided so the 26 GB Q5_K_XL reports as
-        # 24 GB - the comparison below uses the raw byte count via MODEL_BYTES
-        # which is computed in scan_models(). Threshold is 23 GiB to cover
-        # Q5_K_XL on Flip (24 GB after integer truncation = ~25 GB on disk).
-        if [[ "$tier" == "handheld" ]] && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
-            EXTRA_SERVER_ARGS+=" --cpu-moe"
-            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
-        fi
-        OVERRIDE_REASONING_BUDGET="2048"
-        profile_name="moe-optimized"
+        if [[ $size_gb -gt 18 ]]; then preset="_preset_std_moe_large"
+        else preset="_preset_std_moe_small"; fi
     elif [[ $size_gb -gt 15 ]]; then
-        # Tier-aware large-dense. Halo uses q8_0 KV and bigger cache since
-        # 30B+ models fit comfortably with 96GB VRAM.
-        case "$tier" in
-            halo)
-                # Dense models on Strix Halo: 96GB VRAM holds the working set
-                # comfortably. Per-turn SSD writes are pure overhead on the
-                # prefill critical path - same reasoning as MoE halo.
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 16384 --no-checkpoint-near-end"
-                _SSD_DISABLE=true
-                SSD_CHECKPOINTS=""
-                SSD_HOT_WINDOW="8192"
-                SSD_WARM_WINDOW="16384"
-                SSD_HOT_RAM="4096"
-                SSD_WARM_RAM="6144"
-                SSD_MAX_COLD="32"
-                ;;
-            standard)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram 8192 --no-checkpoint-near-end"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-            *)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-                KV_CACHE_TYPE_K="q4_0"
-                KV_CACHE_TYPE_V="q4_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                # cache-ram: reserve 2GB for amdgpu command submission (VRAM - 2GB).
-                # Floor at 1024 MiB so sub-2GB-VRAM systems (e.g. Cezanne
-                # 512 MiB carveout) get a sane value. See moe-optimized above
-                # for the matching fix and adjust_cache_ram_for_memory clamping.
-                local _cram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
-                (( _cram < 1024 )) && _cram=1024
-                EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram $_cram --no-checkpoint-near-end"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-        esac
-        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
-        EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="2048"
-        profile_name="large-dense"
-    elif [[ $size_gb -gt 10 ]]; then
-        # Medium models (10-15GB): balanced settings
-        case "$tier" in
-            halo)
-                # Medium models (10-15GB) leave ~80GB of VRAM free, plenty
-                # for long context without compression. Per-turn SSD writes
-                # are pure overhead on 96GB VRAM.
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-                KV_CACHE_TYPE_K="f16"
-                KV_CACHE_TYPE_V="f16"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --cache-ram 16384"
-                _SSD_DISABLE=true
-                SSD_CHECKPOINTS=""
-                SSD_HOT_WINDOW="8192"
-                SSD_WARM_WINDOW="16384"
-                SSD_HOT_RAM="4096"
-                SSD_WARM_RAM="6144"
-                SSD_MAX_COLD="32"
-                ;;
-            standard)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
-                EXTRA_SERVER_ARGS+=" --cache-ram 8192"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-            *)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
-                EXTRA_SERVER_ARGS+=" --cache-ram 4096"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-        esac
-        EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
-        # Qwen3.6 thinking mode: see moe-optimized profile above for rationale
-        EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
-        EXTRA_SERVER_ARGS+=" --reasoning-format auto"
-        OVERRIDE_REASONING="on"
-        OVERRIDE_REASONING_BUDGET="2048"
-        profile_name="medium-dense"
+        preset="_preset_std_dense_large"
     else
-        # Small models (<10GB): full power
-        case "$tier" in
-            halo)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-                KV_CACHE_TYPE_K="f16"
-                KV_CACHE_TYPE_V="f16"
-                EXTRA_SERVER_ARGS+=" --cache-ram 16384 --slot-prompt-similarity 0.15"
-                _SSD_DISABLE=true
-                SSD_CHECKPOINTS=""
-                SSD_HOT_WINDOW="8192"
-                SSD_WARM_WINDOW="16384"
-                SSD_HOT_RAM="4096"
-                SSD_WARM_RAM="6144"
-                SSD_MAX_COLD="32"
-                ;;
-            *)
-                [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
-                KV_CACHE_TYPE_K="q8_0"
-                KV_CACHE_TYPE_V="q8_0"
-                EXTRA_SERVER_ARGS+=" --cache-ram 4096 --slot-prompt-similarity 0.15"
-                SSD_HOT_WINDOW="4096"
-                SSD_WARM_WINDOW="8192"
-                SSD_HOT_RAM="960"
-                SSD_WARM_RAM="1440"
-                SSD_MAX_COLD="32"
-                ;;
-        esac
-        profile_name="small-efficient"
+        preset="_preset_std_dense_small"
     fi
-    
-    # Adjust --cache-ram to available memory on memory-constrained systems
-    # (e.g. 24 GB macOS laptops running 20+ GB MoE models)
+
+    # Apply preset (sets CTX_SIZE, KV types, batch, checkpoints, _SSD_DISABLE,
+    # SSD window settings, profile_name, reasoning flags).
+    $preset
+
+    # --cpu-moe + --load-mode none: forces full read() into RAM (no mmap) and
+    # pins MoE expert weights to host RAM. Only fires on standard tier when
+    # the model exceeds GPU-visible budget (e.g. Flip 6GB VRAM + 26 GB OS
+    # RAM vs a 26 GB Q5_K_XL MoE). Without these flags, madvise(DONTNEED)
+    # in --moe-expert-residency evicts mmap'd expert pages to disk and the
+    # next touch faults back from disk (54 t/s vs 215 t/s prompt eval on
+    # Qwen3.6-35B-A3B Q4_K_XL). Halo tier has enough GTT to hold the model
+    # so this never fires there.
+    if [[ "$is_strix_halo" == "false" ]] \
+       && [[ "$is_moe" == true ]] \
+       && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
+        EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
+        log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
+    fi
+
+    # Clamp --cache-ram to available memory on tight systems (e.g. 24 GB
+    # macOS running 20+ GB MoE models). On Halo with 64+ GB RAM the headroom
+    # check passes through and the value stays at the preset-set level.
     if [[ "${LLAMA_ADJUST_CACHE:-1}" == "1" ]]; then
         local _orig_cache_ram _new_cache_ram
         _orig_cache_ram=$(echo "$EXTRA_SERVER_ARGS" | sed -nE 's/.*--cache-ram ([0-9]+).*/\1/p')
@@ -753,6 +483,194 @@ assign_profile() {
 
     printf '%bAuto profile: %b%s%b (%sGB, MoE=%s, SSM=%s)%b\n' "$CYAN" "$GREEN" "$profile_name" "$NC" "$size_gb" "$is_moe" "$is_ssm" "$NC"
 }
+
+# =============================================================================
+# Profile presets
+# =============================================================================
+# Each preset is a small bash function called by assign_profile() to set
+# CTX_SIZE, KV cache types, batch/ubatch, checkpoint args, SSD-related
+# flags, and the reasoning defaults for non-SSM models. Helpers below
+# (_apply_reasoning_defaults etc.) factor out the common arg fragments.
+#
+# Naming: preset_<tier>_<kind>[_<size>]
+#   tier: halo | std (everything else, including Strix Point and Apple Silicon)
+#   kind: moe | dense | ssm
+#   size: large | small (threshold depends on kind)
+#
+# Why two tiers? Halo is a one-of-a-kind machine: 64-128 GB unified memory,
+# 40 RDNA3.5 CUs, GTT can be expanded to 100+ GB. SSD writes are pure
+# overhead on the prefill critical path. Every other machine benefits from
+# SSD-backed cross-restart warmup because the working set does not fit.
+
+# Reasoning defaults for non-SSM models. Sets the sampling chain Unsloth
+# recommends for Qwen 3.6 thinking mode and turns reasoning on with a
+# 2048-token budget cap (prevents think loops in agentic workloads).
+# https://unsloth.ai/docs/models/qwen3.6
+_apply_reasoning_defaults() {
+    EXTRA_SERVER_ARGS+=" --temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.00"
+    EXTRA_SERVER_ARGS+=" --repeat-penalty 1.0 --presence-penalty 0.0"
+    EXTRA_SERVER_ARGS+=" --reasoning-format auto"
+    OVERRIDE_REASONING="on"
+    OVERRIDE_REASONING_BUDGET="2048"
+}
+
+# SSD cache window defaults for non-Halo presets. Hot=4096, warm=8192,
+# 960 MiB hot RAM, 1440 MiB warm RAM, 32 cold checkpoints.
+_apply_ssd_defaults() {
+    SSD_HOT_WINDOW="4096"
+    SSD_WARM_WINDOW="8192"
+    SSD_HOT_RAM="960"
+    SSD_WARM_RAM="1440"
+    SSD_MAX_COLD="32"
+}
+
+# --moe-expert-residency gate. On Halo we always enable - GTT holds hot
+# experts cheaply. On standard tier we require AC power to enable (heavy
+# SSD I/O from paging drains battery on handhelds). CPU-mode MoE
+# (--cpu-moe + --load-mode none) actually skips residency entirely; this
+# helper just adds the flag if residency is fine.
+_apply_moe_residency() {
+    local tier="$1"
+    if [[ "$tier" == "halo" ]]; then
+        EXTRA_SERVER_ARGS+=" --moe-expert-residency"
+    elif check_ac_power; then
+        EXTRA_SERVER_ARGS+=" --moe-expert-residency"
+    else
+        log_warn "MoE expert residency skipped: standard tier on battery"
+        log_warn "  SSD I/O during eviction drains battery and adds latency"
+        log_warn "  Plug in AC power and re-run to enable --moe-expert-residency"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Halo presets (Radeon 8060S / Ryzen AI Max+ 395, 64-128 GB unified memory)
+# -----------------------------------------------------------------------------
+
+_preset_halo_moe_large() {
+    # >50 GB MoE: q8 KV (f16 wouldn't fit alongside cache-ram at this size),
+    # 32K checkpoint step (8 checkpoints -> 32768 tokens), 2 slots = ~8 GiB
+    # ring for these wide models (Qwen3-Coder-Next 80 GB, MiniMax M2.7 70 GB).
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192"
+    _SSD_DISABLE=true
+    _apply_reasoning_defaults
+    _apply_moe_residency halo
+    profile_name="halo-moe-large"
+}
+
+_preset_halo_moe_small() {
+    # <=50 GB MoE: f16 KV (fits comfortably alongside cache-ram), 196K ctx.
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=196608
+    KV_CACHE_TYPE_K="f16"
+    KV_CACHE_TYPE_V="f16"
+    OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192"
+    _SSD_DISABLE=true
+    _apply_reasoning_defaults
+    _apply_moe_residency halo
+    profile_name="halo-moe-small"
+}
+
+_preset_halo_dense() {
+    # Dense (any size): f16 KV, 131K ctx, 16 GB cache-ram, slot similarity
+    # 0.15 for in-memory checkpoint reuse. SSD off (GTT holds everything).
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
+    KV_CACHE_TYPE_K="f16"
+    KV_CACHE_TYPE_V="f16"
+    OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 16384 --no-checkpoint-near-end --slot-prompt-similarity 0.15"
+    _SSD_DISABLE=true
+    _apply_reasoning_defaults
+    profile_name="halo-dense"
+}
+
+# -----------------------------------------------------------------------------
+# Standard presets (everything else: Phoenix, Cezanne, Strix Point, dGPUs)
+# -----------------------------------------------------------------------------
+
+_preset_std_moe_large() {
+    # >18 GB MoE: q8 KV, ubatch 256 (ubatch 512 GPU hard-locks small iGPUs
+    # at ~3K tokens), 65K ctx default. Big models on this tier get --cpu-moe
+    # + --load-mode none from assign_profile() (mmap+residency disaster).
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 8 --cache-ram 4096 --no-checkpoint-near-end"
+    _apply_ssd_defaults
+    _apply_reasoning_defaults
+    _apply_moe_residency standard
+    profile_name="std-moe-large"
+}
+
+_preset_std_moe_small() {
+    # <=18 GB MoE: same as large but smaller ctx, 4 checkpoints.
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram 4096 --no-checkpoint-near-end"
+    _apply_ssd_defaults
+    _apply_reasoning_defaults
+    _apply_moe_residency standard
+    profile_name="std-moe-small"
+}
+
+_preset_std_dense_large() {
+    # >15 GB dense: q4 KV (compression matters on tight VRAM), 65K ctx.
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+    KV_CACHE_TYPE_K="q4_0"
+    KV_CACHE_TYPE_V="q4_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram 4096 --no-checkpoint-near-end --slot-prompt-similarity 0.15"
+    _apply_ssd_defaults
+    _apply_reasoning_defaults
+    profile_name="std-dense-large"
+}
+
+_preset_std_dense_small() {
+    # <=15 GB dense: q8 KV (no need to over-compress), smaller ctx.
+    [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=32768
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 256"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 8192 --ctx-checkpoints 4 --cache-ram 4096 --no-checkpoint-near-end --slot-prompt-similarity 0.15"
+    _apply_ssd_defaults
+    _apply_reasoning_defaults
+    profile_name="std-dense"
+}
+
+# -----------------------------------------------------------------------------
+# SSM preset (Mamba / Jamba / Falcon-H1 / RWKV)
+# -----------------------------------------------------------------------------
+# SSM hidden state is constant-size; attention KV is a small fraction of
+# total context. --cache-ssd path requires KV serialization llama_state_seq_*
+# which doesn't apply to Mamba layers, so SSD is unconditionally off.
+
+_preset_ssm() {
+    if [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]]; then
+        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=262144
+        EXTRA_SERVER_ARGS+=" --no-context-shift --ctx-checkpoints 0 --cache-ram 16384"
+    else
+        [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=65536
+        # Floor 1 GB so sub-2 GB VRAM systems (Cezanne 512 MiB carveout)
+        # don't produce a negative cache-ram.
+        local _ssm_cache_ram=$(( LLAMA_APU_VRAM_GB * 1024 - 2048 ))
+        (( _ssm_cache_ram < 1024 )) && _ssm_cache_ram=1024
+        EXTRA_SERVER_ARGS+=" --no-context-shift --ctx-checkpoints 0 --cache-ram ${_ssm_cache_ram}"
+    fi
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
+    OVERRIDE_BATCH_SIZE="--batch-size 1024 --ubatch-size 512"
+    OVERRIDE_REASONING="on"
+    OVERRIDE_REASONING_BUDGET="2048"
+    _SSD_DISABLE=true
+    profile_name="ssm"
+}
+
 
 # =============================================================================
 # Auto-discover models from ./models directory
@@ -1434,6 +1352,21 @@ while [[ $# -gt 0 ]]; do
         --no-preserve-reasoning) PRESERVE_REASONING="false"; shift ;;
         --reasoning-budget) OVERRIDE_REASONING_BUDGET="$2"; shift 2 ;;
         --no-reasoning-budget) OVERRIDE_REASONING_BUDGET="0"; shift ;;
+        --hardware-tier)
+            case "$2" in
+                halo|standard|handheld)
+                    LLAMA_HARDWARE_TIER_OVERRIDE="$2"
+                    if [[ "$2" == "halo" ]]; then
+                        LLAMA_IS_STRIX_HALO_OVERRIDE="1"
+                    else
+                        LLAMA_IS_STRIX_HALO_OVERRIDE="0"
+                    fi
+                    shift 2 ;;
+                *) echo -e "${RED}Unknown --hardware-tier value: $2 (must be halo/standard/handheld)${NC}"; exit 1 ;;
+            esac
+            ;;
+        --is-strix-halo) LLAMA_IS_STRIX_HALO_OVERRIDE="1"; shift ;;
+        --no-strix-halo) LLAMA_IS_STRIX_HALO_OVERRIDE="0"; shift ;;
         --interactive|-i) INTERACTIVE=true; shift ;;
         --server|-s) SERVER_MODE=true; shift ;;
         --fit) OVERRIDE_FIT="on"; shift ;;
@@ -1487,6 +1420,18 @@ fi
 
 if [[ "$BACKEND" == "auto" ]]; then
     detect_backend  # Sets BACKEND in current shell (not a subshell)
+fi
+
+# Apply hardware-tier override (set by --hardware-tier / --is-strix-halo /
+# --no-strix-halo) so assign_profile() reads the user-chosen value
+# instead of the auto-detected one. detect-gpu.sh runs at startup before
+# argument parsing and only sees LLAMA_*_OVERRIDE env vars; CLI flags
+# arrive later and we apply them here.
+if [[ -n "${LLAMA_HARDWARE_TIER_OVERRIDE:-}" ]]; then
+    LLAMA_HARDWARE_TIER="$LLAMA_HARDWARE_TIER_OVERRIDE"
+fi
+if [[ -n "${LLAMA_IS_STRIX_HALO_OVERRIDE:-}" ]]; then
+    LLAMA_IS_STRIX_HALO="$LLAMA_IS_STRIX_HALO_OVERRIDE"
 fi
 
 # All models use dynamic profiling based on file characteristics
@@ -1616,6 +1561,51 @@ if [[ "$_model_size_gb" -gt $((_total_mem_gb - 2)) ]]; then
             echo -e "${YELLOW}         Dense model: full file will be resident. OOM is likely.${NC}"
             echo -e "${YELLOW}         Use a smaller quant (Q4 or Q3) or a smaller model.${NC}"
         fi
+    fi
+fi
+
+# GPU-visible memory pre-flight. The model must fit in VRAM carveout + GTT
+# (GTT pages come on-demand from system RAM). Without enough GPU memory,
+# -ngl 99 crashes with "radv/amdgpu: Not enough memory for command
+# submission" + vk::DeviceLostError instead of a clear error. RADV on APUs
+# reports only 2/3 of (VRAM+GTT) as DEVICE_LOCAL unless
+# radv_enable_unified_heap_on_apu is enabled for llama-server (~/.drirc).
+if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "rocm" ]] && [[ "${GPU_LAYERS:-99}" -ge 50 ]] && [[ "$MODEL_BYTES" -gt 0 ]]; then
+    _gpu_vis_bytes=0
+    for _c in /sys/class/drm/card[0-9]/device; do
+        [[ -d "$_c" ]] || continue
+        _gpu_vis_bytes=$(( $(cat "$_c/mem_info_vram_total" 2>/dev/null || echo 0) + $(cat "$_c/mem_info_gtt_total" 2>/dev/null || echo 0) ))
+        break
+    done
+    _gpu_vis_gb=$(( _gpu_vis_bytes / 1073741824 ))
+    if [[ "$_gpu_vis_gb" -gt 0 ]]; then
+        _unified_heap=0
+        for _d in "$HOME/.drirc" /usr/share/drirc.d/*.conf; do
+            if [[ -f "$_d" ]] && grep -q "radv_enable_unified_heap_on_apu" "$_d" 2>/dev/null; then
+                _unified_heap=1
+            fi
+        done
+        _gpu_budget_gb=$(( _gpu_vis_gb - 2 ))  # 2 GiB reserve for compute/staging
+        if [[ "$BACKEND" == "vulkan" && "$_unified_heap" -eq 0 ]]; then
+            # RADV APU 2/3 split: only this much is DEVICE_LOCAL
+            _gpu_budget_gb=$(( _gpu_vis_gb * 2 / 3 - 2 ))
+        fi
+        if [[ "$MODEL_BYTES" -gt $(( _gpu_budget_gb * 1073741824 )) ]] && [[ "$EXTRA_SERVER_ARGS" != *"--cpu-moe"* ]]; then
+            # --cpu-moe pins MoE expert weights to host RAM (handheld tier for
+            # models > GPU budget) - the GPU only holds attention/embedding,
+            # so the full-model-vs-GPU check does not apply.
+            log_error "Model ($_model_size_gb GiB) exceeds GPU-visible memory budget (${_gpu_budget_gb} GiB of ${_gpu_vis_gb} GiB VRAM+GTT)."
+            log_error "  With -ngl ${GPU_LAYERS} all layers must fit GPU memory; the load crashes with"
+            log_error "  'Not enough memory for command submission' / vk::DeviceLostError when it doesn't."
+            if [[ "$BACKEND" == "vulkan" && "$_unified_heap" -eq 0 ]]; then
+                log_error "  RADV reports only 2/3 of VRAM+GTT as DEVICE_LOCAL on APUs - enable"
+                log_error "  radv_enable_unified_heap_on_apu for llama-server in ~/.drirc."
+            fi
+            log_error "  Fixes: raise GTT (sudo scripts/apply-ttm-kernel-params.sh <GB>), restore the"
+            log_error "  BIOS VRAM carveout, or use a smaller quant."
+            exit 1
+        fi
+        log_info "GPU memory check: model ${_model_size_gb} GiB fits ${_gpu_vis_gb} GiB VRAM+GTT (budget ${_gpu_budget_gb} GiB)"
     fi
 fi
 
