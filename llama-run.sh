@@ -154,6 +154,7 @@ N_PREDICT=256
 GPU_LAYERS=99
 KV_CACHE_TYPE_K="q8_0"
 KV_CACHE_TYPE_V="q8_0"
+USER_KV_CACHE_TYPE=""  # set when user explicitly passes --kv-cache-type
 INTERACTIVE=false
 PRINT_PROFILE=false
 SERVER_MODE=false
@@ -424,6 +425,51 @@ assign_profile() {
 
     _scan_gguf_arch "$model_path"
 
+    # =========================================================================
+    # GPU budget detection (VRAM + GTT - 2GiB reserve for compute/staging)
+    # Used for MoE streaming decision: if model > GPU budget, pin experts to CPU.
+    # =========================================================================
+    _gpu_budget_bytes=0
+    _gpu_budget_gb=0
+    if [[ "$BACKEND" == "vulkan" || "$BACKEND" == "rocm" || "$BACKEND" == "metal" ]]; then
+        for _c in /sys/class/drm/card[0-9]/device; do
+            [[ -d "$_c" ]] || continue
+            _vram=$(cat "$_c/mem_info_vram_total" 2>/dev/null || echo 0)
+            _gtt=$(cat "$_c/mem_info_gtt_total" 2>/dev/null || echo 0)
+            _gpu_budget_bytes=$(( _vram + _gtt - 2 * 1024 * 1024 * 1024 ))  # 2 GiB reserve
+            _gpu_budget_gb=$(( _gpu_budget_bytes / 1073741824 ))
+            break
+        done
+        # On macOS with Metal, unified memory - use total system RAM minus reserve
+        if [[ "$IS_DARWIN" == "true" ]] && [[ "$_gpu_budget_bytes" -eq 0 ]]; then
+            _total_mem=$(get_total_memory_bytes)
+            _gpu_budget_bytes=$(( _total_mem - 4 * 1024 * 1024 * 1024 ))
+            _gpu_budget_gb=$(( _gpu_budget_bytes / 1073741824 ))
+        fi
+    fi
+
+    # MoE streaming decision: if MoE model exceeds GPU budget, use --cpu-moe
+    # to pin expert weights to host RAM while keeping attention/embedding on GPU.
+    # For non-MoE models, --cpu-moe is never used (dense models must fit entirely).
+    _need_cpu_moe=false
+    _need_moe_residency=false
+    if [[ "$is_moe" == true ]] && [[ ${_gpu_budget_bytes:-0} -gt 0 ]]; then
+        if [[ ${MODEL_BYTES:-0} -gt ${_gpu_budget_bytes} ]]; then
+            _need_cpu_moe=true
+            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds GPU budget ${_gpu_budget_gb}GB)"
+        elif [[ ${MODEL_BYTES:-0} -gt $((_gpu_budget_bytes * 95 / 100)) ]]; then
+            # Model fits but is tight (>95% of budget) - residency helps keep hot experts on GPU
+            # when there's not enough headroom for the OS/Vulkan to manage all pages.
+            _need_moe_residency=true
+        fi
+    fi
+
+    # Tell _apply_moe_residency whether we need it (set by GPU budget check above)
+    # Must be BEFORE preset calls _apply_moe_residency
+    if [[ "$_need_moe_residency" == "true" ]]; then
+        EXTRA_SERVER_ARGS+=" __NEEDS_MOE_RESIDENCY__"
+    fi
+
     # Pick the preset function. Branches are flat - one selection per row.
     is_moe="${is_moe:-false}"
     is_ssm="${is_ssm:-false}"
@@ -448,42 +494,16 @@ assign_profile() {
     # SSD window settings, profile_name, reasoning flags).
     $preset
 
-    # --cpu-moe + --load-mode none: forces full read() into RAM (no mmap) and
-    # pins MoE expert weights to host RAM. Fires on:
-    #   - Standard tier: model >= 23 GiB exceeds iGPU budget (e.g. Flip 6GB
-    #     VRAM + 26 GB OS RAM vs 26 GB Q5_K_XL MoE)
-    #   - Halo tier: model exceeds GPU-visible budget (VRAM+GTT - 2GiB reserve)
-    # Without these flags, madvise(DONTNEED) in --moe-expert-residency evicts
-    # mmap'd expert pages to disk and the next touch faults back from disk
-    # (54 t/s vs 215 t/s prompt eval on Qwen3.6-35B-A3B Q4_K_XL).
-    _gpu_budget_bytes=0
-    _gpu_budget_gb=0
-    if [[ "$is_strix_halo" == "true" ]]; then
-        for _c in /sys/class/drm/card[0-9]/device; do
-            [[ -d "$_c" ]] || continue
-            _vram=$(cat "$_c/mem_info_vram_total" 2>/dev/null || echo 0)
-            _gtt=$(cat "$_c/mem_info_gtt_total" 2>/dev/null || echo 0)
-            _gpu_budget_bytes=$(( _vram + _gtt - 2 * 1024 * 1024 * 1024 ))  # 2 GiB reserve
-            _gpu_budget_gb=$(( _gpu_budget_bytes / 1073741824 ))
-            break
-        done
-    fi
-
-    _need_cpu_moe=false
-    if [[ "$is_moe" == true ]]; then
-        if [[ "$is_strix_halo" == "false" ]] && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
-            _need_cpu_moe=true
-        elif [[ "$is_strix_halo" == "true" ]] && [[ ${_gpu_budget_bytes:-0} -gt 0 ]] && [[ ${MODEL_BYTES:-0} -gt ${_gpu_budget_bytes} ]]; then
-            _need_cpu_moe=true
-        fi
-    fi
-
+    # Apply MoE flags based on GPU budget measurement
     if [[ "$_need_cpu_moe" == "true" ]]; then
-        EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
-        if [[ "$is_strix_halo" == "true" ]]; then
-            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds Halo GPU budget ${_gpu_budget_gb}GB)"
+        # --load-mode none (full read into RAM) only if model fits in system RAM.
+        # If model > system RAM, keep mmap (default) so only needed pages are loaded.
+        _total_mem=$(get_total_memory_bytes)
+        if [[ ${MODEL_BYTES:-0} -lt $_total_mem ]]; then
+            EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
         else
-            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
+            EXTRA_SERVER_ARGS+=" --cpu-moe"
+            log_info "Model (${size_gb}GB) exceeds system RAM (${_total_mem}GB) - keeping mmap, experts pinned to CPU"
         fi
     fi
 
@@ -555,6 +575,13 @@ _apply_ssd_defaults() {
 # helper just adds the flag if residency is fine.
 _apply_moe_residency() {
     local tier="$1"
+    # Check for explicit marker set by assign_profile (not just --cpu-moe,
+    # because we want residency for large-but-fitting models too)
+    if [[ "$EXTRA_SERVER_ARGS" != *"__NEEDS_MOE_RESIDENCY__"* ]]; then
+        return 0
+    fi
+    # Strip the marker
+    EXTRA_SERVER_ARGS=$(echo "$EXTRA_SERVER_ARGS" | sed 's/ __NEEDS_MOE_RESIDENCY__//')
     if [[ "$tier" == "halo" ]]; then
         EXTRA_SERVER_ARGS+=" --moe-expert-residency"
     elif check_ac_power; then
@@ -1347,7 +1374,7 @@ while [[ $# -gt 0 ]]; do
         -n|--n-predict) N_PREDICT="$2"; shift 2 ;;
         -ngl|--gpu-layers) GPU_LAYERS="$2"; shift 2 ;;
         --kv-cache-type)
-            KV_CACHE_TYPE_K="$2"; KV_CACHE_TYPE_V="$2"; shift 2 ;;
+            KV_CACHE_TYPE_K="$2"; KV_CACHE_TYPE_V="$2"; USER_KV_CACHE_TYPE=1; shift 2 ;;
         --cache-ssd) SSD_PATH="$2"; shift 2 ;;
         --cache-ssd-checkpoints) SSD_CHECKPOINTS="$2"; shift 2 ;;
         --cache-ssd-hot-window) SSD_HOT_WINDOW="$2"; shift 2 ;;
@@ -1459,7 +1486,16 @@ if [[ -n "${LLAMA_IS_STRIX_HALO_OVERRIDE:-}" ]]; then
 fi
 
 # All models use dynamic profiling based on file characteristics
+# Save user-specified KV cache type before assign_profile overwrites it
+_user_kv_cache_k="${KV_CACHE_TYPE_K:-}"
+_user_kv_cache_v="${KV_CACHE_TYPE_V:-}"
+_user_kv_cache_set="${USER_KV_CACHE_TYPE:-}"
 assign_profile "$MODEL"
+# Restore user-specified KV cache type if provided
+if [[ -n "$_user_kv_cache_set" ]]; then
+    KV_CACHE_TYPE_K="$_user_kv_cache_k"
+    KV_CACHE_TYPE_V="$_user_kv_cache_v"
+fi
 
 # Check if this is a Qwen 3.x model and the fixed template exists
 # The fixed template fixes a looping issue with Qwen 3.x models
