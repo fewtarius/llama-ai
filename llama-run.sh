@@ -494,16 +494,6 @@ assign_profile() {
     # SSD window settings, profile_name, reasoning flags).
     $preset
 
-    # DeepSeek-specific kernel/ubatch tuning (halo tier only).
-    # DeepSeek MLA compresses KV via latent vectors; llama.cpp's MLA flash-attn
-    # path is the fastest available kernel. 4096/4096 batch/ubatch amortizes
-    # kernel launch overhead across the long reasoning prefills the model
-    # produces. Halo has 96+ GB GTT so per-batch memory cost is not a
-    # constraint. Standard tier (Flip, Cezanne) is untouched because 4096
-    # ubatch OOMs the smaller iGPUs.
-    # UNTESTED — applied on observation; verify on next server restart.
-    _apply_deepseek_mla_tuning
-
     # Apply MoE flags based on GPU budget measurement
     if [[ "$_need_cpu_moe" == "true" ]]; then
         # --load-mode none (full read into RAM) only if model fits in system RAM.
@@ -603,18 +593,6 @@ _apply_moe_residency() {
     fi
 }
 
-# DeepSeek MLA tuning. Bumps batch/ubatch to 4096 and adds --flash-attn.
-# Halo-only by design - 4096 ubatch OOMs smaller iGPUs (Flip, Cezanne).
-# Detection is filename-based (case-insensitive match on "deepseek").
-_apply_deepseek_mla_tuning() {
-    if [[ "$is_strix_halo" == "true" && "$is_moe" == "true" ]] \
-       && echo "$filename" | grep -qiE "deepseek"; then
-        OVERRIDE_BATCH_SIZE="--batch-size 4096 --ubatch-size 4096"
-        EXTRA_SERVER_ARGS+=" --flash-attn auto"
-        log_info "DeepSeek MLA tuning: batch/ubatch 4096/4096 + --flash-attn"
-    fi
-}
-
 # -----------------------------------------------------------------------------
 # Halo presets (Radeon 8060S / Ryzen AI Max+ 395, 64-128 GB unified memory)
 # -----------------------------------------------------------------------------
@@ -624,10 +602,10 @@ _preset_halo_moe_large() {
     # 32K checkpoint step (8 checkpoints -> 32768 tokens), 2 slots = ~8 GiB
     # ring for these wide models (Qwen3-Coder-Next 80 GB, MiniMax M2.7 70 GB).
     [[ -z "$USER_CTX_SIZE" ]] && CTX_SIZE=131072
-    KV_CACHE_TYPE_K="f16"
-    KV_CACHE_TYPE_V="f16"
+    KV_CACHE_TYPE_K="q8_0"
+    KV_CACHE_TYPE_V="q8_0"
     OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
-    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192"
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192 --flash-attn auto"
     _SSD_DISABLE=true
     _apply_reasoning_defaults
     _apply_moe_residency halo
