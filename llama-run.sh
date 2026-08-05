@@ -449,18 +449,42 @@ assign_profile() {
     $preset
 
     # --cpu-moe + --load-mode none: forces full read() into RAM (no mmap) and
-    # pins MoE expert weights to host RAM. Only fires on standard tier when
-    # the model exceeds GPU-visible budget (e.g. Flip 6GB VRAM + 26 GB OS
-    # RAM vs a 26 GB Q5_K_XL MoE). Without these flags, madvise(DONTNEED)
-    # in --moe-expert-residency evicts mmap'd expert pages to disk and the
-    # next touch faults back from disk (54 t/s vs 215 t/s prompt eval on
-    # Qwen3.6-35B-A3B Q4_K_XL). Halo tier has enough GTT to hold the model
-    # so this never fires there.
-    if [[ "$is_strix_halo" == "false" ]] \
-       && [[ "$is_moe" == true ]] \
-       && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
+    # pins MoE expert weights to host RAM. Fires on:
+    #   - Standard tier: model >= 23 GiB exceeds iGPU budget (e.g. Flip 6GB
+    #     VRAM + 26 GB OS RAM vs 26 GB Q5_K_XL MoE)
+    #   - Halo tier: model exceeds GPU-visible budget (VRAM+GTT - 2GiB reserve)
+    # Without these flags, madvise(DONTNEED) in --moe-expert-residency evicts
+    # mmap'd expert pages to disk and the next touch faults back from disk
+    # (54 t/s vs 215 t/s prompt eval on Qwen3.6-35B-A3B Q4_K_XL).
+    _gpu_budget_bytes=0
+    _gpu_budget_gb=0
+    if [[ "$is_strix_halo" == "true" ]]; then
+        for _c in /sys/class/drm/card[0-9]/device; do
+            [[ -d "$_c" ]] || continue
+            _vram=$(cat "$_c/mem_info_vram_total" 2>/dev/null || echo 0)
+            _gtt=$(cat "$_c/mem_info_gtt_total" 2>/dev/null || echo 0)
+            _gpu_budget_bytes=$(( _vram + _gtt - 2 * 1024 * 1024 * 1024 ))  # 2 GiB reserve
+            _gpu_budget_gb=$(( _gpu_budget_bytes / 1073741824 ))
+            break
+        done
+    fi
+
+    _need_cpu_moe=false
+    if [[ "$is_moe" == true ]]; then
+        if [[ "$is_strix_halo" == "false" ]] && [[ ${MODEL_BYTES:-0} -ge $((23 * 1024 * 1024 * 1024)) ]]; then
+            _need_cpu_moe=true
+        elif [[ "$is_strix_halo" == "true" ]] && [[ ${_gpu_budget_bytes:-0} -gt 0 ]] && [[ ${MODEL_BYTES:-0} -gt ${_gpu_budget_bytes} ]]; then
+            _need_cpu_moe=true
+        fi
+    fi
+
+    if [[ "$_need_cpu_moe" == "true" ]]; then
         EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
-        log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
+        if [[ "$is_strix_halo" == "true" ]]; then
+            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds Halo GPU budget ${_gpu_budget_gb}GB)"
+        else
+            log_info "MoE expert weights pinned to CPU RAM (model ${size_gb}GB exceeds iGPU budget)"
+        fi
     fi
 
     # Clamp --cache-ram to available memory on tight systems (e.g. 24 GB
