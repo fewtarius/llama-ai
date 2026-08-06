@@ -1497,15 +1497,91 @@ if [[ -n "$_user_kv_cache_set" ]]; then
     KV_CACHE_TYPE_V="$_user_kv_cache_v"
 fi
 
-# Check if this is a Qwen 3.x model and the fixed template exists
-# The fixed template fixes a looping issue with Qwen 3.x models
-MODEL_FILENAME=$(basename "$MODEL" .gguf)
-if echo "$MODEL_FILENAME" | grep -qiE "qwen3(\.|-)?(5|6|)"; then
-    FIXED_TEMPLATE="$PROJECT_ROOT/models/qwen3.5-fixed-template.jinja"
-    if [[ -f "$FIXED_TEMPLATE" ]]; then
-        EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --chat-template-file '$FIXED_TEMPLATE'"
-        log_info "Using fixed Qwen 3.x chat template: $FIXED_TEMPLATE"
+# Detect chat template based on model filename.
+# Returns template path or empty string.  llama.cpp falls back to built-in
+# templates when nothing is returned.
+detect_chat_template() {
+    local model_name="$1"
+
+    # Qwen 3.5/3.6 fixed template (local, fixes a looping issue)
+    if echo "$model_name" | grep -qiE "qwen3(\.|-)?(5|6)"; then
+        local fixed_t="$PROJECT_ROOT/models/qwen3.5-fixed-template.jinja"
+        if [[ -f "$fixed_t" ]]; then
+            echo "$fixed_t"
+            return
+        fi
+        # Fall through to CachyLLama template if local file is missing
     fi
+
+    # DeepSeek V4 Flash
+    if echo "$model_name" | grep -qiE "deepseek[_-]?v4[_-]?flash"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/deepseek-ai-DeepSeek-V4-Flash-0731.jinja"
+        return
+    fi
+
+    # DeepSeek V4 (non-Flash)
+    if echo "$model_name" | grep -qiE "deepseek[_-]?v4"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/deepseek-ai-DeepSeek-V4.jinja"
+        return
+    fi
+
+    # GLM-4.7-Flash
+    if echo "$model_name" | grep -qiE "glm[_-]?4[.]7[_-]?flash"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/GLM-4.7-Flash.jinja"
+        return
+    fi
+
+    # Qwen3-Coder
+    if echo "$model_name" | grep -qiE "qwen3[_-]?coder"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/Qwen3-Coder.jinja"
+        return
+    fi
+
+    # Qwen3 (generic, e.g. 235B) — use Qwen3 0.6B template
+    if echo "$model_name" | grep -qiE "^qwen3[0-9]*"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/Qwen-Qwen3-0.6B.jinja"
+        return
+    fi
+
+    # Laguna-S-2.1 (and variants like dflash)
+    if echo "$model_name" | grep -qiE "laguna[_-]?s[_-]?2[.]1"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/poolside-Laguna-S-2.1.jinja"
+        return
+    fi
+
+    # MiniMax-M2
+    if echo "$model_name" | grep -qiE "minimax[_-]?m2"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/MiniMax-M2.jinja"
+        return
+    fi
+
+    # gpt-oss (12b, 20b)
+    if echo "$model_name" | grep -qiE "gpt[_-]?oss"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/openai-gpt-oss-120b.jinja"
+        return
+    fi
+
+    # Qwen3.5-4B template works for 3.5 and 3.6 series
+    if echo "$model_name" | grep -qiE "qwen3[.]5"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/Qwen3.5-4B.jinja"
+        return
+    fi
+
+    # gemma-4
+    if echo "$model_name" | grep -qiE "gemma[_-]?4"; then
+        echo "$PROJECT_ROOT/CachyLLama/models/templates/google-gemma-4-31B-it-interleaved.jinja"
+        return
+    fi
+}
+
+# Extract model filename (basename without .gguf)
+MODEL_FILENAME=$(basename "$MODEL" .gguf)
+
+# Apply detected chat template
+_CHAT_TEMPLATE=$(detect_chat_template "$MODEL_FILENAME")
+if [[ -n "$_CHAT_TEMPLATE" && -f "$_CHAT_TEMPLATE" ]]; then
+    EXTRA_SERVER_ARGS="$EXTRA_SERVER_ARGS --chat-template-file '$_CHAT_TEMPLATE'"
+    log_info "Using chat template: $_CHAT_TEMPLATE"
 fi
 
 # CLI overrides take precedence over profile-set values. We re-parse
