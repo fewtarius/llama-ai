@@ -301,7 +301,7 @@ _detect_strix_halo() {
     esac
 
     echo 0
-    return 1
+    return 0
 }
 
 # Classify the hardware into a tier that downstream scripts can branch on.
