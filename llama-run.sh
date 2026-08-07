@@ -1073,17 +1073,10 @@ detect_chat_template() {
     local name="$1"
     local tbase="$PROJECT_ROOT/CachyLLama/models/templates"
     for pair in \
-        "qwen3(\.|-)?(5|6):$MODEL_DIR/qwen3.5-fixed-template.jinja" \
         "deepseek[_-]?v4[_-]?flash:$tbase/deepseek-ai-DeepSeek-V4-Flash-0731.jinja" \
-        "deepseek[_-]?v4:$tbase/deepseek-ai-DeepSeek-V4.jinja" \
         "glm[_-]?4[.]7[_-]?flash:$tbase/GLM-4.7-Flash.jinja" \
         "qwen3[_-]?coder:$tbase/Qwen3-Coder.jinja" \
-        "^qwen3[0-9]*:$tbase/Qwen-Qwen3-0.6B.jinja" \
-        "laguna[_-]?s[_-]?2[.]1:$tbase/poolside-Laguna-S-2.1.jinja" \
-        "minimax[_-]?m2:$tbase/MiniMax-M2.jinja" \
-        "gpt[_-]?oss:$tbase/openai-gpt-oss-120b.jinja" \
-        "qwen3[.]5:$tbase/Qwen3.5-4B.jinja" \
-        "gemma[_-]?4:$tbase/google-gemma-4-31B-it-interleaved.jinja"
+        "laguna[_-]?s[_-]?2[.]1:$tbase/poolside-Laguna-S-2.1.jinja"
     do
         local pattern="${pair%%:*}" file="${pair##*:}"
         if echo "$name" | grep -qiE "$pattern"; then
