@@ -593,6 +593,46 @@ _apply_moe_residency() {
     fi
 }
 
+# Detect if a dspark draft model exists for the given main model.
+# Returns the draft model path if found, empty string otherwise.
+# Example: DeepSeek-V4-Flash-0731-UD-IQ3_XXS -> dspark-DeepSeek-V4-Flash-0731-BF16.gguf
+_detect_dspark_draft_model() {
+    local model_path="$1"
+    local model_basename
+    model_basename=$(basename "$model_path")
+    
+    # For UD models, extract base name without quant suffix
+    # DeepSeek-V4-Flash-0731-UD-IQ3_XXS -> DeepSeek-V4-Flash-0731-BF16.gguf
+    # Handle split shards: strip the -XXXXX-of-XXXXX.gguf part first
+    if [[ "$model_basename" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
+        model_basename="${model_basename%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
+    fi
+    
+    local base_name
+    # Strategy: Remove the last segment (quant type), then check for UD suffix and remove it
+    base_name="${model_basename%-*}"
+    # Now base_name might be DeepSeek-V4-Flash-0731-UD
+    if [[ "$base_name" == *"-UD" ]]; then
+        base_name="${base_name%-UD}"
+    else
+        : # Already has the correct base name (no UD suffix)
+    fi
+    
+    # Check for dspark draft models in order of preference (largest to smallest)
+    # This allows users to choose which variant they want without modifying config
+    local draft_model
+    for _variant in BF16 Q8_0 MXFP4; do
+        draft_model="models/dspark-${base_name}-${_variant}.gguf"
+        if [[ -f "$draft_model" ]]; then
+            echo "$draft_model"
+            return 0
+        fi
+    done
+    
+    # No draft model found
+    echo ""
+}
+
 # -----------------------------------------------------------------------------
 # Halo presets (Radeon 8060S / Ryzen AI Max+ 395, 64-128 GB unified memory)
 # -----------------------------------------------------------------------------
@@ -605,6 +645,18 @@ _preset_halo_moe_large() {
     KV_CACHE_TYPE_K="q8_0"
     KV_CACHE_TYPE_V="q8_0"
     OVERRIDE_BATCH_SIZE="--batch-size 2048 --ubatch-size 512"
+    # Optional dspark speculative decoding if draft model exists
+    local _dspark_draft
+    _dspark_draft=$(_detect_dspark_draft_model "$MODEL")
+    if [[ -n "$_dspark_draft" ]]; then
+        log_info "dspark speculative decoding enabled: $_dspark_draft"
+        # dspark args: draft model path, spec type, max draft tokens, load mode, tensor bucket, fit off
+        EXTRA_SERVER_ARGS+=" -md $_dspark_draft"
+        EXTRA_SERVER_ARGS+=" --spec-type draft-dspark --spec-draft-n-max 3 --load-mode dio -tb 8 --fit off"
+    else
+        log_info "dspark speculative decoding not available (no draft model found)"
+    fi
+    # Base args: checkpoint step, ctx checkpoints, cache ram, flash attn
     EXTRA_SERVER_ARGS+=" --checkpoint-min-step 32768 --ctx-checkpoints 2 --cache-ram 8192 --flash-attn auto"
     _SSD_DISABLE=true
     _apply_reasoning_defaults
