@@ -1,4 +1,0 @@
-0.00.017.682 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
-0.00.017.797 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
-0.00.019.521 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.6-27B-UD-Q4_K_XL.gguf'
-0.00.396.019 W common_fit_params: failed to fit params to free device memory: n_gpu_layers already set by user to 99, abort

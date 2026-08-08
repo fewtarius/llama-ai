@@ -1,0 +1,78 @@
+{
+  "size_label": "large",
+  "size_bytes": 61440,
+  "cold": {
+    "prompt_tokens": 15381,
+    "completion_tokens": 128,
+    "cached_tokens": 0,
+    "prompt_ms": 45914.8,
+    "generation_ms": 5161.6,
+    "total_ms": 51076.4,
+    "ttft_ms": 45914.8,
+    "wall_ttft_ms": 51117,
+    "tps": 24.8,
+    "prompt_tps": 335.0,
+    "prompt_per_token_ms": 3.0,
+    "predicted_per_token_ms": 40.3,
+    "wall_ms": 51117
+  },
+  "warm": {
+    "prompt_tokens": 15381,
+    "completion_tokens": 128,
+    "cached_tokens": 15380,
+    "prompt_ms": 237.3,
+    "generation_ms": 5129.3,
+    "total_ms": 5366.6,
+    "ttft_ms": 237.3,
+    "wall_ttft_ms": 5408,
+    "tps": 25.0,
+    "prompt_tps": 64827.3,
+    "prompt_per_token_ms": 237.3,
+    "predicted_per_token_ms": 40.1,
+    "wall_ms": 5408
+  },
+  "cache_cold": {
+    "cache_state": "miss",
+    "ssd_stored": 3,
+    "divergences": 0,
+    "total_checkpoints": 3
+  },
+  "cache_warm": {
+    "cache_state": "ssd_warm",
+    "ssd_stored": 1,
+    "divergences": 0,
+    "total_checkpoints": 2
+  },
+  "moe_cold": {
+    "enabled": false,
+    "present": false
+  },
+  "moe_warm": {
+    "enabled": false,
+    "present": false
+  },
+  "profile": {
+    "profile": "dense-large",
+    "features": [
+      "no-checkpoint-near-end",
+      "kv-unified"
+    ]
+  },
+  "ssd_size": {
+    "bytes": 609625364,
+    "mib": 581.4,
+    "files": 5
+  },
+  "prompt_eval_speedup": 193.49,
+  "ttft_speedup": 9.45,
+  "cold_prompt_tps": 335.0,
+  "warm_prompt_tps": 64827.3,
+  "cold_ppt_ms": 3.0,
+  "warm_ppt_ms": 237.3,
+  "cold_gen_ppt_ms": 40.3,
+  "warm_gen_ppt_ms": 40.1,
+  "cold_ttft_ms": 45914.8,
+  "warm_ttft_ms": 237.3,
+  "cold_wall_ttft_ms": 51117,
+  "warm_wall_ttft_ms": 5408
+}

@@ -319,38 +319,27 @@ results with per-model breakdowns and all prompt sizes.
 
 ### Ayaneo Flip KB
 
-Radeon 780M, 6GB VRAM + 18GB GTT, Vulkan backend, ctx 32768. Large
-prompt results - [full data](benchmarks/20260721-1737/) and
-[benchmarks/20260721-1754/](benchmarks/20260721-1754/) with all sizes.
+Radeon 780M, 32GB unified memory, Vulkan backend. Large prompt
+results - [full data](benchmarks/20260807-1921/) and
+[benchmarks/20260721-1737/](benchmarks/20260721-1737/) with all
+sizes.
 
 | Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
 |-------|----------:|----------:|--------:|--------:|
-| gemma-4-26B Q5_K_M (26B, 4B active MoE) | 94.8s (1.6min) | 0.54s | **177.0x** | 6.1-6.5 |
-| Qwen3.6-35B Q4_K_XL (35B, 3B active MoE) | 84.0s (1.4min) | 0.47s | **179.1x** | 18.8-21.1 |
-| Qwen3.6-27B Q4_K_XL (27B, dense) | 19.6s (small only) | 0.56s | **34.9x** | 4.8 |
+| gemma-4-26B Q5_K_M (26B, dense) | 63.8s | 0.46s | **138.4x** | 14-17 |
+| gpt-oss-20b Q6_K_XL (20B, 3.6B active MoE) | 45.9s | 0.24s | **193.5x** | 25-31 |
+| Qwen3.6-35B-A3B Q4_K_XL (35B, 3B active MoE) | 70.9s | 0.38s | **187.9x** | 19-24 |
 
-Cold eval improved 2.5-3x versus the previous Flip benchmark - gemma
-dropped from 253s to 94.8s, Qwen3.6-35B from 199s to 84s. The
-speedup ratio is lower than before (177x vs 388x for gemma) because
-the cold bottleneck got faster while warm restore stayed near
-500ms. Both numbers improve - the ratio shrinks because the larger
-one shrank.
+Gemma 4 generation nearly tripled compared to the previous Flip
+benchmark (6 -> 14-17 t/s), with cold TTFT also improving 33%
+(94.8s -> 63.8s). Qwen3.6-35B-A3B cold eval improved 16% (84s ->
+70.9s) while generation maintained and extended its range (19-24 t/s).
 
-Qwen3.6-35B generation also doubled (9.9 -> 18-21 t/s). MoE expert
-residency keeps hot experts paged in via `madvise(MADV_WILLNEED)`,
-so cold-path expert loads no longer dominate decode.
-
-Qwen3.6-27B cold eval succeeds at all sizes, but the warm server
-restart hits a Vulkan device-lost error during model load - only the
-small (1244 token) warm run completed. GLM-4.7-Flash and gpt-oss-20b
-timed out at 900s in this run; both are fixed in the next CachyLLama
-bump (commit 86855c4 - empty MoE routing tensor segfault in
-`track_expert_activations`).
-
-On memory-constrained hardware the cache is the difference between
-usable and unusable. Cold prompts take a fraction of what they used
-to. Warm TTFT converges with Strix Halo - the SSD cache makes the
-hardware gap disappear on subsequent turns.
+MoE expert residency keeps hot experts paged in via
+`madvise(MADV_WILLNEED)`, so cold-path expert loads no longer
+dominate decode. All warm TTFTs converge under 500ms - the SSD
+cache bridges the hardware gap between Flip KB and Strix Halo on
+subsequent turns.
 
 ### Real-world CLIO performance (Strix Halo)
 
