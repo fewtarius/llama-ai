@@ -518,15 +518,17 @@ _detect_dspark_draft_model() {
 }
 
 _detect_dflash_draft_model() {
-    # Mirrors _detect_dspark_draft_model but for DFlash block-diffusion drafts.
-    # Currently used by Laguna-S 2.1 (user keeps `laguna-s-2.1-dflash-BF16.gguf`
-    # next to the main model). Searches $MODEL_DIR for `<stem>-dflash-{Q8_0,BF16,F16}.gguf`
-    # where <stem> strips shard suffix and `-UD` quant tag from the main model
-    # name. Falls back to a loose scan for files containing the lowercased
-    # main-model stem followed by `-dflash-` so uploads with a different
-    # quantifier ordering still match (e.g. the existing poolside layout
-    # `laguna-s-2.1-dflash-BF16.gguf` matches the loose fallback because the
-    # lowercased `Laguna-S-2.1` base appears in the dflash filename).
+    # Case-insensitive stem match for DFlash block-diffusion drafts.
+    # Currently used by Laguna-S 2.1: main = `Laguna-S-2.1-UD-Q4_K_XL-...gguf`,
+    # draft = `Laguna-S-2.1-DFlash-BF16.gguf` (note uppercase `DFlash` and a
+    # different quantifier than the main model -- dflash drafts are not
+    # quant-matched). Uses `find -iname` to enumerate candidates case-
+    # insensitively (bash globs are case-sensitive even with `[Dd]` work-
+    # arounds; `[[ -f "$f" ]]` also does not expand globs inside a quoted
+    # variable, so a regex pattern built into $f never matches). Anchors a
+    # case-insensitive regex against each candidate basename so a draft for
+    # an unrelated model sitting in the same shared models dir can't false-
+    # match.
     local model_path="$1"
     local base=$(basename "$model_path")
     if [[ "$base" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
@@ -534,25 +536,18 @@ _detect_dflash_draft_model() {
     fi
     base="${base%-*}"
     [[ "$base" == *"-UD" ]] && base="${base%-UD}"
-    # Strict: exact stem match with quant suffix
-    for v in Q8_0 BF16 F16; do
-        local f="$MODEL_DIR/${base}-dflash-${v}.gguf"
-        [[ -f "$f" ]] && echo "$f" && return
-    done
-    # Loose: any dflash file in $MODEL_DIR that contains the lowercased
-    # base (e.g. main=Laguna-S-2.1-UD-Q4_K_XL..., dflash=laguna-s-2.1-dflash-BF16).
-    # Prevents false positives where an unrelated draft model happens to
-    # share the directory (e.g. on a shared models mount).
+
     local base_lc=$(echo "$base" | tr '[:upper:]' '[:lower:]')
-    if [[ -n "$base_lc" ]]; then
-        for f in "$MODEL_DIR"/*-dflash-Q8_0.gguf "$MODEL_DIR"/*-dflash-BF16.gguf; do
-            [[ -f "$f" ]] || continue
-            local fb=$(basename "$f")
-            if echo "$fb" | grep -qi "${base_lc}.*-dflash"; then
-                echo "$f" && return
-            fi
-        done
-    fi
+    [[ -z "$base_lc" ]] && { echo ""; return; }
+
+    local f fb
+    while IFS= read -r -d '' f; do
+        fb=$(basename "$f")
+        # Stem must appear immediately before -dflash-, anchored start to end
+        if echo "$fb" | grep -qiE "^${base_lc}-dflash-[A-Za-z0-9_]+\.gguf$"; then
+            echo "$f" && return
+        fi
+    done < <(find "$MODEL_DIR" -maxdepth 1 -iname '*-dflash-*.gguf' -print0 2>/dev/null)
     echo ""
 }
 
