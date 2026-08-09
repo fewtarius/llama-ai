@@ -1245,7 +1245,7 @@ else
 fi
 
 # Preserve reasoning template kwarg
-[[ "$PRESERVE_REASONING" == "true" ]] && SERVER_ARGS+=" --reasoning-preserve"
+[[ "$PRESERVE_REASONING" == "true" ]] && SERVER_ARGS+=" --reasoning-preserve --chat-template-kwargs '{\"preserve_thinking\":true}'"
 
 # SSD cache (if enabled)
 if [[ -n "$SSD_PATH" && "${_SSD_DISABLE:-false}" != "true" ]]; then
