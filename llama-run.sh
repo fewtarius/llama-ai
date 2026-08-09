@@ -265,7 +265,12 @@ assign_profile() {
     if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
         is_ssm=true
     fi
-    _scan_gguf_arch "$model_path"   # sets is_moe / is_ssm if not already set
+    # Initialise is_mtp explicitly so unset state under `set -u` is safe;
+    # _scan_gguf_arch() flips it to true when the GGUF header carries
+    # `nextn_predict_layers` plus a `nextn.eh_proj` tensor (Qwen 3.5/3.6
+    # via qwen35moe, DeepSeek-V4, etc.). See _scan_gguf_arch() for details.
+    is_mtp="false"
+    _scan_gguf_arch "$model_path"   # sets is_moe / is_ssm / is_mtp
 
     # Threads
     if [[ -z "${LLAMA_THREADS:-}" ]]; then
@@ -397,6 +402,34 @@ assign_profile() {
         [[ -n "$prof_dspark" ]] && log_info "dspark speculative decoding not available (no draft model found)"
     fi
 
+    # MTP (Multi-Token Prediction) speculative decoding. Triggered when the
+    # GGUF header carries `nextn_predict_layers > 0` -- the MTP head tensors
+    # (blk.N.nextn.{eh_proj,enorm,hnorm,shared_head_*,embed_tokens}) live in
+    # the same file as the main model, so no separate `-md` is needed.
+    # Currently exercised by Qwen 3.5/3.6 (qwen35 / qwen35moe arch) and
+    # DeepSeek-V4 (deepseek4). `--spec-draft-n-max 2` is Unsloth's
+    # recommendation for Qwen 3.6: each MTP forward emits one token and the
+    # driver loops to draft a small block before target verification.
+    # `--fit off` keeps llama.cpp from auto-fitting the second MTP context.
+    if [[ "${is_mtp:-false}" == "true" ]]; then
+        log_info "MTP speculative decoding enabled (--spec-type draft-mtp --spec-draft-n-max 2)"
+        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max 2 --fit off"
+    fi
+
+    # DFlash block-diffusion speculative decoding. Triggered when a matching
+    # `<stem>-dflash-{Q8_0,BF16,F16}.gguf` (or any loose `*-dflash-Q8_0.gguf`)
+    # exists in $MODEL_DIR next to the main model. Currently used by
+    # Laguna-S 2.1 (the user keeps `laguna-s-2.1-dflash-BF16.gguf` next to
+    # `Laguna-S-2.1-UD-Q4_K_XL-...`). `--spec-draft-n-max 15` matches the
+    # default block size for Qwen3-backbone DFlash drafts (clamped server-
+    # side to the trained block size of the draft). MTP is preferred when
+    # the target carries MTP heads (no extra draft model load needed).
+    prof_dflash="$(_detect_dflash_draft_model "$MODEL")"
+    if [[ -n "$prof_dflash" ]]; then
+        log_info "DFlash speculative decoding enabled: $prof_dflash"
+        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max 15 --fit off"
+    fi
+
     : "${prof_cache_ram:=$(compute_cache_ram)}"
     EXTRA_SERVER_ARGS+=" --cache-ram $prof_cache_ram"
 
@@ -415,6 +448,18 @@ _scan_gguf_arch() {
     if grep -q 'expert_count' "$tmp" 2>/dev/null; then is_moe=true; fi
     if grep -q 'ssm\.' "$tmp" 2>/dev/null && ! grep -q 'full_attention_interval' "$tmp" 2>/dev/null && [[ "${is_moe:-false}" != "true" ]]; then
         is_ssm=true
+    fi
+    # MTP head detection. `nextn_predict_layers` is the per-arch key written
+    # by `LLM_KV_NEXTN_PREDICT_LAYERS` (e.g. `qwen35moe.nextn_predict_layers`)
+    # and lives in the GGUF KV-metadata section -- always within the first
+    # 16 KiB so `dd bs=16384 count=1` covers it. Architectures with native
+    # MTP support include qwen3next / qwen35 / qwen35moe / deepseek4 /
+    # deepseek2 / cohere2moe / bailingmoe2 / deepseek32. We do NOT also
+    # grep for `nextn.eh_proj` tensor names because those live in the
+    # tensor-info section after KV metadata and are often beyond the 16 KiB
+    # window -- false negatives, not false positives, are the risk.
+    if grep -q 'nextn_predict_layers' "$tmp" 2>/dev/null; then
+        is_mtp=true
     fi
     rm -f "$tmp"
 }
@@ -469,6 +514,45 @@ _detect_dspark_draft_model() {
         local f="$MODEL_DIR/dspark-${base}-${v}.gguf"
         [[ -f "$f" ]] && echo "$f" && return
     done
+    echo ""
+}
+
+_detect_dflash_draft_model() {
+    # Mirrors _detect_dspark_draft_model but for DFlash block-diffusion drafts.
+    # Currently used by Laguna-S 2.1 (user keeps `laguna-s-2.1-dflash-BF16.gguf`
+    # next to the main model). Searches $MODEL_DIR for `<stem>-dflash-{Q8_0,BF16,F16}.gguf`
+    # where <stem> strips shard suffix and `-UD` quant tag from the main model
+    # name. Falls back to a loose scan for files containing the lowercased
+    # main-model stem followed by `-dflash-` so uploads with a different
+    # quantifier ordering still match (e.g. the existing poolside layout
+    # `laguna-s-2.1-dflash-BF16.gguf` matches the loose fallback because the
+    # lowercased `Laguna-S-2.1` base appears in the dflash filename).
+    local model_path="$1"
+    local base=$(basename "$model_path")
+    if [[ "$base" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
+        base="${base%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
+    fi
+    base="${base%-*}"
+    [[ "$base" == *"-UD" ]] && base="${base%-UD}"
+    # Strict: exact stem match with quant suffix
+    for v in Q8_0 BF16 F16; do
+        local f="$MODEL_DIR/${base}-dflash-${v}.gguf"
+        [[ -f "$f" ]] && echo "$f" && return
+    done
+    # Loose: any dflash file in $MODEL_DIR that contains the lowercased
+    # base (e.g. main=Laguna-S-2.1-UD-Q4_K_XL..., dflash=laguna-s-2.1-dflash-BF16).
+    # Prevents false positives where an unrelated draft model happens to
+    # share the directory (e.g. on a shared models mount).
+    local base_lc=$(echo "$base" | tr '[:upper:]' '[:lower:]')
+    if [[ -n "$base_lc" ]]; then
+        for f in "$MODEL_DIR"/*-dflash-Q8_0.gguf "$MODEL_DIR"/*-dflash-BF16.gguf; do
+            [[ -f "$f" ]] || continue
+            local fb=$(basename "$f")
+            if echo "$fb" | grep -qi "${base_lc}.*-dflash"; then
+                echo "$f" && return
+            fi
+        done
+    fi
     echo ""
 }
 
@@ -955,6 +1039,7 @@ OVERRIDE_CACHE_RAM=""
 OVERRIDE_UBATCH_SIZE=""
 OVERRIDE_N_PARALLEL=""
 SSD_PATH=""
+SSD_CHECKPOINTS=""
 SSD_HOT_WINDOW=""
 SSD_WARM_WINDOW=""
 SSD_MAX_COLD=""
