@@ -251,6 +251,13 @@ assign_profile() {
     local is_strix_halo="false"
     [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] && is_strix_halo="true"
 
+    # Initialize MoE/SSM flags (globals so _scan_gguf_arch can toggle them).
+    # Filename pattern + GGUF header probe may flip them below; without an
+    # explicit default, dense models (no experts, no SSM) leave is_moe/is_ssm
+    # unset and `set -u` blows up at line 397 (unbound variable).
+    is_moe="false"
+    is_ssm="false"
+
     # Architecture detection
     if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
         is_moe=true
