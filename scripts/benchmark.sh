@@ -76,25 +76,24 @@ log_warn()  { printf '%b[WARN]%b  %s\n' "$YELLOW" "$NC" "$1"; }
 log_error() { printf '%b[ERROR]%b %s\n' "$RED" "$NC" "$1"; }
 log_header(){ printf '%b=== %s ===%b\n' "$MAGENTA" "$1" "$NC"; }
 
-# Models to test - auto-discovered from models/ directory.
-# Excludes GGUF split-file shards (e.g. model-00002-of-00005.gguf).
-# Set --model to test a specific model only.
-discover_models() {
-    local -a found=()
-    for f in "$MODEL_DIR"/*.gguf; do
-        [[ -f "$f" ]] || continue
-        local name
-        name=$(basename "$f")
-        # Skip split-file shards (contain -NNNNN-of-NNNNN in filename)
-        if [[ "$name" =~ -[0-9]{5}-of-[0-9]{5}\.gguf$ ]]; then
-            continue
-        fi
-        found+=("$name:")
-    done
-    printf '%s\n' "${found[@]}"
-}
+# Models to test are auto-discovered from $MODEL_DIR by the sourceable
+# helper at scripts/lib-discover-models.sh. The helper:
+#   * Walks the directory dynamically (no hard-coded list)
+#   * Skips DFlash draft artifacts (e.g. *-DFlash-BF16.gguf) - these
+#     are speculative-decoder weights, not standalone target models
+#   * Skips non-first shards of multipart models
+#   * Keeps the first shard of complete multipart sets, verifies all
+#     other shards are present and non-empty (incomplete sets are
+#     skipped with a warning)
+#   * Does not recurse into subdirectories (e.g. models/disable/)
+#   * Emits results in sorted order with the `<name>:` sentinel
+# Set --model to test a specific model only (bypasses discovery).
+# shellcheck source=scripts/lib-discover-models.sh
+source "$SCRIPT_DIR/lib-discover-models.sh"
 
-mapfile -t MODELS < <(discover_models)
+mapfile -t MODELS < <(discover_models "$MODEL_DIR")
+
+log_info "Discovered ${#MODELS[@]} benchmarkable model(s) in $MODEL_DIR"
 
 # If no models found, show error
 if [[ ${#MODELS[@]} -eq 0 ]]; then
