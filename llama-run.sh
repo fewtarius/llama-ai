@@ -420,14 +420,18 @@ assign_profile() {
     # `<stem>-dflash-{Q8_0,BF16,F16}.gguf` (or any loose `*-dflash-Q8_0.gguf`)
     # exists in $MODEL_DIR next to the main model. Currently used by
     # Laguna-S 2.1 (the user keeps `laguna-s-2.1-dflash-BF16.gguf` next to
-    # `Laguna-S-2.1-UD-Q4_K_XL-...`). `--spec-draft-n-max 15` matches the
-    # default block size for Qwen3-backbone DFlash drafts (clamped server-
-    # side to the trained block size of the draft). MTP is preferred when
-    # the target carries MTP heads (no extra draft model load needed).
+    # `Laguna-S-2.1-UD-Q4_K_XL-...`). `n_max=7` is empirical: DFlash drafts
+    # in `block_size=16` chunks (server logs confirm) but observed draft
+    # acceptance on Laguna is ~21% with mean accepted batch length ~2.5
+    # tokens, so larger n_max wastes draft forward passes on tokens that
+    # will be rejected; 7 sits just above the natural acceptance ceiling
+    # and leaves headroom for occasional longer matches without inflating
+    # per-batch overhead. MTP is preferred when the target carries MTP
+    # heads (no extra draft model load needed).
     prof_dflash="$(_detect_dflash_draft_model "$MODEL")"
     if [[ -n "$prof_dflash" ]]; then
         log_info "DFlash speculative decoding enabled: $prof_dflash"
-        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max 15 --fit off"
+        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max 7 --fit off"
     fi
 
     : "${prof_cache_ram:=$(compute_cache_ram)}"
