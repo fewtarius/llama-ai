@@ -59,6 +59,16 @@ source "$PROJECT_ROOT/scripts/detect-gpu.sh"
 : "${LLAMA_SSD_NO_FSYNC:=false}"
 : "${LLAMA_FIT:=off}"
 
+# Speculative decoding tuning. Each spec type has a tuned default for the
+# empirically-best `n_max`. Set LLAMA_SPEC_DRAFT_N_MAX (a single value) as
+# a fallback that applies to every spec type when its per-type variant is
+# left at the hardcoded default. Per-type values win over the global
+# fallback (set LLAMA_SPEC_DRAFT_N_MAX_DSPARK=5 to override only DSpark).
+: "${LLAMA_SPEC_DRAFT_N_MAX:=}"
+: "${LLAMA_SPEC_DRAFT_N_MAX_DSPARK:=${LLAMA_SPEC_DRAFT_N_MAX:-3}}"  # DeepSeek Spark - tuned 2026-08
+: "${LLAMA_SPEC_DRAFT_N_MAX_MTP:=${LLAMA_SPEC_DRAFT_N_MAX:-2}}"     # Qwen 3.5/3.6 MTP head - Unsloth rec
+: "${LLAMA_SPEC_DRAFT_N_MAX_DFLASH:=${LLAMA_SPEC_DRAFT_N_MAX:-7}}"  # Laguna block-diffusion - tuned 2026-08
+
 # Platform detection
 if [[ "$(uname -s)" == "Darwin" ]]; then
     IS_DARWIN=true
@@ -168,14 +178,222 @@ _detect_gpu_budget() {
     echo "$budget"
 }
 
+# Structured RAM-budget breakdown. Populated by compute_ram_budget_breakdown()
+# so compute_cache_ram() and print_profile_summary() can both report the
+# per-component accounting. Format: one "label=bytes" entry per line.
+# Caller sums the bytes; the labels are for display.
+_RAM_BUDGET_BREAKDOWN=""
+
+# Sum the bytes values in a "label=bytes" breakdown (one entry per line).
+# Echoes the integer total. Lines that don't parse cleanly are skipped
+# (defensive against upstream whitespace / comment edits).
+_sum_ram_breakdown() {
+    local total=0
+    while IFS='=' read -r label bytes; do
+        [[ -z "$label" || "$label" == \#* ]] && continue
+        [[ "$bytes" =~ ^[0-9]+$ ]] || continue
+        total=$(( total + bytes ))
+    done <<< "$1"
+    echo "$total"
+}
+
+# Compute the structured RAM-budget breakdown (one "label=bytes" entry per
+# line, stored in $_RAM_BUDGET_BREAKDOWN). Every component represents RAM
+# the server will consume on top of the target model's weights; cache-ram
+# must be sized so the sum of all entries plus MODEL_BYTES still fits
+# within GPU_BUDGET_BYTES.
+#
+# Components:
+#   ssd_hot       SSD KV cache hot-tier RAM buffer (LLAMA_SSD_HOT_RAM MiB)
+#   ssd_warm      SSD KV cache warm-tier RAM buffer (LLAMA_SSD_WARM_RAM MiB)
+#   draft_model   DSpark / DFlash draft model file size
+#   draft_kv      Draft model KV cache (target ctx × draft K/V types)
+#   mtp_context   MTP head speculative decoding context overhead
+#   ngram_cache   n-gram speculative decoding tables (ngram-simple/mod/map/cache)
+#   lookup_cache  --lookup-cache-static/-dynamic in-memory corpus
+#   parallel_kv   Extra KV cache for --np > 1 slots
+#   cpu_moe_model Target model bytes (only when --cpu-moe + --load-mode none is predicted)
+#   general       General reserve (scales 4-11 GiB with --ubatch-size)
+#
+# Always-on (every profile): `general`.
+# Conditional on profile state: every other component.
+compute_ram_budget_breakdown() {
+    local budget="${GPU_BUDGET_BYTES:-0}"
+    local total_mem=$(get_total_memory_bytes)
+    local breakdown=""
+
+    # SSD hot/warm RAM buffers (only when SSD cache is enabled by profile).
+    # Default hot=960 MiB + warm=1440 MiB = 2400 MiB always-on RAM when SSD
+    # is active. halo-* profiles disable SSD entirely; std-* profiles enable
+    # it by default. See _apply_ssd_defaults() for the value plumbing.
+    if [[ "${_SSD_DISABLE:-false}" != "true" ]]; then
+        local ssd_hot_mib="${LLAMA_SSD_HOT_RAM:-0}"
+        local ssd_warm_mib="${LLAMA_SSD_WARM_RAM:-0}"
+        breakdown+="ssd_hot=$(( ssd_hot_mib * 1048576 ))"$'\n'
+        breakdown+="ssd_warm=$(( ssd_warm_mib * 1048576 ))"$'\n'
+    fi
+
+    # Draft model file size + KV cache (DSpark / DFlash). DSpark uses a
+    # small draft (1-3 GiB typical, e.g. DeepSeek-V4-Flash DSpark Q8_0);
+    # DFlash uses the full decoder-side architecture (5-15 GiB typical,
+    # e.g. Laguna-S-2.1 DFlash BF16). Both get their own KV cache sized
+    # to the TARGET's n_ctx at --cache-type-k-draft/-v-draft (default
+    # f16, see common.h params.speculative.draft.cache_type_k default).
+    # Confirmed in tools/server/server-context.cpp:1209-1259 (ctx_dft
+    # uses cparams_dft = common_context_params_to_llama(params_dft)
+    # which sets cparams.n_ctx = params.n_ctx = target n_ctx).
+    #
+    # Estimate draft KV cache as 30% of draft file size: covers typical
+    # ctx*layers*embd*K+V bytes for small quant drafts at default ctx.
+    # Min 256 MiB so tiny drafts still get sensible headroom.
+    #
+    # draft path lookup: prefer the pre-detected globals (prof_dspark /
+    # prof_dflash, populated in assign_profile()), but fall back to
+    # parsing EXTRA_SERVER_ARGS when this function is called from
+    # print_profile_summary() -- at which point the locals from
+    # assign_profile() have already gone out of scope.
+    local draft_path=""
+    [[ -n "${prof_dspark:-}" ]] && draft_path="$prof_dspark"
+    [[ -z "$draft_path" && -n "${prof_dflash:-}" ]] && draft_path="$prof_dflash"
+    if [[ -z "$draft_path" && -n "${EXTRA_SERVER_ARGS:-}" ]]; then
+        # Fallback: extract from " -md <path>" already in EXTRA_SERVER_ARGS.
+        # Matches both DSpark and DFlash drafts (both add "-md <draft>").
+        draft_path=$(echo "${EXTRA_SERVER_ARGS:-}" | sed -nE 's/.* -md ([^ ]+).*/\1/p' | head -1)
+        [[ "$draft_path" == *"-spec-type"* ]] && draft_path=""  # safety: -md might match other args
+    fi
+    if [[ -n "$draft_path" && -f "$draft_path" ]]; then
+        local draft_bytes=$(stat -c%s "$draft_path" 2>/dev/null || stat -f%z "$draft_path" 2>/dev/null || echo 0)
+        breakdown+="draft_model=$draft_bytes"$'\n'
+        local draft_kv=$(( draft_bytes * 30 / 100 ))
+        [[ $draft_kv -lt $(( 256 * 1048576 )) ]] && draft_kv=$(( 256 * 1048576 ))
+        [[ $draft_kv -gt $(( 8 * 1048576 * 1024 / 10 )) ]] && draft_kv=$(( 8 * 1048576 * 1024 / 10 ))  # cap at 800 MiB
+        breakdown+="draft_kv=$draft_kv"$'\n'
+    fi
+
+    # MTP context overhead. MTP creates an LLAMA_CONTEXT_TYPE_MTP context
+    # on the target model (server-context.cpp:1264-1282) with its own KV
+    # cache at draft K/V types (default f16). The context size = target
+    # n_ctx (no separate spec-draft-ctx-size flag exists). Estimate as
+    # 10% of target MODEL_BYTES with [1 GiB, 4 GiB] bounds -- covers KV
+    # cache + compute buffers + scratch for typical MTP head counts
+    # (nextn_predict_layers=1-4).
+    if [[ "${is_mtp:-false}" == "true" ]]; then
+        local mtp_ctx=$(( MODEL_BYTES / 10 ))
+        [[ $mtp_ctx -lt $(( 1 * 1048576 * 1024 )) ]] && mtp_ctx=$(( 1 * 1048576 * 1024 ))
+        [[ $mtp_ctx -gt $(( 4 * 1048576 * 1024 )) ]] && mtp_ctx=$(( 4 * 1048576 * 1024 ))
+        breakdown+="mtp_context=$mtp_ctx"$'\n'
+    fi
+
+    # n-gram speculative decoding tables (ngram-simple, ngram-mod,
+    # ngram-map, ngram-cache). ngram_simple/mod/map store hash tables
+    # in RAM; --spec-ngram-mod-n-max (default 64) and
+    # --spec-ngram-simple-size-m (default 48) bound growth (common.h
+    # common_params_speculative_ngram_mod / _ngram_map). Small flat
+    # 256 MiB allocation.
+    if [[ "${EXTRA_SERVER_ARGS:-}" == *"ngram"* ]] || \
+       [[ "${LLAMA_SPEC_TYPE:-}" == *"ngram"* ]]; then
+        breakdown+="ngram_cache=$(( 256 * 1048576 ))"$'\n'
+    fi
+
+    # Lookup cache (--lookup-cache-static/-dynamic). In-memory text
+    # corpus hash table, scales with corpus size. Small flat 256 MiB
+    # allocation -- only on if paths are explicitly set.
+    if [[ -n "${LLAMA_LOOKUP_CACHE_STATIC:-}" ]] || [[ -n "${LLAMA_LOOKUP_CACHE_DYNAMIC:-}" ]]; then
+        breakdown+="lookup_cache=$(( 256 * 1048576 ))"$'\n'
+    fi
+
+    # Additional parallel slots (--np > 1). Each extra slot needs its
+    # own KV cache sized to CTX_SIZE × n_layer × n_embd × K+V bytes.
+    # Without reading GGUF metadata we estimate 5% of MODEL_BYTES per
+    # slot (dense 7B at 32k ctx ≈ 0.5 GiB; dense 70B at 32k ctx ≈
+    # 5 GiB; the 5%-of-model heuristic matches the middle of that
+    # range). Floor 512 MiB per slot so small models don't under-budget.
+    local n_parallel="${OVERRIDE_N_PARALLEL:-1}"
+    [[ -z "$n_parallel" || $n_parallel -lt 1 ]] && n_parallel=1
+    if [[ $n_parallel -gt 1 ]]; then
+        local extra_slots=$(( n_parallel - 1 ))
+        local per_slot=$(( MODEL_BYTES * 5 / 100 ))
+        [[ $per_slot -lt $(( 512 * 1048576 )) ]] && per_slot=$(( 512 * 1048576 ))
+        breakdown+="parallel_kv=$(( extra_slots * per_slot ))"$'\n'
+    fi
+
+    # General reserve: compute buffers, llama.cpp internal state, sampler
+    # chains, grammar buffers, scratch for matmul workspaces, slot state
+    # per parallel slot. Scales with --ubatch-size because compute buffer
+    # pools grow with batch size (flash-attn working memory roughly doubles
+    # per ubatch step). Floor 4 GiB for std-* profiles, ~11 GiB for
+    # halo-moe-large (ubatch=4096, batch=4096 -- flash-attn forward
+    # buffers hit 1-2 GiB alone, compute pool another 4-6 GiB).
+    #   ubatch=512  -> 4 GiB  (ssm profile)
+    #   ubatch=1024 -> 5 GiB  (std-moe-large / std-dense-*)
+    #   ubatch=2048 -> 7 GiB  (large dense)
+    #   ubatch=4096 -> 11 GiB (halo-moe-large)
+    # 4 GiB floor keeps std-moe-large on Flip (26 GiB OS-visible, 20 GiB
+    # MoE + 2.4 GiB SSD + 5 GiB reserve) at 0 MiB cache-ram when full
+    # --cpu-moe + --load-mode none is in play -- matches the LTM-stated
+    # 2 GiB cap with system overhead trimmed. Was 3 GiB flat previously.
+    local ubatch=1024
+    if [[ -n "${OVERRIDE_BATCH_SIZE:-}" ]]; then
+        local _ub
+        _ub=$(echo "${OVERRIDE_BATCH_SIZE:-}" | sed -nE 's/.*--ubatch-size ([0-9]+).*/\1/p' | head -1)
+        [[ -n "$_ub" && "$_ub" =~ ^[0-9]+$ ]] && ubatch="$_ub"
+    fi
+    local general_reserve_mib=$(( 4 * 1024 + (ubatch * 2) ))
+    [[ $general_reserve_mib -gt $(( 12 * 1024 )) ]] && general_reserve_mib=$(( 12 * 1024 ))
+    breakdown+="general=$(( general_reserve_mib * 1048576 ))"$'\n'
+
+    # MoE --cpu-moe + --load-mode none prediction. If the model will be
+    # loaded fully into RAM (MoE + exceeds GPU budget + fits in system
+    # RAM), subtract its size from the cache-ram budget. This avoids
+    # proposing a cache-ram that overlaps with the in-RAM model and
+    # crashes the server at startup. Without this, the std-moe-large
+    # profile on Flip (24 GiB GPU budget, 20+ GiB Q4_K_XL MoE) would
+    # propose a cache-ram that's already accounted for as the model's
+    # own RAM footprint.
+    if [[ "${is_moe:-false}" == "true" && $MODEL_BYTES -gt $budget && $MODEL_BYTES -lt $total_mem ]]; then
+        breakdown+="cpu_moe_model=$MODEL_BYTES"$'\n'
+    fi
+
+    # Strip trailing newline so callers can store cleanly.
+    _RAM_BUDGET_BREAKDOWN="${breakdown%$'\n'}"
+}
+
+# Compute --cache-ram in MiB, leaving room for every enabled RAM consumer
+# tracked by compute_ram_budget_breakdown() plus the model + a 6 GiB
+# general reserve. Caches the breakdown in $_RAM_BUDGET_BREAKDOWN for the
+# profile summary to display.
+#
+# Base formula (preserved from previous version):
+#     max_cache = GPU_BUDGET_BYTES - MODEL_BYTES - reserve
+# where reserve is now the SUM of every component in the breakdown (not a
+# flat 3 GiB). For typical std-* profiles this nets slightly less cache-ram
+# (e.g. 26-3-20 = 3 → 26-20-2.4-6 = -2.4 = 0 MiB on std-moe-large Flip),
+# which matches the actual --cpu-moe + --load-mode none RAM footprint
+# (no room for in-memory checkpoints when model occupies everything).
 compute_cache_ram() {
+    compute_ram_budget_breakdown
+    local breakdown_total=$(_sum_ram_breakdown "$_RAM_BUDGET_BREAKDOWN")
     local model_bytes="${MODEL_BYTES:-0}"
     local budget="${GPU_BUDGET_BYTES:-0}"
     local cache_mib=8192
-    if [[ $budget -gt 0 && $model_bytes -gt 0 ]]; then
-        local max_cache=$((budget - 3*1024*1024*1024 - model_bytes))
+    if [[ $budget -gt 0 ]]; then
+        # If the breakdown already accounts for MODEL_BYTES (cpu-moe
+        # case -- model loaded into RAM via --load-mode none), skip the
+        # extra `- model_bytes` to avoid double-counting. Otherwise the
+        # model is on GPU and we subtract it from the GPU budget as
+        # before.
+        local has_cpu_moe="false" _lbl
+        while IFS='=' read -r _lbl _; do
+            [[ "$_lbl" == "cpu_moe_model" ]] && has_cpu_moe="true"
+        done <<< "$_RAM_BUDGET_BREAKDOWN"
+        local max_cache
+        if [[ "$has_cpu_moe" == "true" ]]; then
+            max_cache=$((budget - breakdown_total))
+        else
+            max_cache=$((budget - breakdown_total - model_bytes))
+        fi
         if [[ $max_cache -gt 0 ]]; then
-            cache_mib=$((max_cache / 1024 / 1024))
+            cache_mib=$((max_cache / 1048576))
         else
             cache_mib=0
         fi
@@ -298,7 +516,6 @@ assign_profile() {
     local prof_name="" prof_dspark=""
     local prof_slot_sim="" prof_no_checkpoint_end=""
     local prof_reasoning_budget="${LLAMA_REASONING_BUDGET}"
-    local prof_reasoning="on"
     local prof_cache_ram=""   # if non-empty, forces --cache-ram
 
     # Determine profile parameters
@@ -323,7 +540,6 @@ assign_profile() {
             prof_checkpoint_min=32768
             prof_ctx_checkpoints=2
             prof_ssd_disable="true"
-            prof_dspark=$(_detect_dspark_draft_model "$MODEL")
         else
             prof_name="halo-moe-small"
             prof_ctx=196608
@@ -394,44 +610,67 @@ assign_profile() {
     # Override reasoning budget if profile wants a different one (currently all 2048)
     OVERRIDE_REASONING_BUDGET="$prof_reasoning_budget"
 
-    # dspark speculative decoding (halo-moe-large)
-    if [[ -n "$prof_dspark" ]]; then
-        log_info "dspark speculative decoding enabled: $prof_dspark"
-        EXTRA_SERVER_ARGS+=" -md $prof_dspark --spec-type draft-dspark --spec-draft-n-max 6 --fit off"
-    else
-        [[ -n "$prof_dspark" ]] && log_info "dspark speculative decoding not available (no draft model found)"
+    # ------------------------------------------------------------------
+    # Speculative decoding (mutually exclusive: DSpark / DFlash / MTP).
+    # Each branch adds `-md <draft> --spec-type <type> --spec-draft-n-max N
+    # --fit off` to EXTRA_SERVER_ARGS. Priority is DSpark (DeepSeek's own
+    # Spark draft) > DFlash (block-diffusion, e.g. Laguna) > MTP (head
+    # self-speculative; no separate draft file needed). n_max values are
+    # tuned per-type and overridable via the LLAMA_SPEC_DRAFT_N_MAX_*
+    # environment variables at the top of the file.
+    #
+    # Pre-detect DSpark and DFlash candidates BEFORE picking the winner
+    # so compute_cache_ram() (called below) can size --cache-ram against
+    # the draft's file size + KV cache cost. DSpark and DFlash are not
+    # mutually exclusive at the file-system level (both may exist in
+    # $MODEL_DIR); only the winner is actually loaded, but both must be
+    # checked so we know the cost up front.
+    # ------------------------------------------------------------------
+    if [[ -z "${prof_dspark:-}" ]]; then
+        prof_dspark=$(_detect_draft_model "$MODEL" "dspark")
+    fi
+    if [[ -z "${prof_dflash:-}" ]]; then
+        prof_dflash=$(_detect_draft_model "$MODEL" "dflash")
     fi
 
-    # MTP (Multi-Token Prediction) speculative decoding. Triggered when the
-    # GGUF header carries `nextn_predict_layers > 0` -- the MTP head tensors
-    # (blk.N.nextn.{eh_proj,enorm,hnorm,shared_head_*,embed_tokens}) live in
-    # the same file as the main model, so no separate `-md` is needed.
-    # Currently exercised by Qwen 3.5/3.6 (qwen35 / qwen35moe arch) and
-    # DeepSeek-V4 (deepseek4). `--spec-draft-n-max 2` is Unsloth's
-    # recommendation for Qwen 3.6: each MTP forward emits one token and the
-    # driver loops to draft a small block before target verification.
-    # `--fit off` keeps llama.cpp from auto-fitting the second MTP context.
-    if [[ "${is_mtp:-false}" == "true" ]]; then
-        log_info "MTP speculative decoding enabled (--spec-type draft-mtp --spec-draft-n-max 2)"
-        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max 2 --fit off"
-    fi
+    # DSpark (DeepSeek Spark) draft. Triggered when a matching
+    # `<stem>-DSpark-{Q8_0,BF16,MXFP4}.gguf` exists in $MODEL_DIR next to
+    # the main model. Currently used by DeepSeek-V4-Flash on halo-moe-large.
+    # `n_max=4` is tuned for DeepSeek-V4-Flash: above this the draft starts
+    # to spend cycles on tokens that get rejected, below it the target
+    # spends more time verifying individual drafts. See _detect_draft_model
+    # for the matching convention (case-insensitive `-DSpark-` suffix).
+    if [[ -n "$prof_dspark" ]]; then
+        log_info "DSpark speculative decoding enabled: $prof_dspark (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DSPARK)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dspark --spec-type draft-dspark --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DSPARK --fit off"
+
+    # MTP (Multi-Token Prediction) head self-speculative decoding. The MTP
+    # head tensors (blk.N.nextn.{eh_proj,enorm,hnorm,shared_head_*,
+    # embed_tokens}) live in the same GGUF as the main model, so no
+    # separate `-md` is needed. Triggered when the GGUF header carries
+    # `nextn_predict_layers > 0` (architectures: qwen3next / qwen35 /
+    # qwen35moe / deepseek4 / deepseek2 / cohere2moe / bailingmoe2 /
+    # deepseek32). `n_max=2` is Unsloth's recommendation for Qwen 3.6:
+    # each MTP forward emits one token and the driver loops to draft a
+    # small block before target verification.
+    elif [[ "${is_mtp:-false}" == "true" ]]; then
+        log_info "MTP speculative decoding enabled (n_max=$LLAMA_SPEC_DRAFT_N_MAX_MTP)"
+        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_MTP --fit off"
 
     # DFlash block-diffusion speculative decoding. Triggered when a matching
-    # `<stem>-dflash-{Q8_0,BF16,F16}.gguf` (or any loose `*-dflash-Q8_0.gguf`)
-    # exists in $MODEL_DIR next to the main model. Currently used by
-    # Laguna-S 2.1 (the user keeps `laguna-s-2.1-dflash-BF16.gguf` next to
+    # `<stem>-DFlash-*.gguf` exists in $MODEL_DIR. Currently used by
+    # Laguna-S 2.1 (`Laguna-S-2.1-DFlash-BF16.gguf` next to
     # `Laguna-S-2.1-UD-Q4_K_XL-...`). `n_max=7` is empirical: DFlash drafts
     # in `block_size=16` chunks (server logs confirm) but observed draft
     # acceptance on Laguna is ~21% with mean accepted batch length ~2.5
     # tokens, so larger n_max wastes draft forward passes on tokens that
     # will be rejected; 7 sits just above the natural acceptance ceiling
     # and leaves headroom for occasional longer matches without inflating
-    # per-batch overhead. MTP is preferred when the target carries MTP
-    # heads (no extra draft model load needed).
-    prof_dflash="$(_detect_dflash_draft_model "$MODEL")"
-    if [[ -n "$prof_dflash" ]]; then
-        log_info "DFlash speculative decoding enabled: $prof_dflash"
-        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max 7 --fit off"
+    # per-batch overhead. prof_dflash is pre-detected above so the
+    # cache-ram budget can account for its cost.
+    elif [[ -n "$prof_dflash" ]]; then
+        log_info "DFlash speculative decoding enabled: $prof_dflash (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DFLASH)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DFLASH --fit off"
     fi
 
     : "${prof_cache_ram:=$(compute_cache_ram)}"
@@ -506,52 +745,46 @@ _apply_moe_streaming() {
     fi
 }
 
-_detect_dspark_draft_model() {
-    local model_path="$1"
-    local base=$(basename "$model_path")
+# Find an auxiliary draft model next to the main model. Auxiliary models
+# follow the convention `<main-base>-<TAG>-<quant>.gguf` where TAG is the
+# lowercased draft architecture name (e.g. "dspark" for DeepSeek Spark,
+# "dflash" for Laguna DFlash block diffusion). Match is anchored end-to-
+# end and case-insensitive so a draft for an unrelated model in a shared
+# models dir cannot false-match. Drafts are not quant-matched to the main
+# model -- e.g. `<base>-DSpark-Q8_0.gguf` and `<base>-DFlash-BF16.gguf` are
+# both valid drafts for the same main model across quants. Returns the
+# first matching file path, or empty string.
+#
+# Usage: _detect_draft_model "$MODEL" "<tag>"
+_detect_draft_model() {
+    local model_path="$1" tag_lc="$2"
+    [[ -z "$tag_lc" ]] && { echo ""; return; }
+
+    local base
+    base=$(basename "$model_path")
+    # Strip shard suffix "-NNNNN-of-NNNNN.gguf" if present
     if [[ "$base" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
         base="${base%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
     fi
+    # Strip trailing quant segment and -UD marker so the stem matches the
+    # draft's stem (drafts are not quant-matched to the main model).
     base="${base%-*}"
     [[ "$base" == *"-UD" ]] && base="${base%-UD}"
-    for v in BF16 Q8_0 MXFP4; do
-        local f="$MODEL_DIR/dspark-${base}-${v}.gguf"
-        [[ -f "$f" ]] && echo "$f" && return
-    done
-    echo ""
-}
+    [[ -z "$base" ]] && { echo ""; return; }
 
-_detect_dflash_draft_model() {
-    # Case-insensitive stem match for DFlash block-diffusion drafts.
-    # Currently used by Laguna-S 2.1: main = `Laguna-S-2.1-UD-Q4_K_XL-...gguf`,
-    # draft = `Laguna-S-2.1-DFlash-BF16.gguf` (note uppercase `DFlash` and a
-    # different quantifier than the main model -- dflash drafts are not
-    # quant-matched). Uses `find -iname` to enumerate candidates case-
-    # insensitively (bash globs are case-sensitive even with `[Dd]` work-
-    # arounds; `[[ -f "$f" ]]` also does not expand globs inside a quoted
-    # variable, so a regex pattern built into $f never matches). Anchors a
-    # case-insensitive regex against each candidate basename so a draft for
-    # an unrelated model sitting in the same shared models dir can't false-
-    # match.
-    local model_path="$1"
-    local base=$(basename "$model_path")
-    if [[ "$base" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
-        base="${base%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
-    fi
-    base="${base%-*}"
-    [[ "$base" == *"-UD" ]] && base="${base%-UD}"
-
-    local base_lc=$(echo "$base" | tr '[:upper:]' '[:lower:]')
-    [[ -z "$base_lc" ]] && { echo ""; return; }
-
+    local base_lc
+    base_lc=$(echo "$base" | tr '[:upper:]' '[:lower:]')
     local f fb
     while IFS= read -r -d '' f; do
         fb=$(basename "$f")
-        # Stem must appear immediately before -dflash-, anchored start to end
-        if echo "$fb" | grep -qiE "^${base_lc}-dflash-[A-Za-z0-9_]+\.gguf$"; then
+        # Anchored regex: stem immediately followed by -<tag>- then any
+        # quant-ish token and .gguf. bash globs / [[ -f ]] do not expand
+        # patterns inside quoted variables and are case-sensitive, so we
+        # lowercase both sides and use grep -qiE for the match.
+        if echo "$fb" | grep -qiE "^${base_lc}-${tag_lc}-[A-Za-z0-9_]+\.gguf$"; then
             echo "$f" && return
         fi
-    done < <(find "$MODEL_DIR" -maxdepth 1 -iname '*-dflash-*.gguf' -print0 2>/dev/null)
+    done < <(find "$MODEL_DIR" -maxdepth 1 -iname "*-${tag_lc}-*.gguf" -print0 2>/dev/null)
     echo ""
 }
 
@@ -1197,8 +1430,79 @@ strip_and_append() {
 # -----------------------------------------------------------------------------
 # Profile summary (for --print-profile or startup)
 # -----------------------------------------------------------------------------
+
+# Parse a single `--flag VALUE` (or `-f VALUE`) occurrence from
+# EXTRA_SERVER_ARGS. Echoes the first VALUE, or prints $2 if absent.
+_extract_arg() {
+    local flag="$1" fallback="$2"
+    local val
+    val=$(echo "$EXTRA_SERVER_ARGS" | sed -nE "s/.* ${flag} ([^ ]+).*/\\1/p" | head -1)
+    [[ -z "$val" ]] && val="$fallback"
+    echo "$val"
+}
+
+# Parse a single boolean `--flag` (no value) presence check from
+# EXTRA_SERVER_ARGS. Echoes yes/no.
+_has_flag() {
+    local flag="$1"
+    if [[ "$EXTRA_SERVER_ARGS" == *" ${flag} "* || "$EXTRA_SERVER_ARGS" == *" ${flag}" ]]; then
+        echo yes
+    else
+        echo no
+    fi
+}
+
 print_profile_summary() {
-    local cache_ram_val=$(echo "$EXTRA_SERVER_ARGS" | grep -o '\--cache-ram [0-9]*' | awk '{print $2}' | tail -1)
+    local cache_ram_val load_mode flash_attn slot_sim
+    local spec_type spec_n_max spec_draft
+    local moe_strategy checkpoint_min checkpoint_count no_near_end
+    local chat_template
+
+    cache_ram_val=$(_extract_arg --cache-ram "0")
+    load_mode=$(_extract_arg --load-mode "${LLAMA_LOAD_MODE}")
+    flash_attn=$(_extract_arg --flash-attn "${LLAMA_FLASH_ATTN}")
+    slot_sim=$(_extract_arg --slot-prompt-similarity "")
+    spec_type=$(_extract_arg --spec-type "")
+    spec_n_max=$(_extract_arg --spec-draft-n-max "")
+    checkpoint_min=$(_extract_arg --checkpoint-min-step "")
+    checkpoint_count=$(_extract_arg --ctx-checkpoints "")
+
+    # Chat template: --chat-template-file value (or model default if unset).
+    # Value is single-quoted in EXTRA_SERVER_ARGS, so we strip the quotes.
+    local _ct
+    _ct=$(echo "$EXTRA_SERVER_ARGS" | sed -nE "s/.*--chat-template-file '([^']+)'.*/\\1/p" | head -1)
+    [[ -z "$_ct" ]] && chat_template="model default" || chat_template=$(basename "$_ct")
+
+    # Draft model path (DSpark / DFlash) via -md. MTP self-speculative, no
+    # draft file -- leave spec_draft empty so the display shows "self".
+    spec_draft=$(echo "$EXTRA_SERVER_ARGS" | sed -nE 's/.* -md ([^ ]+).*/\1/p' | head -1)
+    if [[ -n "$spec_draft" ]]; then
+        spec_draft=$(basename "$spec_draft" .gguf)
+    fi
+
+    # MoE expert strategy. Order matters: --cpu-moe is most aggressive (all
+    # experts on host RAM, --load-mode none), --moe-expert-residency is the
+    # mmap'd middle path, neither means experts stay on GPU.
+    if [[ "$EXTRA_SERVER_ARGS" == *" --cpu-moe "* ]]; then
+        if [[ "$EXTRA_SERVER_ARGS" == *" --load-mode none "* ]]; then
+            moe_strategy="cpu-moe + --load-mode none (RAM)"
+        else
+            moe_strategy="cpu-moe (mmap)"
+        fi
+    elif [[ "$EXTRA_SERVER_ARGS" == *" --moe-expert-residency "* ]]; then
+        moe_strategy="residency (madvise tracking)"
+    else
+        moe_strategy="GPU (--no-residency)"
+    fi
+
+    # Spec decode summary. spec_type may be a comma-separated list (e.g.
+    # "ngram-simple,draft-mtp"); display the highest-priority entry.
+    if [[ -n "$spec_type" ]]; then
+        spec_type="${spec_type%%,*}"
+        spec_type="draft-${spec_type#draft-}"
+    fi
+    no_near_end=$(_has_flag --no-checkpoint-near-end)
+
     printf '%b─── Profile ──────────────────────────────────────────────%b\n' "$BLUE" "$NC"
     printf '  %-28s %s\n' "Model:"           "$(basename "$MODEL" .gguf)"
     printf '  %-28s %s\n' "Profile:"         "${profile_name:-unknown}"
@@ -1207,18 +1511,53 @@ print_profile_summary() {
     printf '  %-28s %s\n' "GPU layers:"      "${GPU_LAYERS:-99}"
     printf '  %-28s %s\n' "Context size:"    "${CTX_SIZE}"
     printf '  %-28s %s\n' "Threads:"         "${THREADS}"
-    printf '  %-28s %s/%s\n' "KV cache type:"  "${KV_CACHE_TYPE_K}" "${KV_CACHE_TYPE_V}"
-    printf '  %-28s %s\n' "Batch/UBatch:"    "${OVERRIDE_BATCH_SIZE:-}"
-    printf '  %-28s %s\n' "Reasoning:"       "${OVERRIDE_REASONING:-off}"
-    printf '  %-28s %s\n' "Cache RAM:"       "${cache_ram_val:--}"
+    printf '  %-28s %s/%s\n' "KV cache type:"   "${KV_CACHE_TYPE_K}" "${KV_CACHE_TYPE_V}"
+    printf '  %-28s %s\n' "Batch/UBatch:"    "${OVERRIDE_BATCH_SIZE:-default}"
+    printf '  %-28s %s\n' "Spec decode:"     "$( [[ -n "$spec_type" ]] && echo "$spec_type (n_max=$spec_n_max, draft=${spec_draft:-self})" || echo "off" )"
+    printf '  %-28s %s\n' "MoE experts:"     "$moe_strategy"
+    printf '  %-28s %s\n' "Load mode:"       "$load_mode"
+    printf '  %-28s %s\n' "Flash attention:" "$flash_attn"
+    printf '  %-28s %s\n' "Reasoning:"       "${OVERRIDE_REASONING:-off} (budget=${OVERRIDE_REASONING_BUDGET:-0})"
+    printf '  %-28s %s\n' "Cache RAM:"       "$( [[ "$cache_ram_val" == "0" ]] && echo disabled || echo "${cache_ram_val} MiB" )"
+    printf '  %-28s %s\n' "Checkpoints:"     "$( [[ -n "$checkpoint_min" ]] && echo "min=$checkpoint_min, count=${checkpoint_count:--}${no_near_end:+ (no-near-end)}" || echo "off" )"
+    printf '  %-28s %s\n' "Slot similarity:" "${slot_sim:-default}"
+    printf '  %-28s %s\n' "Chat template:"   "$chat_template"
     printf '  %-28s %s\n' "SSD cache:"       "$( [[ "${_SSD_DISABLE:-false}" == "true" ]] && echo disabled || echo "${SSD_PATH:-default}" )"
     printf '  %-28s %s\n' "System cache:"    "$( [[ "${_SSD_DISABLE:-false}" == "true" ]] && echo disabled || echo "${SSD_SYSTEM_PROMPTS:-off} entries" )"
     printf '  %-28s %s\n' "SSD no-fsync:"    "${SSD_NO_FSYNC:-no}"
     printf '  %-28s %s\n' "Mlock:"           "$( [[ "$(ulimit -l 2>/dev/null)" == "unlimited" ]] && echo yes || echo "no (limit: $(ulimit -l) KiB)" )"
-    printf '%b──────────────────────────────────────────────────────────%b\n' "$BLUE" "$NC"
+
+    # RAM budget breakdown. Shows exactly what was subtracted from the
+    # GPU budget to land on the final --cache-ram value, so the user
+    # can see the impact of each enabled parameter (SD draft, SSD, MTP,
+    # n-gram caches, --np, etc.). Skip the section if there's nothing
+    # to show (CPU-only backend or no budget).
+    if [[ ${GPU_BUDGET_BYTES:-0} -gt 0 ]]; then
+        compute_ram_budget_breakdown
+        local budget_gib=$(awk -v b="$GPU_BUDGET_BYTES" 'BEGIN { printf "%.1f", b / 1073741824 }')
+        printf '%b─── RAM Budget ─────────────────────────────────────────────%b\n' "$BLUE" "$NC"
+        printf '  %-28s %s GiB\n' "GPU budget:" "$budget_gib"
+        printf '  %-28s %s GiB\n' "Target model:" "$(awk -v b="$MODEL_BYTES" 'BEGIN { printf "%.1f", b / 1073741824 }')"
+        local _label _bytes _mib
+        while IFS='=' read -r _label _bytes; do
+            [[ -z "$_label" || "$_label" == \#* ]] && continue
+            [[ "$_bytes" =~ ^[0-9]+$ ]] || continue
+            _mib=$(( _bytes / 1048576 ))
+            # Only show meaningful entries (>= 64 MiB -- otherwise it's
+            # rounding noise on a 6 GiB budget).
+            [[ $_mib -lt 64 ]] && continue
+            printf '  %-28s %s MiB\n' "  - ${_label}:" "$_mib"
+        done <<< "$_RAM_BUDGET_BREAKDOWN"
+        printf '  %-28s %s MiB\n' "Available for cache-ram:" "${cache_ram_val}"
+        printf '%b──────────────────────────────────────────────────────────%b\n' "$BLUE" "$NC"
+    fi
 }
 
 if $PRINT_PROFILE; then
+    # Formatted human-readable summary first (matches what --server shows).
+    print_profile_summary
+    echo ""
+    # Then variable dump for scripting. Output is parseable as `key=value`.
     cat <<PROFILE_EOF
 CTX_SIZE=$CTX_SIZE
 MODEL_PATH='$MODEL'
