@@ -9,9 +9,10 @@
 # `IFS=':' read -r model extra_flags` parsing in the benchmark loop).
 #
 # Filters applied (in this order):
-#   1. DFlash draft artifacts (`*-dflash-*.gguf`, case-insensitive) are
-#      skipped - these are speculative-decoder weights, not standalone
-#      target models.
+#   1. Speculative-decoding draft artifacts (`*-dflash-*`, `dspark-*`,
+#      and `mtp-*` sidecar prefixes, case-insensitive) are skipped -
+#      these are draft weights for parent-context decoder architectures,
+#      not standalone target models.
 #   2. Non-first shards of split GGUFs (`-NNNNN-of-NNNNN.gguf` where the
 #      leading NNNNN is not `00001`) are skipped - llama.cpp auto-loads
 #      subsequent shards when the first is passed to `-m`.
@@ -47,12 +48,20 @@ discover_models() {
         local name
         name=$(basename "$f")
 
-        # DFlash draft filter. Case-insensitive because upstream repos vary
-        # in casing (`*-dflash-*.gguf`, `*-DFlash-*.gguf`, `*-dFlash-*.gguf`
-        # are all common). The match anchors on `-dflash-` so a model like
-        # `flash-attention-Q4_K_M.gguf` is NOT excluded.
+        # Speculative-decoding draft filter. Three conventions in the wild:
+        #   * `-dflash-` infix (e.g. `Laguna-S-2.1-dflash-BF16.gguf`)
+        #     - target-arch-aware DFlash drafts (see
+        #     https://github.com/fewtarius/CachyLLama/blob/master/docs/dflash.md)
+        #   * `dspark-` prefix (e.g. `dspark-DeepSeek-V4-Flash-Q8_0.gguf`)
+        #     - DeepSeek's DFlash draft model; loaded as `-md` for the
+        #     target, fails standalone with `dflash requires ctx_other`
+        #   * `mtp-` prefix (e.g. `mtp-Qwen3-27B-Q4_K_M.gguf`)
+        #     - Multi-Token Prediction sidecar from the GGUF Naming spec
+        # Match case-insensitively because upstream casing varies. The
+        # anchors (`-dflash-`, `dspark-`, `mtp-`) are chosen so legitimate
+        # model names like `flash-attention-Q4_K_M.gguf` are NOT excluded.
         local name_lc="${name,,}"
-        if [[ "$name_lc" == *-dflash-* ]]; then
+        if [[ "$name_lc" == *-dflash-* || "$name_lc" == dspark-* || "$name_lc" == mtp-* ]]; then
             continue
         fi
 
