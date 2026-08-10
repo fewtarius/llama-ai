@@ -1,0 +1,954 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-Rex Parallax</title>
+<style>
+* { margin: 0; padding: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── Utility ───
+function lerp(a, b, t) { return a + (b - a) * t; }
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function rand(min, max) { return Math.random() * (max - min) + min; }
+
+// ─── Seeded random for consistent landscapes ───
+function seededRandom(seed) {
+  let s = seed;
+  return function() {
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280;
+  };
+}
+
+// ─── Time ───
+let time = 0;
+let lastTime = performance.now();
+const WALK_SPEED = 3.2;
+const WALK_CYCLE = 1.8;
+const GROUND_Y_RATIO = 0.78;
+
+// ─── Sky & Lighting ───
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, H * 0.75);
+  g.addColorStop(0, '#0a0518');
+  g.addColorStop(0.15, '#1a0a30');
+  g.addColorStop(0.3, '#3d1548');
+  g.addColorStop(0.45, '#8b2035');
+  g.addColorStop(0.55, '#d4502a');
+  g.addColorStop(0.65, '#f09030');
+  g.addColorStop(0.72, '#ffd060');
+  g.addColorStop(0.78, '#ffe8a0');
+  g.addColorStop(0.85, '#ffd880');
+  g.addColorStop(1, '#d49040');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+function drawSun() {
+  const sunX = W * 0.75;
+  const sunY = H * 0.58;
+  const sunR = Math.min(W, H) * 0.06;
+  // Glow layers
+  for (let i = 5; i >= 0; i--) {
+    const r = sunR * (1 + i * 1.8);
+    const a = 0.08 / (i * 0.5 + 1);
+    const g = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, r);
+    g.addColorStop(0, `rgba(255,220,120,${a})`);
+    g.addColorStop(0.5, `rgba(255,150,60,${a * 0.4})`);
+    g.addColorStop(1, 'rgba(255,100,30,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // Sun disc
+  const sg = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, sunR);
+  sg.addColorStop(0, '#fff8e0');
+  sg.addColorStop(0.7, '#ffe080');
+  sg.addColorStop(1, '#ffa030');
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
+  ctx.fillStyle = sg;
+  ctx.fill();
+}
+
+function drawLightRays() {
+  const sunX = W * 0.75;
+  const sunY = H * 0.58;
+  ctx.save();
+  ctx.globalAlpha = 0.04;
+  for (let i = 0; i < 7; i++) {
+    const angle = -0.4 + i * 0.15 + Math.sin(time * 0.1 + i) * 0.03;
+    ctx.beginPath();
+    ctx.moveTo(sunX, sunY);
+    ctx.lineTo(sunX + Math.cos(angle - 0.08) * H * 1.5, sunY + Math.sin(angle - 0.08) * H * 1.5);
+    ctx.lineTo(sunX + Math.cos(angle + 0.08) * H * 1.5, sunY + Math.sin(angle + 0.08) * H * 1.5);
+    ctx.closePath();
+    ctx.fillStyle = '#ffe8a0';
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ─── Clouds ───
+class Cloud {
+  constructor(scrollSpeed) {
+    this.x = rand(0, W * 2);
+    this.y = rand(H * 0.05, H * 0.35);
+    this.speed = scrollSpeed;
+    this.scale = rand(0.6, 1.6);
+    this.opaque = rand(0.1, 0.35);
+    // Cloud puff data
+    this.puffs = [];
+    const numPuffs = Math.floor(rand(4, 8));
+    for (let i = 0; i < numPuffs; i++) {
+      this.puffs.push({
+        dx: rand(-40, 40) * this.scale,
+        dy: rand(-15, 15) * this.scale,
+        r: rand(20, 45) * this.scale,
+      });
+    }
+  }
+  update(dt) {
+    this.x -= this.speed * dt * 30;
+    if (this.x < -200) this.x = W + 200;
+  }
+  draw() {
+    ctx.save();
+    ctx.globalAlpha = this.opaque;
+    for (const p of this.puffs) {
+      const g = ctx.createRadialGradient(this.x + p.dx, this.y + p.dy, 0,
+                                          this.x + p.dx, this.y + p.dy, p.r);
+      g.addColorStop(0, 'rgba(255,220,180,0.5)');
+      g.addColorStop(0.6, 'rgba(200,150,120,0.15)');
+      g.addColorStop(1, 'rgba(150,100,80,0)');
+      ctx.beginPath();
+      ctx.arc(this.x + p.dx, this.y + p.dy, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = g;
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+const clouds = [];
+for (let i = 0; i < 12; i++) {
+  clouds.push(new Cloud(rand(8, 25)));
+}
+
+// ─── Volcanoes (farthest layer) ───
+function drawVolcanoes(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  const scale = 0.7;
+  ctx.save();
+  ctx.translate(-offset * 0.1, 0);
+  // Draw multiple volcano groups
+  for (let i = -2; i < 8; i++) {
+    const vx = i * 350 + Math.sin(i * 2.7) * 80;
+    const vy = baseY - H * 0.18;
+    const hw = 180 * scale;
+    const h = 140 * scale;
+    // Mountain body
+    ctx.beginPath();
+    ctx.moveTo(vx - hw, baseY);
+    ctx.lineTo(vx - hw * 0.3, vy);
+    ctx.lineTo(vx - hw * 0.15, vy + 10 * scale);
+    ctx.lineTo(vx + hw * 0.15, vy + 10 * scale);
+    ctx.lineTo(vx + hw * 0.3, vy);
+    ctx.lineTo(vx + hw, baseY);
+    ctx.closePath();
+    const vg = ctx.createLinearGradient(vx, vy, vx, baseY);
+    vg.addColorStop(0, '#3d1a1a');
+    vg.addColorStop(0.3, '#2a1520');
+    vg.addColorStop(1, '#1a0a10');
+    ctx.fillStyle = vg;
+    ctx.fill();
+    // Smoke / ash
+    const smokeOffset = time * 20 + i * 100;
+    ctx.globalAlpha = 0.15;
+    for (let j = 0; j < 5; j++) {
+      const sx = vx + Math.sin(smokeOffset * 0.5 + j * 1.3) * (10 + j * 8);
+      const sy = vy - 10 - j * 25 - Math.sin(smokeOffset * 0.3 + j) * 5;
+      const sr = 8 + j * 6;
+      const sg2 = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+      sg2.addColorStop(0, 'rgba(120,100,90,0.3)');
+      sg2.addColorStop(1, 'rgba(80,60,50,0)');
+      ctx.beginPath();
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2);
+      ctx.fillStyle = sg2;
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // Lava glow on summit
+    const lavaGlow = 0.3 + Math.sin(time * 2 + i * 3) * 0.15;
+    ctx.beginPath();
+    ctx.ellipse(vx, vy + 12 * scale, 25 * scale, 8 * scale, 0, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(255,80,20,${lavaGlow})`;
+    ctx.fill();
+    const lg = ctx.createRadialGradient(vx, vy + 12 * scale, 0, vx, vy + 12 * scale, 40 * scale);
+    lg.addColorStop(0, `rgba(255,100,20,${lavaGlow * 0.5})`);
+    lg.addColorStop(1, 'rgba(255,50,10,0)');
+    ctx.beginPath();
+    ctx.arc(vx, vy + 12 * scale, 40 * scale, 0, Math.PI * 2);
+    ctx.fillStyle = lg;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ─── Distant Mountains ───
+function drawMountains(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  ctx.save();
+  ctx.translate(-offset * 0.15, 0);
+  ctx.beginPath();
+  ctx.moveTo(-200, baseY);
+  for (let x = -200; x < W + 500; x += 3) {
+    const nx = x + offset * 0.15;
+    const y = baseY - 60 - Math.sin(nx * 0.003) * 50 - Math.sin(nx * 0.007 + 1) * 30
+              - Math.sin(nx * 0.001 + 2) * 80 - Math.cos(nx * 0.005) * 20;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W + 300, baseY);
+  ctx.closePath();
+  const mg = ctx.createLinearGradient(0, baseY - 150, 0, baseY);
+  mg.addColorStop(0, '#2a1530');
+  mg.addColorStop(1, '#1a0a18');
+  ctx.fillStyle = mg;
+  ctx.fill();
+  ctx.restore();
+}
+
+// ─── Pterodactyls ───
+class Pterodactyl {
+  constructor(layer) {
+    this.layer = layer;
+    this.reset(true);
+  }
+  reset(init) {
+    this.y = rand(H * 0.1, H * 0.4);
+    if (init) {
+      this.x = rand(-200, W + 200);
+    } else {
+      this.x = W + rand(100, 400);
+    }
+    this.speed = rand(1.5, 3.5) * (this.layer === 'far' ? 0.5 : 1.2);
+    this.flapPhase = rand(0, Math.PI * 2);
+    this.flapSpeed = rand(3, 5);
+    this.size = this.layer === 'far' ? rand(8, 14) : rand(12, 22);
+    this.wingUp = 1;
+  }
+  update(dt) {
+    this.x -= this.speed * dt * 60;
+    this.flapPhase += this.flapSpeed * dt;
+    if (this.x < -100) this.reset(false);
+  }
+  draw() {
+    const s = this.size;
+    const wingAngle = Math.sin(this.flapPhase) * 0.8;
+    ctx.save();
+    ctx.translate(this.x, this.y);
+    // Body
+    ctx.fillStyle = this.layer === 'far' ? 'rgba(50,30,40,0.6)' : 'rgba(60,40,50,0.75)';
+    // Main body (elongated)
+    ctx.beginPath();
+    ctx.ellipse(0, 0, s * 0.8, s * 0.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Head/beak
+    ctx.beginPath();
+    ctx.moveTo(s * 0.7, 0);
+    ctx.lineTo(s * 1.5, s * 0.05);
+    ctx.lineTo(s * 0.7, -s * 0.08);
+    ctx.closePath();
+    ctx.fill();
+    // Crest
+    ctx.beginPath();
+    ctx.moveTo(s * 0.4, -s * 0.15);
+    ctx.lineTo(s * 0.6, -s * 0.5);
+    ctx.lineTo(s * 0.3, -s * 0.12);
+    ctx.fill();
+    // Wings
+    const wa = wingAngle;
+    // Left wing
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.2, 0);
+    ctx.quadraticCurveTo(-s * 0.3, -s * (0.8 + wa * 0.8), -s * 1.2, -s * (0.5 + wa * 0.6));
+    ctx.quadraticCurveTo(-s * 0.5, -s * 0.1, -s * 0.1, s * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    // Right wing
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.2, 0);
+    ctx.quadraticCurveTo(-s * 0.3, s * (0.8 + wa * 0.8), -s * 1.2, s * (0.5 + wa * 0.6));
+    ctx.quadraticCurveTo(-s * 0.5, s * 0.1, -s * 0.1, s * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    // Tail
+    ctx.beginPath();
+    ctx.moveTo(-s * 0.7, 0);
+    ctx.lineTo(-s * 1.5, s * 0.1);
+    ctx.lineTo(-s * 1.3, -s * 0.05);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+const pterodactyls = [];
+for (let i = 0; i < 5; i++) pterodactyls.push(new Pterodactyl('far'));
+for (let i = 0; i < 3; i++) pterodactyls.push(new Pterodactyl('near'));
+
+// ─── Distant Trees ───
+function drawDistantTree(x, baseY, scale) {
+  ctx.save();
+  ctx.translate(x, baseY);
+  ctx.scale(scale, scale);
+  // Trunk
+  ctx.fillStyle = '#1a0a08';
+  ctx.fillRect(-3, -80, 6, 80);
+  // Fronds (prehistoric palm-like)
+  for (let i = 0; i < 6; i++) {
+    const angle = -Math.PI * 0.8 + i * Math.PI * 0.32 + Math.sin(time * 0.5 + i) * 0.05;
+    const len = 50 + Math.sin(i * 2) * 15;
+    ctx.beginPath();
+    ctx.moveTo(0, -78);
+    ctx.quadraticCurveTo(
+      Math.cos(angle) * len * 0.5, -78 + Math.sin(angle) * len * 0.3,
+      Math.cos(angle) * len, -78 + Math.sin(angle) * len + 15
+    );
+    ctx.strokeStyle = '#15080a';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+    // Leaf edge details
+    for (let j = 1; j <= 4; j++) {
+      const t = j / 5;
+      const lx = lerp(0, Math.cos(angle) * len, t);
+      const ly = lerp(-78, -78 + Math.sin(angle) * len + 15, t);
+      const ltx = lerp(Math.cos(angle) * len * 0.5, Math.cos(angle) * len * 0.5, t) + Math.cos(angle + 0.5) * 8;
+      const lty = ly - 5;
+      ctx.beginPath();
+      ctx.moveTo(lx, ly);
+      ctx.lineTo(ltx, lty);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawDistantScenery(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  const rng = seededRandom(42);
+  ctx.save();
+  ctx.translate(-offset * 0.3, 0);
+  // Ferns
+  for (let i = -2; i < 15; i++) {
+    const fx = i * 200 + rng() * 100;
+    const fy = baseY - rand(5, 20);
+    const fs = rand(0.4, 0.8);
+    drawFern(fx, fy, fs);
+  }
+  // Distant trees
+  for (let i = -1; i < 10; i++) {
+    const tx = i * 350 + rng() * 120;
+    const ty = baseY;
+    const ts = rand(0.5, 1.2);
+    drawDistantTree(tx, ty, ts);
+  }
+  ctx.restore();
+}
+
+// ─── Ferns ───
+function drawFern(x, y, scale) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  const numFronds = Math.floor(rand(5, 10));
+  for (let i = 0; i < numFronds; i++) {
+    const angle = -Math.PI * 0.9 + (i / (numFronds - 1)) * Math.PI * 0.8;
+    const len = 25 + rand(0, 20);
+    const sway = Math.sin(time * 0.8 + i * 0.7 + x * 0.01) * 3;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    const endX = Math.cos(angle) * len;
+    const endY = Math.sin(angle) * len;
+    const cpX = endX * 0.6 + sway;
+    const cpY = endY * 0.7;
+    ctx.quadraticCurveTo(cpX, cpY, endX, endY);
+    ctx.strokeStyle = '#1a0a08';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    // Small leaflets
+    for (let j = 1; j <= 4; j++) {
+      const t = j / 5;
+      const lx = lerp(0, endX, t);
+      const ly = lerp(0, endY, t);
+      const cpx = lerp(0, cpX, t);
+      const cpy = lerp(0, cpY, t);
+      // quadratic curve point at t
+      const px = (1-t)*(1-t)*0 + 2*(1-t)*t*cpx + t*t*endX;
+      const py = (1-t)*(1-t)*0 + 2*(1-t)*t*cpy + t*t*endY;
+      const leafAngle = angle + (j % 2 === 0 ? 0.5 : -0.5);
+      const leafLen = 6 + rand(0, 4);
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(leafAngle) * leafLen, py + Math.sin(leafAngle) * leafLen);
+      ctx.strokeStyle = '#150808';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+// ─── Mid-ground Trees (larger) ───
+function drawMidTree(x, baseY, scale) {
+  ctx.save();
+  ctx.translate(x, baseY);
+  ctx.scale(scale, scale);
+  // Thick trunk
+  ctx.fillStyle = '#1a0806';
+  ctx.beginPath();
+  ctx.moveTo(-10, 0);
+  ctx.lineTo(-6, -120);
+  ctx.lineTo(6, -120);
+  ctx.lineTo(10, 0);
+  ctx.closePath();
+  ctx.fill();
+  // Canopy (prehistoric broad-leaf)
+  const sway = Math.sin(time * 0.4 + x * 0.01) * 2;
+  for (let i = 0; i < 8; i++) {
+    const a = -Math.PI * 0.9 + (i / 7) * Math.PI * 0.8;
+    const len = 40 + Math.sin(i * 3) * 15;
+    ctx.beginPath();
+    ctx.moveTo(0, -118);
+    ctx.quadraticCurveTo(
+      Math.cos(a) * len * 0.6 + sway,
+      -118 + Math.sin(a) * len * 0.5,
+      Math.cos(a) * len + sway,
+      -118 + Math.sin(a) * len + 10
+    );
+    ctx.strokeStyle = '#0e0608';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+// ─── Mid-ground Scenery ───
+function drawMidScenery(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  const rng = seededRandom(137);
+  ctx.save();
+  ctx.translate(-offset * 0.5, 0);
+  for (let i = -2; i < 12; i++) {
+    const fx = i * 150 + rng() * 80;
+    drawFern(fx, baseY - 2, rand(0.8, 1.5));
+  }
+  for (let i = -1; i < 8; i++) {
+    const tx = i * 300 + rng() * 100;
+    drawMidTree(tx, baseY, rand(0.6, 1.0));
+  }
+  ctx.restore();
+}
+
+// ─── Ground ───
+function drawGround(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  // Main ground
+  ctx.save();
+  ctx.translate(-offset * 1.0, 0);
+  const gg = ctx.createLinearGradient(0, baseY - 5, 0, H);
+  gg.addColorStop(0, '#2a1810');
+  gg.addColorStop(0.1, '#201208');
+  gg.addColorStop(0.5, '#150a05');
+  gg.addColorStop(1, '#0a0502');
+  ctx.fillStyle = gg;
+  // Slightly uneven ground surface
+  ctx.beginPath();
+  ctx.moveTo(-100, baseY);
+  for (let x = -100; x < W + 200; x += 5) {
+    const y = baseY + Math.sin(x * 0.02 + offset * 0.005) * 3 + Math.sin(x * 0.05) * 1.5;
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(W + 200, H + 50);
+  ctx.lineTo(-100, H + 50);
+  ctx.closePath();
+  ctx.fill();
+
+  // Ground texture - small pebbles and details
+  const rng = seededRandom(999);
+  for (let i = 0; i < 80; i++) {
+    const gx = i * 25 + rng() * 20;
+    const gy = baseY + 10 + rng() * (H - baseY - 10);
+    const gs = 1 + rng() * 3;
+    ctx.beginPath();
+    ctx.arc(gx, gy, gs, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${60 + rng() * 30},${35 + rng() * 20},${15 + rng() * 15},${0.2 + rng() * 0.3})`;
+    ctx.fill();
+  }
+
+  // Scattering rocks
+  for (let i = 0; i < 15; i++) {
+    const rx = i * 130 + rng() * 60;
+    const ry = baseY + 5 + rng() * 15;
+    const rs = 3 + rng() * 8;
+    ctx.beginPath();
+    ctx.ellipse(rx, ry, rs, rs * 0.5, rng() * 0.5, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${50 + rng() * 25},${30 + rng() * 15},${15 + rng() * 10},0.4)`;
+    ctx.fill();
+  }
+
+  ctx.restore();
+
+  // Foreground ground strip (doesn't scroll much, adds depth)
+  ctx.save();
+  ctx.translate(-offset * 1.0, 0);
+  const fgY = baseY + 15;
+  const fgG = ctx.createLinearGradient(0, fgY, 0, H);
+  fgG.addColorStop(0, '#1a0e08');
+  fgG.addColorStop(1, '#0a0502');
+  ctx.fillStyle = fgG;
+  ctx.fillRect(-100, fgY, W + 300, H - fgY + 50);
+  ctx.restore();
+}
+
+// ─── Foreground Scenery ───
+function drawForegroundScenery(offset) {
+  const baseY = H * GROUND_Y_RATIO;
+  const rng = seededRandom(777);
+  ctx.save();
+  ctx.translate(-offset * 1.2, 0);
+  // Big ferns in foreground
+  for (let i = 0; i < 10; i++) {
+    const fx = i * 180 + rng() * 100;
+    drawFern(fx, baseY - 3, rand(1.2, 2.0));
+  }
+  ctx.restore();
+}
+
+// ─── T-Rex ───
+const TREX = {
+  bodyX: 0, bodyY: 0,
+  bodyLen: 120, bodyWidth: 42,
+  tailLen: 90,
+  headLen: 45, headHeight: 28,
+  legLen: 65,
+  scale: 1.1,
+};
+
+function drawTRex(cx, groundY) {
+  const s = TREX.scale;
+  const bx = cx;
+  const by = groundY - TREX.legLen * s - 20 * s;
+  const walkT = (time * WALK_SPEED / WALK_CYCLE) % 1;
+
+  // Body tilt (subtle bounce and pitch)
+  const bounce = Math.sin(walkT * Math.PI * 2) * 3 * s;
+  const bodyTilt = Math.sin(walkT * Math.PI * 2) * 0.03;
+
+  ctx.save();
+  ctx.translate(bx, by + bounce);
+  ctx.rotate(bodyTilt);
+  ctx.scale(s, s);
+
+  // ─── Legs ───
+  const legPivots = [
+    { phase: 0,   x: -15, y: 10 },   // back leg pivot
+    { phase: 0.5, x: -15, y: 10 },   // front leg pivot
+  ];
+
+  for (let li = 0; li < 2; li++) {
+    const lp = legPivots[li];
+    const legPhase = walkT + lp.phase;
+    const legSwing = Math.sin(legPhase * Math.PI * 2) * 0.55;
+    const legBend = Math.max(0, Math.sin(legPhase * Math.PI * 2)) * 0.4;
+
+    ctx.save();
+    ctx.translate(lp.x, lp.y);
+
+    // Thigh
+    ctx.rotate(legSwing);
+    const thighLen = TREX.legLen * 0.5;
+    const shinLen = TREX.legLen * 0.5;
+
+    // Draw thigh
+    ctx.save();
+    ctx.rotate(0);
+    ctx.fillStyle = li === 0 ? '#3a2a1a' : '#4a3a2a'; // back vs front
+    ctx.beginPath();
+    ctx.ellipse(0, thighLen * 0.45, 10, thighLen * 0.45, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Shin pivot (knee area)
+    ctx.translate(0, thighLen);
+    ctx.rotate(-legBend);
+
+    // Shin
+    ctx.fillStyle = li === 0 ? '#2e2012' : '#3e3022';
+    ctx.beginPath();
+    ctx.ellipse(0, shinLen * 0.4, 7, shinLen * 0.4, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Foot
+    ctx.translate(0, shinLen);
+    // Foot points
+    ctx.fillStyle = '#2a1e10';
+    ctx.beginPath();
+    ctx.moveTo(-5, 0);
+    ctx.lineTo(18, 4);
+    ctx.lineTo(15, 8);
+    ctx.lineTo(-3, 6);
+    ctx.closePath();
+    ctx.fill();
+
+    // Toes/claws
+    ctx.fillStyle = '#554a30';
+    for (let t = 0; t < 3; t++) {
+      ctx.beginPath();
+      ctx.ellipse(10 + t * 5, 6, 2.5, 1.5, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+    ctx.restore();
+  }
+
+  // ─── Tail ───
+  const tailWag = Math.sin(walkT * Math.PI * 2 + 0.5) * 0.08;
+  ctx.save();
+  ctx.translate(-40, -5);
+  ctx.rotate(tailWag);
+
+  ctx.beginPath();
+  ctx.moveTo(0, -8);
+  ctx.quadraticCurveTo(-30, -15 + Math.sin(walkT * Math.PI * 4) * 3,
+                        -TREX.tailLen, -5 + Math.sin(walkT * Math.PI * 3) * 8);
+  ctx.quadraticCurveTo(-TREX.tailLen * 0.6, 10, 0, 8);
+  ctx.closePath();
+  const tg = ctx.createLinearGradient(-TREX.tailLen, 0, 0, 0);
+  tg.addColorStop(0, '#3a2a18');
+  tg.addColorStop(0.6, '#4a3828');
+  tg.addColorStop(1, '#554430');
+  ctx.fillStyle = tg;
+  ctx.fill();
+
+  // Tail texture ridges
+  for (let t = 0.2; t < 1; t += 0.12) {
+    const tx = lerp(0, -TREX.tailLen, t);
+    const tw = lerp(12, 4, t);
+    ctx.beginPath();
+    ctx.moveTo(tx, -tw + Math.sin(walkT * Math.PI * 4 + t) * 2);
+    ctx.lineTo(tx + 4, -tw * 0.7 + Math.sin(walkT * Math.PI * 3 + t) * 2);
+    ctx.strokeStyle = 'rgba(30,20,10,0.3)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // ─── Body ───
+  ctx.save();
+  ctx.translate(10, 0);
+  const bodyG = ctx.createRadialGradient(0, 0, 5, 0, 0, 55);
+  bodyG.addColorStop(0, '#5a4a38');
+  bodyG.addColorStop(0.5, '#4a3a28');
+  bodyG.addColorStop(1, '#3a2a18');
+  ctx.beginPath();
+  ctx.ellipse(0, 0, TREX.bodyLen * 0.5, TREX.bodyWidth * 0.55, 0.05, 0, Math.PI * 2);
+  ctx.fillStyle = bodyG;
+  ctx.fill();
+
+  // Body shading/texture
+  for (let i = 0; i < 12; i++) {
+    const px = -35 + i * 6 + Math.sin(i * 1.3) * 3;
+    const py = Math.sin(i * 0.8 + time * 0.5) * 2;
+    ctx.beginPath();
+    ctx.arc(px, py, 2, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(40,30,18,0.3)';
+    ctx.fill();
+  }
+
+  // Belly highlight
+  ctx.beginPath();
+  ctx.ellipse(5, 12, 40, 10, 0.05, 0, Math.PI);
+  ctx.fillStyle = 'rgba(80,60,40,0.25)';
+  ctx.fill();
+
+  ctx.restore();
+
+  // ─── Neck & Head ───
+  ctx.save();
+  ctx.translate(45, -8);
+
+  // Neck
+  const headBob = Math.sin(walkT * Math.PI * 2) * 2;
+  ctx.translate(0, headBob);
+
+  // Neck body
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.quadraticCurveTo(15, -15, 30, -25);
+  ctx.quadraticCurveTo(35, -30, 32, -35);
+  ctx.lineTo(28, -35);
+  ctx.quadraticCurveTo(20, -25, 5, 5);
+  ctx.closePath();
+  ctx.fillStyle = '#4a3828';
+  ctx.fill();
+
+  // Head
+  ctx.translate(30, -30);
+  const headBobAngle = Math.sin(walkT * Math.PI * 2) * 0.02;
+  ctx.rotate(headBobAngle);
+
+  // Lower jaw
+  ctx.beginPath();
+  ctx.moveTo(0, -5);
+  ctx.lineTo(TREX.headLen, -3);
+  ctx.lineTo(TREX.headLen, 2);
+  ctx.lineTo(0, 5);
+  ctx.closePath();
+  ctx.fillStyle = '#3e2e1e';
+  ctx.fill();
+
+  // Upper jaw / skull
+  ctx.beginPath();
+  ctx.moveTo(-5, -8);
+  ctx.lineTo(TREX.headLen - 5, -10);
+  ctx.quadraticCurveTo(TREX.headLen + 8, -8, TREX.headLen, -2);
+  ctx.lineTo(-5, -2);
+  ctx.closePath();
+  const hg = ctx.createLinearGradient(0, -10, 0, 5);
+  hg.addColorStop(0, '#5a4a38');
+  hg.addColorStop(1, '#4a3a28');
+  ctx.fillStyle = hg;
+  ctx.fill();
+
+  // Eye
+  const eyeX = 22;
+  const eyeY = -7;
+  ctx.beginPath();
+  ctx.arc(eyeX, eyeY, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#e8c030';
+  ctx.fill();
+  // Pupil
+  ctx.beginPath();
+  ctx.ellipse(eyeX + 1, eyeY, 1.5, 3, 0, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a0a00';
+  ctx.fill();
+  // Eye shine
+  ctx.beginPath();
+  ctx.arc(eyeX + 1.5, eyeY - 1.5, 1, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,200,0.6)';
+  ctx.fill();
+
+  // Nostril
+  ctx.beginPath();
+  ctx.arc(TREX.headLen - 10, -6, 2, 0, Math.PI * 2);
+  ctx.fillStyle = '#2a1a0a';
+  ctx.fill();
+
+  // Teeth
+  ctx.fillStyle = '#e8e0d0';
+  for (let t = 0; t < 6; t++) {
+    const tx = 10 + t * 6;
+    ctx.beginPath();
+    ctx.moveTo(tx, 2);
+    ctx.lineTo(tx + 2, 7);
+    ctx.lineTo(tx + 4, 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Upper teeth (visible when mouth slightly open)
+  for (let t = 0; t < 5; t++) {
+    const tx = 12 + t * 7;
+    ctx.beginPath();
+    ctx.moveTo(tx, -2);
+    ctx.lineTo(tx + 2, -7);
+    ctx.lineTo(tx + 4, -2);
+    ctx.closePath();
+    ctx.fillStyle = '#ddd5c0';
+    ctx.fill();
+  }
+
+  ctx.restore(); // head
+  ctx.restore(); // neck
+
+  // ─── Tiny Arms ───
+  ctx.save();
+  ctx.translate(35, 5);
+  const armFlap = Math.sin(walkT * Math.PI * 2 + 0.5) * 0.15;
+  ctx.rotate(armFlap);
+  // Upper arm
+  ctx.fillStyle = '#3e2e1e';
+  ctx.beginPath();
+  ctx.ellipse(6, 8, 3, 7, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // Forearm
+  ctx.translate(10, 12);
+  ctx.rotate(0.2 + armFlap);
+  ctx.beginPath();
+  ctx.ellipse(4, 4, 2, 5, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // Mini claws
+  ctx.fillStyle = '#554a30';
+  for (let c = 0; c < 2; c++) {
+    ctx.beginPath();
+    ctx.arc(6 + c * 3, 8, 1.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+
+  // ─── Dorsal spikes (small) ───
+  ctx.save();
+  ctx.translate(10, -18);
+  for (let i = 0; i < 4; i++) {
+    const sx = -25 + i * 12;
+    const sh = 4 + Math.sin(i * 1.5) * 2;
+    ctx.beginPath();
+    ctx.moveTo(sx, 0);
+    ctx.lineTo(sx + 3, -sh);
+    ctx.lineTo(sx + 6, 0);
+    ctx.closePath();
+    ctx.fillStyle = '#4a3828';
+    ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.restore(); // main body
+}
+
+// ─── Dust particles ───
+class DustParticle {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.vx = rand(-2, -0.5);
+    this.vy = rand(-3, -0.5);
+    this.life = 1;
+    this.decay = rand(0.5, 1.5);
+    this.size = rand(2, 6);
+  }
+  update(dt) {
+    this.x += this.vx * dt * 60;
+    this.y += this.vy * dt * 60;
+    this.vy += 0.1 * dt * 60; // gravity
+    this.life -= this.decay * dt;
+  }
+  draw() {
+    if (this.life <= 0) return;
+    ctx.save();
+    ctx.globalAlpha = this.life * 0.3;
+    const g = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size);
+    g.addColorStop(0, 'rgba(120,90,60,0.5)');
+    g.addColorStop(1, 'rgba(80,60,30,0)');
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+    ctx.fillStyle = g;
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+const dustParticles = [];
+
+// ─── Main Loop ───
+const groundY = () => H * GROUND_Y_RATIO;
+
+function frame(now) {
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  time += dt;
+
+  const off = time * WALK_SPEED * 60;
+  const gy = groundY();
+
+  ctx.clearRect(0, 0, W, H);
+
+  // 1. Sky
+  drawSky();
+  drawSun();
+  drawLightRays();
+
+  // 2. Clouds (scroll at medium speed)
+  for (const c of clouds) { c.update(dt); c.draw(); }
+
+  // 3. Volcanoes (farthest)
+  drawVolcanoes(off);
+
+  // 4. Mountains
+  drawMountains(off);
+
+  // 5. Pterodactyls (between volcanoes and trees in depth)
+  for (const p of pterodactyls) {
+    p.update(dt);
+    p.draw();
+  }
+
+  // 6. Distant scenery (trees, ferns)
+  drawDistantScenery(off);
+
+  // 7. Mid-ground scenery
+  drawMidScenery(off);
+
+  // 8. Ground
+  drawGround(off);
+
+  // 9. Foreground ferns
+  drawForegroundScenery(off);
+
+  // 10. T-Rex (centered, appears to move forward)
+  drawTRex(W * 0.35, gy);
+
+  // 11. Dust particles from feet
+  const walkT2 = (time * WALK_SPEED / WALK_CYCLE) % 1;
+  if (Math.sin(walkT2 * Math.PI * 2) > 0.8) {
+    for (let i = 0; i < 2; i++) {
+      dustParticles.push(new DustParticle(W * 0.35 + rand(-20, 10), gy + 5));
+    }
+  }
+  for (let i = dustParticles.length - 1; i >= 0; i--) {
+    dustParticles[i].update(dt);
+    dustParticles[i].draw();
+    if (dustParticles[i].life <= 0) dustParticles.splice(i, 1);
+  }
+
+  // 12. Atmospheric fog/haze at ground level
+  const fogG = ctx.createLinearGradient(0, gy - 40, 0, gy + 30);
+  fogG.addColorStop(0, 'rgba(180,140,100,0)');
+  fogG.addColorStop(0.5, 'rgba(180,140,100,0.08)');
+  fogG.addColorStop(1, 'rgba(180,140,100,0)');
+  ctx.fillStyle = fogG;
+  ctx.fillRect(0, gy - 40, W, 70);
+
+  // 13. Vignette
+  const vigG = ctx.createRadialGradient(W / 2, H / 2, W * 0.25, W / 2, H / 2, W * 0.75);
+  vigG.addColorStop(0, 'rgba(0,0,0,0)');
+  vigG.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.fillStyle = vigG;
+  ctx.fillRect(0, 0, W, H);
+
+  requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
