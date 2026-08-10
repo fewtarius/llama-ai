@@ -1,0 +1,40 @@
+0.00.012.281 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.012.342 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.012.628 W srv  llama_server: -----------------
+0.00.012.629 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.012.629 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.012.629 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.012.629 W srv  llama_server: -----------------
+0.00.013.796 I srv    load_model: loading model '/home/deck/llama-ai/models/MiniMax-M2.7-UD-Q2_K_XL-00001-of-00003.gguf'
+0.27.776.679 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+0.27.776.802 I SSD cache: model compat_hash 646152995c8e5c98 (arch dims + type_k=8 type_v=8)
+0.27.810.622 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.27.811.133 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-646152995c8e5c98 (loaded=1, entries=1, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.27.811.135 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-646152995c8e5c98
+0.27.820.711 I srv  llama_server: model loaded
+0.27.820.717 I srv  llama_server: listening on http://0.0.0.0:9090
+0.30.302.843 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.30.303.038 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.30.303.126 I SSD cache: continuation found conv=13a83cf2ee61c5e5 overlap=100.0%
+0.30.303.127 I SSD cache: reusing conversation 13a83cf2ee61c5e5 for cold restart
+0.30.303.161 I SSD cache: auto-sized hot=22178 MiB warm=7392 MiB (avail=34789 MiB)
+0.30.303.186 I SSD cache: loaded 1 checkpoints from /home/deck/llama-ai/ssd-cache/13a83cf2ee61c5e5 (next_id=2)
+0.30.303.188 I SSD cache: model compat_hash set to 646152995c8e5c98
+0.30.303.192 I SSD cache: created new conversation cache conv=13a83cf2ee61c5e5 (total=1)
+0.30.303.199 I SSD cache: match checkpoint 1 conv=13a83cf2ee61c5e5 turn=1 n_tokens=1170 lcp=1170
+0.30.371.797 I SSD cache: promoted checkpoint 1 cold->hot (150 MiB)
+0.30.391.617 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=1170 ssd_n_tokens=1170 pos=[0,1169] n_push=1170 overlap=100.0% continuation=1
+0.30.391.639 W slot   operator(): id  0 | task 0 | need to evaluate at least 1 token for each active slot (n_past = 1170, task.n_tokens() = 1170)
+0.30.391.640 W slot   operator(): id  0 | task 0 | n_past was set to 1169
+0.30.524.390 I system cache: refreshed entry hash=3d3cf94e78548c9a tokens=27 size=150.4 MiB
+0.30.524.410 I slot maybe_extrac: id  0 | task 0 | stored system prompt cache entry: n_sys=27, size=157727668 bytes
+0.30.612.428 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 2 (pos_min = 0, pos_max = 1169, n_tokens = 1170, size = 150.549 MiB)
+0.30.781.654 I SSD cache: stored checkpoint 2 slot=0 tokens=1170 tgt=150 dft=0 spec=0 MiB (hot=301 MiB warm=0 MiB total=2)
+0.36.426.706 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  17.13 t/s, tg_3s =  17.13 t/s
+0.38.032.965 I slot print_timing: id  0 | task 0 | prompt eval time =     284.60 ms /     1 tokens (  284.60 ms per token,     3.51 tokens per second)
+0.38.032.968 I slot print_timing: id  0 | task 0 |        eval time =    7445.31 ms /   128 tokens (   58.17 ms per token,    17.19 tokens per second)
+0.38.032.969 I slot print_timing: id  0 | task 0 |       total time =    7729.91 ms /   129 tokens
+0.38.032.972 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+0.38.033.066 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1297, truncated = 0
+0.38.033.077 I SSD cache: turn 3 complete (hot=150 MiB warm=150 MiB cold=0 checkpoints=2)
+0.38.104.721 I srv    operator(): operator(): cleaning up before exit...

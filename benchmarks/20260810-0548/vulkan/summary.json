@@ -1,0 +1,3129 @@
+{
+  "backend": "vulkan",
+  "timestamp": "20260810-0548",
+  "models": [
+    {
+      "model": "DeepSeek-V4-Flash-0731-UD-IQ3_XXS-00001-of-00004",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 17579,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 96976.6,
+            "generation_ms": 18444.8,
+            "total_ms": 115421.4,
+            "ttft_ms": 96976.6,
+            "wall_ttft_ms": 115451,
+            "tps": 6.9,
+            "prompt_tps": 181.3,
+            "prompt_per_token_ms": 5.5,
+            "predicted_per_token_ms": 144.1,
+            "wall_ms": 115451
+          },
+          "warm": {
+            "prompt_tokens": 17579,
+            "completion_tokens": 128,
+            "cached_tokens": 17578,
+            "prompt_ms": 344.4,
+            "generation_ms": 20465.4,
+            "total_ms": 20809.7,
+            "ttft_ms": 344.4,
+            "wall_ttft_ms": 20839,
+            "tps": 6.3,
+            "prompt_tps": 51045.5,
+            "prompt_per_token_ms": 344.4,
+            "predicted_per_token_ms": 159.9,
+            "wall_ms": 20839
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 242000304,
+            "mib": 230.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 281.58,
+          "ttft_speedup": 5.54,
+          "cold_prompt_tps": 181.3,
+          "warm_prompt_tps": 51045.5,
+          "cold_ppt_ms": 5.5,
+          "warm_ppt_ms": 344.4,
+          "cold_gen_ppt_ms": 144.1,
+          "warm_gen_ppt_ms": 159.9,
+          "cold_ttft_ms": 96976.6,
+          "warm_ttft_ms": 344.4,
+          "cold_wall_ttft_ms": 115451,
+          "warm_wall_ttft_ms": 20839
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 6052,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 30762.6,
+            "generation_ms": 11341.2,
+            "total_ms": 42103.9,
+            "ttft_ms": 30762.6,
+            "wall_ttft_ms": 42121,
+            "tps": 11.3,
+            "prompt_tps": 196.7,
+            "prompt_per_token_ms": 5.1,
+            "predicted_per_token_ms": 88.6,
+            "wall_ms": 42121
+          },
+          "warm": {
+            "prompt_tokens": 6052,
+            "completion_tokens": 128,
+            "cached_tokens": 6051,
+            "prompt_ms": 314.2,
+            "generation_ms": 13328.9,
+            "total_ms": 13643.1,
+            "ttft_ms": 314.2,
+            "wall_ttft_ms": 13659,
+            "tps": 9.6,
+            "prompt_tps": 19263.7,
+            "prompt_per_token_ms": 314.2,
+            "predicted_per_token_ms": 104.1,
+            "wall_ms": 13659
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 114810720,
+            "mib": 109.5,
+            "files": 4
+          },
+          "prompt_eval_speedup": 97.91,
+          "ttft_speedup": 3.08,
+          "cold_prompt_tps": 196.7,
+          "warm_prompt_tps": 19263.7,
+          "cold_ppt_ms": 5.1,
+          "warm_ppt_ms": 314.2,
+          "cold_gen_ppt_ms": 88.6,
+          "warm_gen_ppt_ms": 104.1,
+          "cold_ttft_ms": 30762.6,
+          "warm_ttft_ms": 314.2,
+          "cold_wall_ttft_ms": 42121,
+          "warm_wall_ttft_ms": 13659
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1333,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 7957.8,
+            "generation_ms": 7498.1,
+            "total_ms": 15455.9,
+            "ttft_ms": 7957.8,
+            "wall_ttft_ms": 15468,
+            "tps": 17.1,
+            "prompt_tps": 167.5,
+            "prompt_per_token_ms": 6.0,
+            "predicted_per_token_ms": 58.6,
+            "wall_ms": 15468
+          },
+          "warm": {
+            "prompt_tokens": 1333,
+            "completion_tokens": 128,
+            "cached_tokens": 1332,
+            "prompt_ms": 320.0,
+            "generation_ms": 13393.7,
+            "total_ms": 13713.6,
+            "ttft_ms": 320.0,
+            "wall_ttft_ms": 13724,
+            "tps": 9.6,
+            "prompt_tps": 4166.1,
+            "prompt_per_token_ms": 320.0,
+            "predicted_per_token_ms": 104.6,
+            "wall_ms": 13724
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 62712072,
+            "mib": 59.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 24.87,
+          "ttft_speedup": 1.13,
+          "cold_prompt_tps": 167.5,
+          "warm_prompt_tps": 4166.1,
+          "cold_ppt_ms": 6.0,
+          "warm_ppt_ms": 320.0,
+          "cold_gen_ppt_ms": 58.6,
+          "warm_gen_ppt_ms": 104.6,
+          "cold_ttft_ms": 7957.8,
+          "warm_ttft_ms": 320.0,
+          "cold_wall_ttft_ms": 15468,
+          "warm_wall_ttft_ms": 13724
+        }
+      ]
+    },
+    {
+      "model": "GLM-4.7-Flash-UD-Q8_K_XL",
+      "backend": "vulkan",
+      "context": 196608,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15489,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 85462.8,
+            "generation_ms": 9190.3,
+            "total_ms": 94653.0,
+            "ttft_ms": 85462.8,
+            "wall_ttft_ms": 94685,
+            "tps": 13.9,
+            "prompt_tps": 181.2,
+            "prompt_per_token_ms": 5.5,
+            "predicted_per_token_ms": 71.8,
+            "wall_ms": 94685
+          },
+          "warm": {
+            "prompt_tokens": 15489,
+            "completion_tokens": 128,
+            "cached_tokens": 15488,
+            "prompt_ms": 178.7,
+            "generation_ms": 9172.6,
+            "total_ms": 9351.3,
+            "ttft_ms": 178.7,
+            "wall_ttft_ms": 9383,
+            "tps": 14.0,
+            "prompt_tps": 86691.0,
+            "prompt_per_token_ms": 178.7,
+            "predicted_per_token_ms": 71.7,
+            "wall_ms": 9383
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 891457184,
+            "mib": 850.2,
+            "files": 3
+          },
+          "prompt_eval_speedup": 478.25,
+          "ttft_speedup": 10.09,
+          "cold_prompt_tps": 181.2,
+          "warm_prompt_tps": 86691.0,
+          "cold_ppt_ms": 5.5,
+          "warm_ppt_ms": 178.7,
+          "cold_gen_ppt_ms": 71.8,
+          "warm_gen_ppt_ms": 71.7,
+          "cold_ttft_ms": 85462.8,
+          "warm_ttft_ms": 178.7,
+          "cold_wall_ttft_ms": 94685,
+          "warm_wall_ttft_ms": 9383
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5237,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 14084.7,
+            "generation_ms": 7140.8,
+            "total_ms": 21225.6,
+            "ttft_ms": 14084.7,
+            "wall_ttft_ms": 21244,
+            "tps": 17.9,
+            "prompt_tps": 371.8,
+            "prompt_per_token_ms": 2.7,
+            "predicted_per_token_ms": 55.8,
+            "wall_ms": 21244
+          },
+          "warm": {
+            "prompt_tokens": 5237,
+            "completion_tokens": 128,
+            "cached_tokens": 5236,
+            "prompt_ms": 95.7,
+            "generation_ms": 7153.7,
+            "total_ms": 7249.4,
+            "ttft_ms": 95.7,
+            "wall_ttft_ms": 7268,
+            "tps": 17.9,
+            "prompt_tps": 54707.7,
+            "prompt_per_token_ms": 95.7,
+            "predicted_per_token_ms": 55.9,
+            "wall_ms": 7268
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 301434080,
+            "mib": 287.5,
+            "files": 3
+          },
+          "prompt_eval_speedup": 147.18,
+          "ttft_speedup": 2.92,
+          "cold_prompt_tps": 371.8,
+          "warm_prompt_tps": 54707.7,
+          "cold_ppt_ms": 2.7,
+          "warm_ppt_ms": 95.7,
+          "cold_gen_ppt_ms": 55.8,
+          "warm_gen_ppt_ms": 55.9,
+          "cold_ttft_ms": 14084.7,
+          "warm_ttft_ms": 95.7,
+          "cold_wall_ttft_ms": 21244,
+          "warm_wall_ttft_ms": 7268
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1145,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 1923.7,
+            "generation_ms": 6344.5,
+            "total_ms": 8268.2,
+            "ttft_ms": 1923.7,
+            "wall_ttft_ms": 8282,
+            "tps": 20.2,
+            "prompt_tps": 595.2,
+            "prompt_per_token_ms": 1.7,
+            "predicted_per_token_ms": 49.6,
+            "wall_ms": 8282
+          },
+          "warm": {
+            "prompt_tokens": 1145,
+            "completion_tokens": 128,
+            "cached_tokens": 1144,
+            "prompt_ms": 61.6,
+            "generation_ms": 6294.0,
+            "total_ms": 6355.6,
+            "ttft_ms": 61.6,
+            "wall_ttft_ms": 6370,
+            "tps": 20.3,
+            "prompt_tps": 18599.4,
+            "prompt_per_token_ms": 61.6,
+            "predicted_per_token_ms": 49.2,
+            "wall_ms": 6370
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 65931296,
+            "mib": 62.9,
+            "files": 3
+          },
+          "prompt_eval_speedup": 31.23,
+          "ttft_speedup": 1.3,
+          "cold_prompt_tps": 595.2,
+          "warm_prompt_tps": 18599.4,
+          "cold_ppt_ms": 1.7,
+          "warm_ppt_ms": 61.6,
+          "cold_gen_ppt_ms": 49.6,
+          "warm_gen_ppt_ms": 49.2,
+          "cold_ttft_ms": 1923.7,
+          "warm_ttft_ms": 61.6,
+          "cold_wall_ttft_ms": 8282,
+          "warm_wall_ttft_ms": 6370
+        }
+      ]
+    },
+    {
+      "model": "Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 18154,
+            "completion_tokens": 65,
+            "cached_tokens": 0,
+            "prompt_ms": 50033.8,
+            "generation_ms": 5246.1,
+            "total_ms": 55280.0,
+            "ttft_ms": 50033.8,
+            "wall_ttft_ms": 55307,
+            "tps": 12.4,
+            "prompt_tps": 362.8,
+            "prompt_per_token_ms": 2.8,
+            "predicted_per_token_ms": 80.7,
+            "wall_ms": 55307
+          },
+          "warm": {
+            "prompt_tokens": 18154,
+            "completion_tokens": 60,
+            "cached_tokens": 18153,
+            "prompt_ms": 483.3,
+            "generation_ms": 5373.5,
+            "total_ms": 5856.8,
+            "ttft_ms": 483.3,
+            "wall_ttft_ms": 5884,
+            "tps": 11.2,
+            "prompt_tps": 37561.3,
+            "prompt_per_token_ms": 483.3,
+            "predicted_per_token_ms": 89.6,
+            "wall_ms": 5884
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 1581477672,
+            "mib": 1508.2,
+            "files": 4
+          },
+          "prompt_eval_speedup": 103.53,
+          "ttft_speedup": 9.4,
+          "cold_prompt_tps": 362.8,
+          "warm_prompt_tps": 37561.3,
+          "cold_ppt_ms": 2.8,
+          "warm_ppt_ms": 483.3,
+          "cold_gen_ppt_ms": 80.7,
+          "warm_gen_ppt_ms": 89.6,
+          "cold_ttft_ms": 50033.8,
+          "warm_ttft_ms": 483.3,
+          "cold_wall_ttft_ms": 55307,
+          "warm_wall_ttft_ms": 5884
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 6346,
+            "completion_tokens": 52,
+            "cached_tokens": 0,
+            "prompt_ms": 17606.8,
+            "generation_ms": 4157.3,
+            "total_ms": 21764.1,
+            "ttft_ms": 17606.8,
+            "wall_ttft_ms": 21782,
+            "tps": 12.5,
+            "prompt_tps": 360.4,
+            "prompt_per_token_ms": 2.8,
+            "predicted_per_token_ms": 79.9,
+            "wall_ms": 21782
+          },
+          "warm": {
+            "prompt_tokens": 6346,
+            "completion_tokens": 95,
+            "cached_tokens": 6345,
+            "prompt_ms": 319.6,
+            "generation_ms": 6650.0,
+            "total_ms": 6969.7,
+            "ttft_ms": 319.6,
+            "wall_ttft_ms": 6988,
+            "tps": 14.3,
+            "prompt_tps": 19854.5,
+            "prompt_per_token_ms": 319.6,
+            "predicted_per_token_ms": 70.0,
+            "wall_ms": 6988
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 655636008,
+            "mib": 625.3,
+            "files": 4
+          },
+          "prompt_eval_speedup": 55.09,
+          "ttft_speedup": 3.12,
+          "cold_prompt_tps": 360.4,
+          "warm_prompt_tps": 19854.5,
+          "cold_ppt_ms": 2.8,
+          "warm_ppt_ms": 319.6,
+          "cold_gen_ppt_ms": 79.9,
+          "warm_gen_ppt_ms": 70.0,
+          "cold_ttft_ms": 17606.8,
+          "warm_ttft_ms": 319.6,
+          "cold_wall_ttft_ms": 21782,
+          "warm_wall_ttft_ms": 6988
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1490,
+            "completion_tokens": 42,
+            "cached_tokens": 0,
+            "prompt_ms": 4789.6,
+            "generation_ms": 2992.9,
+            "total_ms": 7782.5,
+            "ttft_ms": 4789.6,
+            "wall_ttft_ms": 7795,
+            "tps": 14.0,
+            "prompt_tps": 311.1,
+            "prompt_per_token_ms": 3.2,
+            "predicted_per_token_ms": 71.3,
+            "wall_ms": 7795
+          },
+          "warm": {
+            "prompt_tokens": 1490,
+            "completion_tokens": 40,
+            "cached_tokens": 1489,
+            "prompt_ms": 177.6,
+            "generation_ms": 2373.8,
+            "total_ms": 2551.4,
+            "ttft_ms": 177.6,
+            "wall_ttft_ms": 2565,
+            "tps": 16.9,
+            "prompt_tps": 8387.8,
+            "prompt_per_token_ms": 177.6,
+            "predicted_per_token_ms": 59.3,
+            "wall_ms": 2565
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 274886760,
+            "mib": 262.2,
+            "files": 4
+          },
+          "prompt_eval_speedup": 26.97,
+          "ttft_speedup": 3.04,
+          "cold_prompt_tps": 311.1,
+          "warm_prompt_tps": 8387.8,
+          "cold_ppt_ms": 3.2,
+          "warm_ppt_ms": 177.6,
+          "cold_gen_ppt_ms": 71.3,
+          "warm_gen_ppt_ms": 59.3,
+          "cold_ttft_ms": 4789.6,
+          "warm_ttft_ms": 177.6,
+          "cold_wall_ttft_ms": 7795,
+          "warm_wall_ttft_ms": 2565
+        }
+      ]
+    },
+    {
+      "model": "MiniMax-M2.7-UD-Q2_K_XL-00001-of-00003",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15080,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 60268.9,
+            "generation_ms": 10686.2,
+            "total_ms": 70955.0,
+            "ttft_ms": 60268.9,
+            "wall_ttft_ms": 70998,
+            "tps": 12.0,
+            "prompt_tps": 250.2,
+            "prompt_per_token_ms": 4.0,
+            "predicted_per_token_ms": 83.5,
+            "wall_ms": 70998
+          },
+          "warm": {
+            "prompt_tokens": 15080,
+            "completion_tokens": 128,
+            "cached_tokens": 15079,
+            "prompt_ms": 3189.3,
+            "generation_ms": 10592.5,
+            "total_ms": 13781.8,
+            "ttft_ms": 3189.3,
+            "wall_ttft_ms": 13823,
+            "tps": 12.1,
+            "prompt_tps": 4728.3,
+            "prompt_per_token_ms": 3189.3,
+            "predicted_per_token_ms": 82.8,
+            "wall_ms": 13823
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 6103880892,
+            "mib": 5821.1,
+            "files": 4
+          },
+          "prompt_eval_speedup": 18.9,
+          "ttft_speedup": 5.14,
+          "cold_prompt_tps": 250.2,
+          "warm_prompt_tps": 4728.3,
+          "cold_ppt_ms": 4.0,
+          "warm_ppt_ms": 3189.3,
+          "cold_gen_ppt_ms": 83.5,
+          "warm_gen_ppt_ms": 82.8,
+          "cold_ttft_ms": 60268.9,
+          "warm_ttft_ms": 3189.3,
+          "cold_wall_ttft_ms": 70998,
+          "warm_wall_ttft_ms": 13823
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5157,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 18336.3,
+            "generation_ms": 8551.1,
+            "total_ms": 26887.4,
+            "ttft_ms": 18336.3,
+            "wall_ttft_ms": 26913,
+            "tps": 15.0,
+            "prompt_tps": 281.2,
+            "prompt_per_token_ms": 3.6,
+            "predicted_per_token_ms": 66.8,
+            "wall_ms": 26913
+          },
+          "warm": {
+            "prompt_tokens": 5157,
+            "completion_tokens": 128,
+            "cached_tokens": 5156,
+            "prompt_ms": 944.7,
+            "generation_ms": 8358.3,
+            "total_ms": 9303.0,
+            "ttft_ms": 944.7,
+            "wall_ttft_ms": 9328,
+            "tps": 15.3,
+            "prompt_tps": 5458.9,
+            "prompt_per_token_ms": 944.7,
+            "predicted_per_token_ms": 65.3,
+            "wall_ms": 9328
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 2087328336,
+            "mib": 1990.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 19.41,
+          "ttft_speedup": 2.89,
+          "cold_prompt_tps": 281.2,
+          "warm_prompt_tps": 5458.9,
+          "cold_ppt_ms": 3.6,
+          "warm_ppt_ms": 944.7,
+          "cold_gen_ppt_ms": 66.8,
+          "warm_gen_ppt_ms": 65.3,
+          "cold_ttft_ms": 18336.3,
+          "warm_ttft_ms": 944.7,
+          "cold_wall_ttft_ms": 26913,
+          "warm_wall_ttft_ms": 9328
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1170,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 4601.2,
+            "generation_ms": 7536.0,
+            "total_ms": 12137.3,
+            "ttft_ms": 4601.2,
+            "wall_ttft_ms": 12185,
+            "tps": 17.0,
+            "prompt_tps": 254.3,
+            "prompt_per_token_ms": 3.9,
+            "predicted_per_token_ms": 58.9,
+            "wall_ms": 12185
+          },
+          "warm": {
+            "prompt_tokens": 1170,
+            "completion_tokens": 128,
+            "cached_tokens": 1169,
+            "prompt_ms": 284.6,
+            "generation_ms": 7445.3,
+            "total_ms": 7729.9,
+            "ttft_ms": 284.6,
+            "wall_ttft_ms": 7748,
+            "tps": 17.2,
+            "prompt_tps": 4111.0,
+            "prompt_per_token_ms": 284.6,
+            "predicted_per_token_ms": 58.2,
+            "wall_ms": 7748
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 473502372,
+            "mib": 451.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 16.17,
+          "ttft_speedup": 1.57,
+          "cold_prompt_tps": 254.3,
+          "warm_prompt_tps": 4111.0,
+          "cold_ppt_ms": 3.9,
+          "warm_ppt_ms": 284.6,
+          "cold_gen_ppt_ms": 58.9,
+          "warm_gen_ppt_ms": 58.2,
+          "cold_ttft_ms": 4601.2,
+          "warm_ttft_ms": 284.6,
+          "cold_wall_ttft_ms": 12185,
+          "warm_wall_ttft_ms": 7748
+        }
+      ]
+    },
+    {
+      "model": "Qwen3-235B-A22B-Thinking-2507-IQ2_M-00001-of-00002",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15666,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 100548.8,
+            "generation_ms": 12068.2,
+            "total_ms": 112617.0,
+            "ttft_ms": 100548.8,
+            "wall_ttft_ms": 112646,
+            "tps": 10.6,
+            "prompt_tps": 155.8,
+            "prompt_per_token_ms": 6.4,
+            "predicted_per_token_ms": 94.3,
+            "wall_ms": 112646
+          },
+          "warm": {
+            "prompt_tokens": 15666,
+            "completion_tokens": 128,
+            "cached_tokens": 15665,
+            "prompt_ms": 1043.4,
+            "generation_ms": 11949.6,
+            "total_ms": 12993.0,
+            "ttft_ms": 1043.4,
+            "wall_ttft_ms": 13021,
+            "tps": 10.7,
+            "prompt_tps": 15014.4,
+            "prompt_per_token_ms": 1043.4,
+            "predicted_per_token_ms": 93.4,
+            "wall_ms": 13021
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 3204799928,
+            "mib": 3056.3,
+            "files": 3
+          },
+          "prompt_eval_speedup": 96.37,
+          "ttft_speedup": 8.65,
+          "cold_prompt_tps": 155.8,
+          "warm_prompt_tps": 15014.4,
+          "cold_ppt_ms": 6.4,
+          "warm_ppt_ms": 1043.4,
+          "cold_gen_ppt_ms": 94.3,
+          "warm_gen_ppt_ms": 93.4,
+          "cold_ttft_ms": 100548.8,
+          "warm_ttft_ms": 1043.4,
+          "cold_wall_ttft_ms": 112646,
+          "warm_wall_ttft_ms": 13021
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5401,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 28796.9,
+            "generation_ms": 10245.7,
+            "total_ms": 39042.7,
+            "ttft_ms": 28796.9,
+            "wall_ttft_ms": 39058,
+            "tps": 12.5,
+            "prompt_tps": 187.6,
+            "prompt_per_token_ms": 5.3,
+            "predicted_per_token_ms": 80.0,
+            "wall_ms": 39058
+          },
+          "warm": {
+            "prompt_tokens": 5401,
+            "completion_tokens": 128,
+            "cached_tokens": 5400,
+            "prompt_ms": 315.6,
+            "generation_ms": 10132.0,
+            "total_ms": 10447.6,
+            "ttft_ms": 315.6,
+            "wall_ttft_ms": 10465,
+            "tps": 12.6,
+            "prompt_tps": 17110.7,
+            "prompt_per_token_ms": 315.6,
+            "predicted_per_token_ms": 79.2,
+            "wall_ms": 10465
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 1104909408,
+            "mib": 1053.7,
+            "files": 3
+          },
+          "prompt_eval_speedup": 91.24,
+          "ttft_speedup": 3.73,
+          "cold_prompt_tps": 187.6,
+          "warm_prompt_tps": 17110.7,
+          "cold_ppt_ms": 5.3,
+          "warm_ppt_ms": 315.6,
+          "cold_gen_ppt_ms": 80.0,
+          "warm_gen_ppt_ms": 79.2,
+          "cold_ttft_ms": 28796.9,
+          "warm_ttft_ms": 315.6,
+          "cold_wall_ttft_ms": 39058,
+          "warm_wall_ttft_ms": 10465
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1254,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 6934.7,
+            "generation_ms": 9418.1,
+            "total_ms": 16352.8,
+            "ttft_ms": 6934.7,
+            "wall_ttft_ms": 16365,
+            "tps": 13.6,
+            "prompt_tps": 180.8,
+            "prompt_per_token_ms": 5.5,
+            "predicted_per_token_ms": 73.6,
+            "wall_ms": 16365
+          },
+          "warm": {
+            "prompt_tokens": 1254,
+            "completion_tokens": 128,
+            "cached_tokens": 1253,
+            "prompt_ms": 157.0,
+            "generation_ms": 9396.5,
+            "total_ms": 9553.5,
+            "ttft_ms": 157.0,
+            "wall_ttft_ms": 9564,
+            "tps": 13.6,
+            "prompt_tps": 7986.5,
+            "prompt_per_token_ms": 157.0,
+            "predicted_per_token_ms": 73.4,
+            "wall_ms": 9564
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 1
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 256565912,
+            "mib": 244.7,
+            "files": 3
+          },
+          "prompt_eval_speedup": 44.17,
+          "ttft_speedup": 1.71,
+          "cold_prompt_tps": 180.8,
+          "warm_prompt_tps": 7986.5,
+          "cold_ppt_ms": 5.5,
+          "warm_ppt_ms": 157.0,
+          "cold_gen_ppt_ms": 73.6,
+          "warm_gen_ppt_ms": 73.4,
+          "cold_ttft_ms": 6934.7,
+          "warm_ttft_ms": 157.0,
+          "cold_wall_ttft_ms": 16365,
+          "warm_wall_ttft_ms": 9564
+        }
+      ]
+    },
+    {
+      "model": "Qwen3-Coder-Next-UD-Q8_K_XL-00001-of-00003",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15664,
+            "completion_tokens": 95,
+            "cached_tokens": 0,
+            "prompt_ms": 48472.6,
+            "generation_ms": 5019.2,
+            "total_ms": 53491.8,
+            "ttft_ms": 48472.6,
+            "wall_ttft_ms": 53519,
+            "tps": 18.9,
+            "prompt_tps": 323.2,
+            "prompt_per_token_ms": 3.1,
+            "predicted_per_token_ms": 52.8,
+            "wall_ms": 53519
+          },
+          "warm": {
+            "prompt_tokens": 15664,
+            "completion_tokens": 128,
+            "cached_tokens": 15663,
+            "prompt_ms": 219.2,
+            "generation_ms": 6666.6,
+            "total_ms": 6885.8,
+            "ttft_ms": 219.2,
+            "wall_ttft_ms": 6911,
+            "tps": 19.2,
+            "prompt_tps": 71472.2,
+            "prompt_per_token_ms": 219.2,
+            "predicted_per_token_ms": 52.1,
+            "wall_ms": 6911
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 851201580,
+            "mib": 811.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 221.13,
+          "ttft_speedup": 7.74,
+          "cold_prompt_tps": 323.2,
+          "warm_prompt_tps": 71472.2,
+          "cold_ppt_ms": 3.1,
+          "warm_ppt_ms": 219.2,
+          "cold_gen_ppt_ms": 52.8,
+          "warm_gen_ppt_ms": 52.1,
+          "cold_ttft_ms": 48472.6,
+          "warm_ttft_ms": 219.2,
+          "cold_wall_ttft_ms": 53519,
+          "warm_wall_ttft_ms": 6911
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5399,
+            "completion_tokens": 116,
+            "cached_tokens": 0,
+            "prompt_ms": 8894.3,
+            "generation_ms": 5835.2,
+            "total_ms": 14729.5,
+            "ttft_ms": 8894.3,
+            "wall_ttft_ms": 14744,
+            "tps": 19.9,
+            "prompt_tps": 607.0,
+            "prompt_per_token_ms": 1.6,
+            "predicted_per_token_ms": 50.3,
+            "wall_ms": 14744
+          },
+          "warm": {
+            "prompt_tokens": 5399,
+            "completion_tokens": 95,
+            "cached_tokens": 5398,
+            "prompt_ms": 208.0,
+            "generation_ms": 4882.0,
+            "total_ms": 5090.0,
+            "ttft_ms": 208.0,
+            "wall_ttft_ms": 5105,
+            "tps": 19.5,
+            "prompt_tps": 25951.4,
+            "prompt_per_token_ms": 208.0,
+            "predicted_per_token_ms": 51.4,
+            "wall_ms": 5105
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 448772520,
+            "mib": 428.0,
+            "files": 4
+          },
+          "prompt_eval_speedup": 42.76,
+          "ttft_speedup": 2.89,
+          "cold_prompt_tps": 607.0,
+          "warm_prompt_tps": 25951.4,
+          "cold_ppt_ms": 1.6,
+          "warm_ppt_ms": 208.0,
+          "cold_gen_ppt_ms": 50.3,
+          "warm_gen_ppt_ms": 51.4,
+          "cold_ttft_ms": 8894.3,
+          "warm_ttft_ms": 208.0,
+          "cold_wall_ttft_ms": 14744,
+          "warm_wall_ttft_ms": 5105
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1252,
+            "completion_tokens": 61,
+            "cached_tokens": 0,
+            "prompt_ms": 2413.1,
+            "generation_ms": 3080.3,
+            "total_ms": 5493.4,
+            "ttft_ms": 2413.1,
+            "wall_ttft_ms": 5502,
+            "tps": 19.8,
+            "prompt_tps": 518.8,
+            "prompt_per_token_ms": 1.9,
+            "predicted_per_token_ms": 50.5,
+            "wall_ms": 5502
+          },
+          "warm": {
+            "prompt_tokens": 1252,
+            "completion_tokens": 46,
+            "cached_tokens": 1251,
+            "prompt_ms": 134.9,
+            "generation_ms": 2378.6,
+            "total_ms": 2513.5,
+            "ttft_ms": 134.9,
+            "wall_ttft_ms": 2523,
+            "tps": 19.3,
+            "prompt_tps": 9281.2,
+            "prompt_per_token_ms": 134.9,
+            "predicted_per_token_ms": 51.7,
+            "wall_ms": 2523
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 286193532,
+            "mib": 272.9,
+            "files": 4
+          },
+          "prompt_eval_speedup": 17.89,
+          "ttft_speedup": 2.18,
+          "cold_prompt_tps": 518.8,
+          "warm_prompt_tps": 9281.2,
+          "cold_ppt_ms": 1.9,
+          "warm_ppt_ms": 134.9,
+          "cold_gen_ppt_ms": 50.5,
+          "warm_gen_ppt_ms": 51.7,
+          "cold_ttft_ms": 2413.1,
+          "warm_ttft_ms": 134.9,
+          "cold_wall_ttft_ms": 5502,
+          "warm_wall_ttft_ms": 2523
+        }
+      ]
+    },
+    {
+      "model": "Qwen3.5-122B-A10B-Q5_K_M-00001-of-00003",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 52906.5,
+            "generation_ms": 12405.0,
+            "total_ms": 65311.5,
+            "ttft_ms": 52906.5,
+            "wall_ttft_ms": 65338,
+            "tps": 10.3,
+            "prompt_tps": 297.2,
+            "prompt_per_token_ms": 3.4,
+            "predicted_per_token_ms": 96.9,
+            "wall_ms": 65338
+          },
+          "warm": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 79,
+            "cached_tokens": 15722,
+            "prompt_ms": 310.1,
+            "generation_ms": 8319.2,
+            "total_ms": 8629.3,
+            "ttft_ms": 310.1,
+            "wall_ttft_ms": 8654,
+            "tps": 9.5,
+            "prompt_tps": 50701.2,
+            "prompt_per_token_ms": 310.1,
+            "predicted_per_token_ms": 105.3,
+            "wall_ms": 8654
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 1085692768,
+            "mib": 1035.4,
+            "files": 4
+          },
+          "prompt_eval_speedup": 170.61,
+          "ttft_speedup": 7.55,
+          "cold_prompt_tps": 297.2,
+          "warm_prompt_tps": 50701.2,
+          "cold_ppt_ms": 3.4,
+          "warm_ppt_ms": 310.1,
+          "cold_gen_ppt_ms": 96.9,
+          "warm_gen_ppt_ms": 105.3,
+          "cold_ttft_ms": 52906.5,
+          "warm_ttft_ms": 310.1,
+          "cold_wall_ttft_ms": 65338,
+          "warm_wall_ttft_ms": 8654
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 18763.2,
+            "generation_ms": 12137.5,
+            "total_ms": 30900.8,
+            "ttft_ms": 18763.2,
+            "wall_ttft_ms": 30916,
+            "tps": 10.5,
+            "prompt_tps": 288.4,
+            "prompt_per_token_ms": 3.5,
+            "predicted_per_token_ms": 94.8,
+            "wall_ms": 30916
+          },
+          "warm": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 101,
+            "cached_tokens": 5410,
+            "prompt_ms": 220.0,
+            "generation_ms": 9908.5,
+            "total_ms": 10128.6,
+            "ttft_ms": 220.0,
+            "wall_ttft_ms": 10143,
+            "tps": 10.2,
+            "prompt_tps": 24590.1,
+            "prompt_per_token_ms": 220.0,
+            "predicted_per_token_ms": 98.1,
+            "wall_ms": 10143
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 681173632,
+            "mib": 649.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 85.29,
+          "ttft_speedup": 3.05,
+          "cold_prompt_tps": 288.4,
+          "warm_prompt_tps": 24590.1,
+          "cold_ppt_ms": 3.5,
+          "warm_ppt_ms": 220.0,
+          "cold_gen_ppt_ms": 94.8,
+          "warm_gen_ppt_ms": 98.1,
+          "cold_ttft_ms": 18763.2,
+          "warm_ttft_ms": 220.0,
+          "cold_wall_ttft_ms": 30916,
+          "warm_wall_ttft_ms": 10143
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 5965.1,
+            "generation_ms": 12058.2,
+            "total_ms": 18023.3,
+            "ttft_ms": 5965.1,
+            "wall_ttft_ms": 18033,
+            "tps": 10.6,
+            "prompt_tps": 208.5,
+            "prompt_per_token_ms": 4.8,
+            "predicted_per_token_ms": 94.2,
+            "wall_ms": 18033
+          },
+          "warm": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 41,
+            "cached_tokens": 1243,
+            "prompt_ms": 188.0,
+            "generation_ms": 4876.6,
+            "total_ms": 5064.5,
+            "ttft_ms": 188.0,
+            "wall_ttft_ms": 5074,
+            "tps": 8.4,
+            "prompt_tps": 6618.3,
+            "prompt_per_token_ms": 188.0,
+            "predicted_per_token_ms": 118.9,
+            "wall_ms": 5074
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 517710556,
+            "mib": 493.7,
+            "files": 4
+          },
+          "prompt_eval_speedup": 31.73,
+          "ttft_speedup": 3.55,
+          "cold_prompt_tps": 208.5,
+          "warm_prompt_tps": 6618.3,
+          "cold_ppt_ms": 4.8,
+          "warm_ppt_ms": 188.0,
+          "cold_gen_ppt_ms": 94.2,
+          "warm_gen_ppt_ms": 118.9,
+          "cold_ttft_ms": 5965.1,
+          "warm_ttft_ms": 188.0,
+          "cold_wall_ttft_ms": 18033,
+          "warm_wall_ttft_ms": 5074
+        }
+      ]
+    },
+    {
+      "model": "Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 53513.9,
+            "generation_ms": 4471.3,
+            "total_ms": 57985.2,
+            "ttft_ms": 53513.9,
+            "wall_ttft_ms": 58011,
+            "tps": 28.6,
+            "prompt_tps": 293.8,
+            "prompt_per_token_ms": 3.4,
+            "predicted_per_token_ms": 34.9,
+            "wall_ms": 58011
+          },
+          "warm": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 80,
+            "cached_tokens": 15722,
+            "prompt_ms": 282.7,
+            "generation_ms": 3151.7,
+            "total_ms": 3434.3,
+            "ttft_ms": 282.7,
+            "wall_ttft_ms": 3460,
+            "tps": 25.4,
+            "prompt_tps": 55625.7,
+            "prompt_per_token_ms": 282.7,
+            "predicted_per_token_ms": 39.4,
+            "wall_ms": 3460
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 1183242420,
+            "mib": 1128.4,
+            "files": 4
+          },
+          "prompt_eval_speedup": 189.3,
+          "ttft_speedup": 16.77,
+          "cold_prompt_tps": 293.8,
+          "warm_prompt_tps": 55625.7,
+          "cold_ppt_ms": 3.4,
+          "warm_ppt_ms": 282.7,
+          "cold_gen_ppt_ms": 34.9,
+          "warm_gen_ppt_ms": 39.4,
+          "cold_ttft_ms": 53513.9,
+          "warm_ttft_ms": 282.7,
+          "cold_wall_ttft_ms": 58011,
+          "warm_wall_ttft_ms": 3460
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 17365.3,
+            "generation_ms": 3913.5,
+            "total_ms": 21278.8,
+            "ttft_ms": 17365.3,
+            "wall_ttft_ms": 21293,
+            "tps": 32.7,
+            "prompt_tps": 311.6,
+            "prompt_per_token_ms": 3.2,
+            "predicted_per_token_ms": 30.6,
+            "wall_ms": 21293
+          },
+          "warm": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 72,
+            "cached_tokens": 5410,
+            "prompt_ms": 201.7,
+            "generation_ms": 2907.6,
+            "total_ms": 3109.3,
+            "ttft_ms": 201.7,
+            "wall_ttft_ms": 3124,
+            "tps": 24.8,
+            "prompt_tps": 26820.9,
+            "prompt_per_token_ms": 201.7,
+            "predicted_per_token_ms": 40.4,
+            "wall_ms": 3124
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 714747636,
+            "mib": 681.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 86.09,
+          "ttft_speedup": 6.82,
+          "cold_prompt_tps": 311.6,
+          "warm_prompt_tps": 26820.9,
+          "cold_ppt_ms": 3.2,
+          "warm_ppt_ms": 201.7,
+          "cold_gen_ppt_ms": 30.6,
+          "warm_gen_ppt_ms": 40.4,
+          "cold_ttft_ms": 17365.3,
+          "warm_ttft_ms": 201.7,
+          "cold_wall_ttft_ms": 21293,
+          "warm_wall_ttft_ms": 3124
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 4516.9,
+            "generation_ms": 4247.1,
+            "total_ms": 8764.0,
+            "ttft_ms": 4516.9,
+            "wall_ttft_ms": 8773,
+            "tps": 30.1,
+            "prompt_tps": 275.4,
+            "prompt_per_token_ms": 3.6,
+            "predicted_per_token_ms": 33.2,
+            "wall_ms": 8773
+          },
+          "warm": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 48,
+            "cached_tokens": 1243,
+            "prompt_ms": 210.9,
+            "generation_ms": 2038.6,
+            "total_ms": 2249.5,
+            "ttft_ms": 210.9,
+            "wall_ttft_ms": 2259,
+            "tps": 23.5,
+            "prompt_tps": 5898.8,
+            "prompt_per_token_ms": 210.9,
+            "predicted_per_token_ms": 42.5,
+            "wall_ms": 2259
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 525432492,
+            "mib": 501.1,
+            "files": 4
+          },
+          "prompt_eval_speedup": 21.42,
+          "ttft_speedup": 3.88,
+          "cold_prompt_tps": 275.4,
+          "warm_prompt_tps": 5898.8,
+          "cold_ppt_ms": 3.6,
+          "warm_ppt_ms": 210.9,
+          "cold_gen_ppt_ms": 33.2,
+          "warm_gen_ppt_ms": 42.5,
+          "cold_ttft_ms": 4516.9,
+          "warm_ttft_ms": 210.9,
+          "cold_wall_ttft_ms": 8773,
+          "warm_wall_ttft_ms": 2259
+        }
+      ]
+    },
+    {
+      "model": "Qwen3.6-27B-UD-Q8_K_XL",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 85337.0,
+            "generation_ms": 27353.4,
+            "total_ms": 112690.4,
+            "ttft_ms": 85337.0,
+            "wall_ttft_ms": 112716,
+            "tps": 4.7,
+            "prompt_tps": 184.2,
+            "prompt_per_token_ms": 5.4,
+            "predicted_per_token_ms": 213.7,
+            "wall_ms": 112716
+          },
+          "warm": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 128,
+            "cached_tokens": 15722,
+            "prompt_ms": 358.1,
+            "generation_ms": 27258.7,
+            "total_ms": 27616.8,
+            "ttft_ms": 358.1,
+            "wall_ttft_ms": 27644,
+            "tps": 4.7,
+            "prompt_tps": 43904.2,
+            "prompt_per_token_ms": 358.1,
+            "predicted_per_token_ms": 213.0,
+            "wall_ms": 27644
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "no-checkpoint-near-end",
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 2113773792,
+            "mib": 2015.9,
+            "files": 4
+          },
+          "prompt_eval_speedup": 238.3,
+          "ttft_speedup": 4.08,
+          "cold_prompt_tps": 184.2,
+          "warm_prompt_tps": 43904.2,
+          "cold_ppt_ms": 5.4,
+          "warm_ppt_ms": 358.1,
+          "cold_gen_ppt_ms": 213.7,
+          "warm_gen_ppt_ms": 213.0,
+          "cold_ttft_ms": 85337.0,
+          "warm_ttft_ms": 358.1,
+          "cold_wall_ttft_ms": 112716,
+          "warm_wall_ttft_ms": 27644
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 29289.3,
+            "generation_ms": 26944.2,
+            "total_ms": 56233.5,
+            "ttft_ms": 29289.3,
+            "wall_ttft_ms": 56248,
+            "tps": 4.8,
+            "prompt_tps": 184.7,
+            "prompt_per_token_ms": 5.4,
+            "predicted_per_token_ms": 210.5,
+            "wall_ms": 56248
+          },
+          "warm": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 128,
+            "cached_tokens": 5410,
+            "prompt_ms": 276.3,
+            "generation_ms": 26853.1,
+            "total_ms": 27129.4,
+            "ttft_ms": 276.3,
+            "wall_ttft_ms": 27145,
+            "tps": 4.8,
+            "prompt_tps": 19584.8,
+            "prompt_per_token_ms": 276.3,
+            "predicted_per_token_ms": 209.8,
+            "wall_ms": 27145
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "no-checkpoint-near-end",
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 1036087296,
+            "mib": 988.1,
+            "files": 4
+          },
+          "prompt_eval_speedup": 106.01,
+          "ttft_speedup": 2.07,
+          "cold_prompt_tps": 184.7,
+          "warm_prompt_tps": 19584.8,
+          "cold_ppt_ms": 5.4,
+          "warm_ppt_ms": 276.3,
+          "cold_gen_ppt_ms": 210.5,
+          "warm_gen_ppt_ms": 209.8,
+          "cold_ttft_ms": 29289.3,
+          "warm_ttft_ms": 276.3,
+          "cold_wall_ttft_ms": 56248,
+          "warm_wall_ttft_ms": 27145
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 8087.7,
+            "generation_ms": 26848.5,
+            "total_ms": 34936.2,
+            "ttft_ms": 8087.7,
+            "wall_ttft_ms": 34946,
+            "tps": 4.8,
+            "prompt_tps": 153.8,
+            "prompt_per_token_ms": 6.5,
+            "predicted_per_token_ms": 209.8,
+            "wall_ms": 34946
+          },
+          "warm": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 128,
+            "cached_tokens": 1243,
+            "prompt_ms": 249.3,
+            "generation_ms": 26747.3,
+            "total_ms": 26996.7,
+            "ttft_ms": 249.3,
+            "wall_ttft_ms": 27005,
+            "tps": 4.8,
+            "prompt_tps": 4989.4,
+            "prompt_per_token_ms": 249.3,
+            "predicted_per_token_ms": 209.0,
+            "wall_ms": 27005
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "no-checkpoint-near-end",
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 600602460,
+            "mib": 572.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 32.44,
+          "ttft_speedup": 1.29,
+          "cold_prompt_tps": 153.8,
+          "warm_prompt_tps": 4989.4,
+          "cold_ppt_ms": 6.5,
+          "warm_ppt_ms": 249.3,
+          "cold_gen_ppt_ms": 209.8,
+          "warm_gen_ppt_ms": 209.0,
+          "cold_ttft_ms": 8087.7,
+          "warm_ttft_ms": 249.3,
+          "cold_wall_ttft_ms": 34946,
+          "warm_wall_ttft_ms": 27005
+        }
+      ]
+    },
+    {
+      "model": "Qwen3.6-35B-A3B-UD-Q8_K_XL",
+      "backend": "vulkan",
+      "context": 196608,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 20502.1,
+            "generation_ms": 7570.1,
+            "total_ms": 28072.2,
+            "ttft_ms": 20502.1,
+            "wall_ttft_ms": 28098,
+            "tps": 16.9,
+            "prompt_tps": 766.9,
+            "prompt_per_token_ms": 1.3,
+            "predicted_per_token_ms": 59.1,
+            "wall_ms": 28098
+          },
+          "warm": {
+            "prompt_tokens": 15723,
+            "completion_tokens": 67,
+            "cached_tokens": 15722,
+            "prompt_ms": 137.6,
+            "generation_ms": 4732.0,
+            "total_ms": 4869.7,
+            "ttft_ms": 137.6,
+            "wall_ttft_ms": 4896,
+            "tps": 14.2,
+            "prompt_tps": 114241.1,
+            "prompt_per_token_ms": 137.6,
+            "predicted_per_token_ms": 70.6,
+            "wall_ms": 4896
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 809287668,
+            "mib": 771.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 149.0,
+          "ttft_speedup": 5.74,
+          "cold_prompt_tps": 766.9,
+          "warm_prompt_tps": 114241.1,
+          "cold_ppt_ms": 1.3,
+          "warm_ppt_ms": 137.6,
+          "cold_gen_ppt_ms": 59.1,
+          "warm_gen_ppt_ms": 70.6,
+          "cold_ttft_ms": 20502.1,
+          "warm_ttft_ms": 137.6,
+          "cold_wall_ttft_ms": 28098,
+          "warm_wall_ttft_ms": 4896
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 7278.3,
+            "generation_ms": 7325.6,
+            "total_ms": 14603.9,
+            "ttft_ms": 7278.3,
+            "wall_ttft_ms": 14619,
+            "tps": 17.5,
+            "prompt_tps": 743.4,
+            "prompt_per_token_ms": 1.3,
+            "predicted_per_token_ms": 57.2,
+            "wall_ms": 14619
+          },
+          "warm": {
+            "prompt_tokens": 5411,
+            "completion_tokens": 78,
+            "cached_tokens": 5410,
+            "prompt_ms": 98.9,
+            "generation_ms": 4997.7,
+            "total_ms": 5096.6,
+            "ttft_ms": 98.9,
+            "wall_ttft_ms": 5111,
+            "tps": 15.6,
+            "prompt_tps": 54712.4,
+            "prompt_per_token_ms": 98.9,
+            "predicted_per_token_ms": 64.1,
+            "wall_ms": 5111
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 408109620,
+            "mib": 389.2,
+            "files": 4
+          },
+          "prompt_eval_speedup": 73.59,
+          "ttft_speedup": 2.86,
+          "cold_prompt_tps": 743.4,
+          "warm_prompt_tps": 54712.4,
+          "cold_ppt_ms": 1.3,
+          "warm_ppt_ms": 98.9,
+          "cold_gen_ppt_ms": 57.2,
+          "warm_gen_ppt_ms": 64.1,
+          "cold_ttft_ms": 7278.3,
+          "warm_ttft_ms": 98.9,
+          "cold_wall_ttft_ms": 14619,
+          "warm_wall_ttft_ms": 5111
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 2390.3,
+            "generation_ms": 7327.7,
+            "total_ms": 9718.1,
+            "ttft_ms": 2390.3,
+            "wall_ttft_ms": 9728,
+            "tps": 17.5,
+            "prompt_tps": 520.4,
+            "prompt_per_token_ms": 1.9,
+            "predicted_per_token_ms": 57.2,
+            "wall_ms": 9728
+          },
+          "warm": {
+            "prompt_tokens": 1244,
+            "completion_tokens": 51,
+            "cached_tokens": 1243,
+            "prompt_ms": 84.0,
+            "generation_ms": 3491.3,
+            "total_ms": 3575.3,
+            "ttft_ms": 84.0,
+            "wall_ttft_ms": 3586,
+            "tps": 14.6,
+            "prompt_tps": 14811.6,
+            "prompt_per_token_ms": 84.0,
+            "predicted_per_token_ms": 68.5,
+            "wall_ms": 3586
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 245996652,
+            "mib": 234.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 28.46,
+          "ttft_speedup": 2.71,
+          "cold_prompt_tps": 520.4,
+          "warm_prompt_tps": 14811.6,
+          "cold_ppt_ms": 1.9,
+          "warm_ppt_ms": 84.0,
+          "cold_gen_ppt_ms": 57.2,
+          "warm_gen_ppt_ms": 68.5,
+          "cold_ttft_ms": 2390.3,
+          "warm_ttft_ms": 84.0,
+          "cold_wall_ttft_ms": 9728,
+          "warm_wall_ttft_ms": 3586
+        }
+      ]
+    },
+    {
+      "model": "gemma-4-26B-A4B-it-UD-Q5_K_M",
+      "backend": "vulkan",
+      "context": 196608,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 17349,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 16652.6,
+            "generation_ms": 9146.6,
+            "total_ms": 25799.2,
+            "ttft_ms": 16652.6,
+            "wall_ttft_ms": 25836,
+            "tps": 14.0,
+            "prompt_tps": 1041.8,
+            "prompt_per_token_ms": 1.0,
+            "predicted_per_token_ms": 71.5,
+            "wall_ms": 25836
+          },
+          "warm": {
+            "prompt_tokens": 17349,
+            "completion_tokens": 128,
+            "cached_tokens": 17348,
+            "prompt_ms": 135.9,
+            "generation_ms": 8980.4,
+            "total_ms": 9116.3,
+            "ttft_ms": 135.9,
+            "wall_ttft_ms": 9153,
+            "tps": 14.3,
+            "prompt_tps": 127684.5,
+            "prompt_per_token_ms": 135.9,
+            "predicted_per_token_ms": 70.2,
+            "wall_ms": 9153
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 601787064,
+            "mib": 573.9,
+            "files": 4
+          },
+          "prompt_eval_speedup": 122.54,
+          "ttft_speedup": 2.82,
+          "cold_prompt_tps": 1041.8,
+          "warm_prompt_tps": 127684.5,
+          "cold_ppt_ms": 1.0,
+          "warm_ppt_ms": 135.9,
+          "cold_gen_ppt_ms": 71.5,
+          "warm_gen_ppt_ms": 70.2,
+          "cold_ttft_ms": 16652.6,
+          "warm_ttft_ms": 135.9,
+          "cold_wall_ttft_ms": 25836,
+          "warm_wall_ttft_ms": 9153
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 6085,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 5280.1,
+            "generation_ms": 8813.4,
+            "total_ms": 14093.6,
+            "ttft_ms": 5280.1,
+            "wall_ttft_ms": 14113,
+            "tps": 14.5,
+            "prompt_tps": 1152.4,
+            "prompt_per_token_ms": 0.9,
+            "predicted_per_token_ms": 68.9,
+            "wall_ms": 14113
+          },
+          "warm": {
+            "prompt_tokens": 6085,
+            "completion_tokens": 128,
+            "cached_tokens": 6084,
+            "prompt_ms": 102.8,
+            "generation_ms": 8792.1,
+            "total_ms": 8894.9,
+            "ttft_ms": 102.8,
+            "wall_ttft_ms": 8915,
+            "tps": 14.6,
+            "prompt_tps": 59190.3,
+            "prompt_per_token_ms": 102.8,
+            "predicted_per_token_ms": 68.7,
+            "wall_ms": 8915
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 356412088,
+            "mib": 339.9,
+            "files": 4
+          },
+          "prompt_eval_speedup": 51.36,
+          "ttft_speedup": 1.58,
+          "cold_prompt_tps": 1152.4,
+          "warm_prompt_tps": 59190.3,
+          "cold_ppt_ms": 0.9,
+          "warm_ppt_ms": 102.8,
+          "cold_gen_ppt_ms": 68.9,
+          "warm_gen_ppt_ms": 68.7,
+          "cold_ttft_ms": 5280.1,
+          "warm_ttft_ms": 102.8,
+          "cold_wall_ttft_ms": 14113,
+          "warm_wall_ttft_ms": 8915
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1414,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 1396.9,
+            "generation_ms": 8740.7,
+            "total_ms": 10137.6,
+            "ttft_ms": 1396.9,
+            "wall_ttft_ms": 10149,
+            "tps": 14.6,
+            "prompt_tps": 1012.3,
+            "prompt_per_token_ms": 1.0,
+            "predicted_per_token_ms": 68.3,
+            "wall_ms": 10149
+          },
+          "warm": {
+            "prompt_tokens": 1414,
+            "completion_tokens": 128,
+            "cached_tokens": 1413,
+            "prompt_ms": 92.8,
+            "generation_ms": 8696.6,
+            "total_ms": 8789.4,
+            "ttft_ms": 92.8,
+            "wall_ttft_ms": 8799,
+            "tps": 14.7,
+            "prompt_tps": 15231.7,
+            "prompt_per_token_ms": 92.8,
+            "predicted_per_token_ms": 67.9,
+            "wall_ms": 8799
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 254659024,
+            "mib": 242.9,
+            "files": 4
+          },
+          "prompt_eval_speedup": 15.05,
+          "ttft_speedup": 1.15,
+          "cold_prompt_tps": 1012.3,
+          "warm_prompt_tps": 15231.7,
+          "cold_ppt_ms": 1.0,
+          "warm_ppt_ms": 92.8,
+          "cold_gen_ppt_ms": 68.3,
+          "warm_gen_ppt_ms": 67.9,
+          "cold_ttft_ms": 1396.9,
+          "warm_ttft_ms": 92.8,
+          "cold_wall_ttft_ms": 10149,
+          "warm_wall_ttft_ms": 8799
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-120b-UD-Q8_K_XL-00001-of-00002",
+      "backend": "vulkan",
+      "context": 131072,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15381,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 24985.6,
+            "generation_ms": 7037.4,
+            "total_ms": 32023.0,
+            "ttft_ms": 24985.6,
+            "wall_ttft_ms": 32059,
+            "tps": 18.2,
+            "prompt_tps": 615.6,
+            "prompt_per_token_ms": 1.6,
+            "predicted_per_token_ms": 55.0,
+            "wall_ms": 32059
+          },
+          "warm": {
+            "prompt_tokens": 15381,
+            "completion_tokens": 128,
+            "cached_tokens": 15380,
+            "prompt_ms": 241.1,
+            "generation_ms": 7041.7,
+            "total_ms": 7282.8,
+            "ttft_ms": 241.1,
+            "wall_ttft_ms": 7319,
+            "tps": 18.2,
+            "prompt_tps": 63788.5,
+            "prompt_per_token_ms": 241.1,
+            "predicted_per_token_ms": 55.0,
+            "wall_ms": 7319
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 610271712,
+            "mib": 582.0,
+            "files": 4
+          },
+          "prompt_eval_speedup": 103.63,
+          "ttft_speedup": 4.38,
+          "cold_prompt_tps": 615.6,
+          "warm_prompt_tps": 63788.5,
+          "cold_ppt_ms": 1.6,
+          "warm_ppt_ms": 241.1,
+          "cold_gen_ppt_ms": 55.0,
+          "warm_gen_ppt_ms": 55.0,
+          "cold_ttft_ms": 24985.6,
+          "warm_ttft_ms": 241.1,
+          "cold_wall_ttft_ms": 32059,
+          "warm_wall_ttft_ms": 7319
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5251,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 8410.1,
+            "generation_ms": 6662.5,
+            "total_ms": 15072.6,
+            "ttft_ms": 8410.1,
+            "wall_ttft_ms": 15092,
+            "tps": 19.2,
+            "prompt_tps": 624.4,
+            "prompt_per_token_ms": 1.6,
+            "predicted_per_token_ms": 52.1,
+            "wall_ms": 15092
+          },
+          "warm": {
+            "prompt_tokens": 5251,
+            "completion_tokens": 128,
+            "cached_tokens": 5250,
+            "prompt_ms": 117.1,
+            "generation_ms": 6690.4,
+            "total_ms": 6807.5,
+            "ttft_ms": 117.1,
+            "wall_ttft_ms": 6827,
+            "tps": 19.1,
+            "prompt_tps": 44829.8,
+            "prompt_per_token_ms": 117.1,
+            "predicted_per_token_ms": 52.3,
+            "wall_ms": 6827
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 213256752,
+            "mib": 203.4,
+            "files": 4
+          },
+          "prompt_eval_speedup": 71.82,
+          "ttft_speedup": 2.21,
+          "cold_prompt_tps": 624.4,
+          "warm_prompt_tps": 44829.8,
+          "cold_ppt_ms": 1.6,
+          "warm_ppt_ms": 117.1,
+          "cold_gen_ppt_ms": 52.1,
+          "warm_gen_ppt_ms": 52.3,
+          "cold_ttft_ms": 8410.1,
+          "warm_ttft_ms": 117.1,
+          "cold_wall_ttft_ms": 15092,
+          "warm_wall_ttft_ms": 6827
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1205,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 2623.8,
+            "generation_ms": 6576.3,
+            "total_ms": 9200.1,
+            "ttft_ms": 2623.8,
+            "wall_ttft_ms": 9211,
+            "tps": 19.5,
+            "prompt_tps": 459.3,
+            "prompt_per_token_ms": 2.2,
+            "predicted_per_token_ms": 51.4,
+            "wall_ms": 9211
+          },
+          "warm": {
+            "prompt_tokens": 1205,
+            "completion_tokens": 128,
+            "cached_tokens": 1204,
+            "prompt_ms": 100.3,
+            "generation_ms": 6442.8,
+            "total_ms": 6543.2,
+            "ttft_ms": 100.3,
+            "wall_ttft_ms": 6554,
+            "tps": 19.9,
+            "prompt_tps": 12008.0,
+            "prompt_per_token_ms": 100.3,
+            "predicted_per_token_ms": 50.3,
+            "wall_ms": 6554
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 54685920,
+            "mib": 52.2,
+            "files": 4
+          },
+          "prompt_eval_speedup": 26.16,
+          "ttft_speedup": 1.41,
+          "cold_prompt_tps": 459.3,
+          "warm_prompt_tps": 12008.0,
+          "cold_ppt_ms": 2.2,
+          "warm_ppt_ms": 100.3,
+          "cold_gen_ppt_ms": 51.4,
+          "warm_gen_ppt_ms": 50.3,
+          "cold_ttft_ms": 2623.8,
+          "warm_ttft_ms": 100.3,
+          "cold_wall_ttft_ms": 9211,
+          "warm_wall_ttft_ms": 6554
+        }
+      ]
+    },
+    {
+      "model": "gpt-oss-20b-UD-Q6_K_XL",
+      "backend": "vulkan",
+      "context": 196608,
+      "max_tokens": 128,
+      "timestamp": "20260810-0548",
+      "results": [
+        {
+          "size_label": "large",
+          "size_bytes": 61440,
+          "cold": {
+            "prompt_tokens": 15381,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 11085.3,
+            "generation_ms": 5752.5,
+            "total_ms": 16837.8,
+            "ttft_ms": 11085.3,
+            "wall_ttft_ms": 16873,
+            "tps": 22.3,
+            "prompt_tps": 1387.5,
+            "prompt_per_token_ms": 0.7,
+            "predicted_per_token_ms": 44.9,
+            "wall_ms": 16873
+          },
+          "warm": {
+            "prompt_tokens": 15381,
+            "completion_tokens": 128,
+            "cached_tokens": 15380,
+            "prompt_ms": 99.3,
+            "generation_ms": 5718.1,
+            "total_ms": 5817.4,
+            "ttft_ms": 99.3,
+            "wall_ttft_ms": 5853,
+            "tps": 22.4,
+            "prompt_tps": 154827.2,
+            "prompt_per_token_ms": 99.3,
+            "predicted_per_token_ms": 44.7,
+            "wall_ms": 5853
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 406988928,
+            "mib": 388.1,
+            "files": 4
+          },
+          "prompt_eval_speedup": 111.63,
+          "ttft_speedup": 2.88,
+          "cold_prompt_tps": 1387.5,
+          "warm_prompt_tps": 154827.2,
+          "cold_ppt_ms": 0.7,
+          "warm_ppt_ms": 99.3,
+          "cold_gen_ppt_ms": 44.9,
+          "warm_gen_ppt_ms": 44.7,
+          "cold_ttft_ms": 11085.3,
+          "warm_ttft_ms": 99.3,
+          "cold_wall_ttft_ms": 16873,
+          "warm_wall_ttft_ms": 5853
+        },
+        {
+          "size_label": "medium",
+          "size_bytes": 20480,
+          "cold": {
+            "prompt_tokens": 5251,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 3576.6,
+            "generation_ms": 5535.4,
+            "total_ms": 9112.0,
+            "ttft_ms": 3576.6,
+            "wall_ttft_ms": 9131,
+            "tps": 23.1,
+            "prompt_tps": 1468.1,
+            "prompt_per_token_ms": 0.7,
+            "predicted_per_token_ms": 43.2,
+            "wall_ms": 9131
+          },
+          "warm": {
+            "prompt_tokens": 5251,
+            "completion_tokens": 128,
+            "cached_tokens": 5250,
+            "prompt_ms": 63.8,
+            "generation_ms": 5524.6,
+            "total_ms": 5588.3,
+            "ttft_ms": 63.8,
+            "wall_ttft_ms": 5607,
+            "tps": 23.2,
+            "prompt_tps": 82345.4,
+            "prompt_per_token_ms": 63.8,
+            "predicted_per_token_ms": 43.2,
+            "wall_ms": 5607
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 142231248,
+            "mib": 135.6,
+            "files": 4
+          },
+          "prompt_eval_speedup": 56.06,
+          "ttft_speedup": 1.63,
+          "cold_prompt_tps": 1468.1,
+          "warm_prompt_tps": 82345.4,
+          "cold_ppt_ms": 0.7,
+          "warm_ppt_ms": 63.8,
+          "cold_gen_ppt_ms": 43.2,
+          "warm_gen_ppt_ms": 43.2,
+          "cold_ttft_ms": 3576.6,
+          "warm_ttft_ms": 63.8,
+          "cold_wall_ttft_ms": 9131,
+          "warm_wall_ttft_ms": 5607
+        },
+        {
+          "size_label": "small",
+          "size_bytes": 4096,
+          "cold": {
+            "prompt_tokens": 1205,
+            "completion_tokens": 128,
+            "cached_tokens": 0,
+            "prompt_ms": 1123.9,
+            "generation_ms": 5394.1,
+            "total_ms": 6518.0,
+            "ttft_ms": 1123.9,
+            "wall_ttft_ms": 6529,
+            "tps": 23.7,
+            "prompt_tps": 1072.2,
+            "prompt_per_token_ms": 0.9,
+            "predicted_per_token_ms": 42.1,
+            "wall_ms": 6529
+          },
+          "warm": {
+            "prompt_tokens": 1205,
+            "completion_tokens": 128,
+            "cached_tokens": 1204,
+            "prompt_ms": 50.0,
+            "generation_ms": 5387.7,
+            "total_ms": 5437.7,
+            "ttft_ms": 50.0,
+            "wall_ttft_ms": 5450,
+            "tps": 23.8,
+            "prompt_tps": 24108.2,
+            "prompt_per_token_ms": 50.0,
+            "predicted_per_token_ms": 42.1,
+            "wall_ms": 5450
+          },
+          "cache_cold": {
+            "cache_state": "miss",
+            "ssd_stored": 2,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "cache_warm": {
+            "cache_state": "ssd_warm",
+            "ssd_stored": 1,
+            "divergences": 0,
+            "total_checkpoints": 2
+          },
+          "moe_cold": {
+            "enabled": false,
+            "present": false
+          },
+          "moe_warm": {
+            "enabled": false,
+            "present": false
+          },
+          "profile": {
+            "profile": "default",
+            "features": [
+              "kv-unified"
+            ]
+          },
+          "ssd_size": {
+            "bytes": 36484992,
+            "mib": 34.8,
+            "files": 4
+          },
+          "prompt_eval_speedup": 22.48,
+          "ttft_speedup": 1.2,
+          "cold_prompt_tps": 1072.2,
+          "warm_prompt_tps": 24108.2,
+          "cold_ppt_ms": 0.9,
+          "warm_ppt_ms": 50.0,
+          "cold_gen_ppt_ms": 42.1,
+          "warm_gen_ppt_ms": 42.1,
+          "cold_ttft_ms": 1123.9,
+          "warm_ttft_ms": 50.0,
+          "cold_wall_ttft_ms": 6529,
+          "warm_wall_ttft_ms": 5450
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+0.00.019.027 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.019.032 W DEPRECATED: argument '--slot-prompt-similarity' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.019.110 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.019.462 W srv  llama_server: -----------------
+0.00.019.462 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.019.463 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.019.463 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.019.463 W srv  llama_server: -----------------
+0.00.020.717 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.6-27B-UD-Q8_K_XL.gguf'
+0.04.978.234 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.05.404.460 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+0.05.404.590 I SSD cache: model compat_hash 50016b68e0422b39 (arch dims + type_k=8 type_v=8)
+0.05.404.710 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.05.404.725 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-50016b68e0422b39 (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.05.404.727 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-50016b68e0422b39
+0.05.407.327 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+0.05.407.360 I srv  llama_server: model loaded
+0.05.407.366 I srv  llama_server: listening on http://0.0.0.0:9090
+0.08.074.897 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.08.074.962 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.08.075.052 I SSD cache: continuation found conv=11aa8b1970d45b55 overlap=100.0%
+0.08.075.053 I SSD cache: reusing conversation 11aa8b1970d45b55 for cold restart
+0.08.075.084 I SSD cache: auto-sized hot=54768 MiB warm=18256 MiB (avail=85911 MiB)
+0.08.075.113 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/11aa8b1970d45b55 (next_id=3)
+0.08.075.115 I SSD cache: model compat_hash set to 50016b68e0422b39
+0.08.075.119 I SSD cache: created new conversation cache conv=11aa8b1970d45b55 (total=1)
+0.08.075.130 I SSD cache: match checkpoint 2 conv=11aa8b1970d45b55 turn=1 n_tokens=1244 lcp=1244
+0.08.097.187 I SSD cache: promoted checkpoint 2 cold->hot (190 MiB)
+0.08.119.756 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=1244 ssd_n_tokens=1244 pos=[0,1243] n_push=1244 overlap=100.0% continuation=1
+0.08.119.784 W slot   operator(): id  0 | task 0 | need to evaluate at least 1 token for each active slot (n_past = 1244, task.n_tokens() = 1244)
+0.08.119.784 W slot   operator(): id  0 | task 0 | n_past was set to 1243
+0.08.120.071 W find_slot: non-consecutive token position 1243 after 1243 for sequence 0 with 1 new tokens
+0.08.120.087 W find_slot: non-consecutive token position 1243 after 1243 for sequence 0 with 1 new tokens
+0.09.008.916 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 8 (pos_min = 0, pos_max = 1243, n_tokens = 1244, size = 149.626 MiB)
+0.09.868.734 I SSD cache: stored checkpoint 3 slot=0 tokens=1244 tgt=190 dft=0 spec=0 MiB (hot=381 MiB warm=0 MiB total=3)
+0.29.536.545 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =   4.71 t/s, tg_3s =   4.71 t/s
+0.32.705.245 I slot print_timing: id  0 | task 0 | n_decoded =    116, tg =   4.76 t/s, tg_3s =   5.05 t/s
+0.35.071.656 I slot print_timing: id  0 | task 0 | prompt eval time =     249.33 ms /     1 tokens (  249.33 ms per token,     4.01 tokens per second)
+0.35.071.663 I slot print_timing: id  0 | task 0 |        eval time =   26747.33 ms /   128 tokens (  208.96 ms per token,     4.79 tokens per second)
+0.35.071.664 I slot print_timing: id  0 | task 0 |       total time =   26996.66 ms /   129 tokens
+0.35.071.668 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+0.35.071.771 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1371, truncated = 0
+0.35.071.787 I SSD cache: turn 3 complete (hot=190 MiB warm=190 MiB cold=1 checkpoints=3)
+0.35.134.579 I srv    operator(): operator(): cleaning up before exit...

@@ -1,0 +1,240 @@
+{
+  "model": "Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003",
+  "backend": "vulkan",
+  "context": 131072,
+  "max_tokens": 128,
+  "timestamp": "20260810-0548",
+  "results": [
+    {
+      "size_label": "large",
+      "size_bytes": 61440,
+      "cold": {
+        "prompt_tokens": 18154,
+        "completion_tokens": 65,
+        "cached_tokens": 0,
+        "prompt_ms": 50033.8,
+        "generation_ms": 5246.1,
+        "total_ms": 55280.0,
+        "ttft_ms": 50033.8,
+        "wall_ttft_ms": 55307,
+        "tps": 12.4,
+        "prompt_tps": 362.8,
+        "prompt_per_token_ms": 2.8,
+        "predicted_per_token_ms": 80.7,
+        "wall_ms": 55307
+      },
+      "warm": {
+        "prompt_tokens": 18154,
+        "completion_tokens": 60,
+        "cached_tokens": 18153,
+        "prompt_ms": 483.3,
+        "generation_ms": 5373.5,
+        "total_ms": 5856.8,
+        "ttft_ms": 483.3,
+        "wall_ttft_ms": 5884,
+        "tps": 11.2,
+        "prompt_tps": 37561.3,
+        "prompt_per_token_ms": 483.3,
+        "predicted_per_token_ms": 89.6,
+        "wall_ms": 5884
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 1581477672,
+        "mib": 1508.2,
+        "files": 4
+      },
+      "prompt_eval_speedup": 103.53,
+      "ttft_speedup": 9.4,
+      "cold_prompt_tps": 362.8,
+      "warm_prompt_tps": 37561.3,
+      "cold_ppt_ms": 2.8,
+      "warm_ppt_ms": 483.3,
+      "cold_gen_ppt_ms": 80.7,
+      "warm_gen_ppt_ms": 89.6,
+      "cold_ttft_ms": 50033.8,
+      "warm_ttft_ms": 483.3,
+      "cold_wall_ttft_ms": 55307,
+      "warm_wall_ttft_ms": 5884
+    },
+    {
+      "size_label": "medium",
+      "size_bytes": 20480,
+      "cold": {
+        "prompt_tokens": 6346,
+        "completion_tokens": 52,
+        "cached_tokens": 0,
+        "prompt_ms": 17606.8,
+        "generation_ms": 4157.3,
+        "total_ms": 21764.1,
+        "ttft_ms": 17606.8,
+        "wall_ttft_ms": 21782,
+        "tps": 12.5,
+        "prompt_tps": 360.4,
+        "prompt_per_token_ms": 2.8,
+        "predicted_per_token_ms": 79.9,
+        "wall_ms": 21782
+      },
+      "warm": {
+        "prompt_tokens": 6346,
+        "completion_tokens": 95,
+        "cached_tokens": 6345,
+        "prompt_ms": 319.6,
+        "generation_ms": 6650.0,
+        "total_ms": 6969.7,
+        "ttft_ms": 319.6,
+        "wall_ttft_ms": 6988,
+        "tps": 14.3,
+        "prompt_tps": 19854.5,
+        "prompt_per_token_ms": 319.6,
+        "predicted_per_token_ms": 70.0,
+        "wall_ms": 6988
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 655636008,
+        "mib": 625.3,
+        "files": 4
+      },
+      "prompt_eval_speedup": 55.09,
+      "ttft_speedup": 3.12,
+      "cold_prompt_tps": 360.4,
+      "warm_prompt_tps": 19854.5,
+      "cold_ppt_ms": 2.8,
+      "warm_ppt_ms": 319.6,
+      "cold_gen_ppt_ms": 79.9,
+      "warm_gen_ppt_ms": 70.0,
+      "cold_ttft_ms": 17606.8,
+      "warm_ttft_ms": 319.6,
+      "cold_wall_ttft_ms": 21782,
+      "warm_wall_ttft_ms": 6988
+    },
+    {
+      "size_label": "small",
+      "size_bytes": 4096,
+      "cold": {
+        "prompt_tokens": 1490,
+        "completion_tokens": 42,
+        "cached_tokens": 0,
+        "prompt_ms": 4789.6,
+        "generation_ms": 2992.9,
+        "total_ms": 7782.5,
+        "ttft_ms": 4789.6,
+        "wall_ttft_ms": 7795,
+        "tps": 14.0,
+        "prompt_tps": 311.1,
+        "prompt_per_token_ms": 3.2,
+        "predicted_per_token_ms": 71.3,
+        "wall_ms": 7795
+      },
+      "warm": {
+        "prompt_tokens": 1490,
+        "completion_tokens": 40,
+        "cached_tokens": 1489,
+        "prompt_ms": 177.6,
+        "generation_ms": 2373.8,
+        "total_ms": 2551.4,
+        "ttft_ms": 177.6,
+        "wall_ttft_ms": 2565,
+        "tps": 16.9,
+        "prompt_tps": 8387.8,
+        "prompt_per_token_ms": 177.6,
+        "predicted_per_token_ms": 59.3,
+        "wall_ms": 2565
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 274886760,
+        "mib": 262.2,
+        "files": 4
+      },
+      "prompt_eval_speedup": 26.97,
+      "ttft_speedup": 3.04,
+      "cold_prompt_tps": 311.1,
+      "warm_prompt_tps": 8387.8,
+      "cold_ppt_ms": 3.2,
+      "warm_ppt_ms": 177.6,
+      "cold_gen_ppt_ms": 71.3,
+      "warm_gen_ppt_ms": 59.3,
+      "cold_ttft_ms": 4789.6,
+      "warm_ttft_ms": 177.6,
+      "cold_wall_ttft_ms": 7795,
+      "warm_wall_ttft_ms": 2565
+    }
+  ]
+}

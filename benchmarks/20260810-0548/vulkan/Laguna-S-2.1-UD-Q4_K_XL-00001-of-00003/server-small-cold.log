@@ -1,0 +1,43 @@
+0.00.016.864 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.022.690 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.022.995 W srv  llama_server: -----------------
+0.00.022.996 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.022.996 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.022.997 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.022.997 W srv  llama_server: -----------------
+0.00.024.171 I srv    load_model: loading model '/home/deck/llama-ai/models/Laguna-S-2.1-UD-Q4_K_XL-00001-of-00003.gguf'
+0.00.119.279 W load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.00.119.292 W load: special_eot_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.21.437.440 W load: special_eos_id is not in special_eog_ids - the tokenizer config may be incorrect
+0.22.307.723 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.22.550.435 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+0.22.550.480 I common_speculative_impl_draft_dflash: adding speculative implementation 'draft-dflash'
+0.22.550.483 I common_speculative_impl_draft_dflash: - n_max=7, n_min=0, p_min=0.00
+0.22.550.484 I common_speculative_impl_draft_dflash: - block_size=16, mask_token_id=12, n_extract=6
+0.22.647.963 I SSD cache: model compat_hash 8df6c8b0e7dc893d (arch dims + type_k=8 type_v=8)
+0.22.648.019 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.22.648.064 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-8df6c8b0e7dc893d (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.22.648.065 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-8df6c8b0e7dc893d
+0.22.653.510 I srv          init: chat template supports preserving reasoning, consider enabling it via --reasoning-preserve
+0.22.653.555 I srv  llama_server: model loaded
+0.22.653.562 I srv  llama_server: listening on http://0.0.0.0:9090
+0.25.241.878 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.25.241.930 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.25.242.036 I SSD cache: auto-sized hot=30209 MiB warm=10069 MiB (avail=47386 MiB)
+0.25.242.075 I SSD cache: no index file, starting fresh
+0.25.242.083 I SSD cache: loaded 0 checkpoints from /home/deck/llama-ai/ssd-cache/ca136b4883ef04d2 (next_id=1)
+0.25.242.085 I SSD cache: model compat_hash set to 8df6c8b0e7dc893d
+0.25.242.089 I SSD cache: created new conversation cache conv=ca136b4883ef04d2 (total=1)
+0.29.805.531 I slot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1486, progress = 1.00, t =   4.56 s / 325.62 tokens per second
+0.29.958.238 I SSD cache: stored checkpoint 1 slot=0 tokens=1486 tgt=75 dft=12 spec=0 MiB (hot=87 MiB warm=0 MiB total=1)
+0.30.042.016 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 2 (pos_min = 0, pos_max = 1489, n_tokens = 1490, size = 50.263 MiB)
+0.30.176.972 I SSD cache: stored checkpoint 2 slot=0 tokens=1490 tgt=75 dft=12 spec=0 MiB (hot=174 MiB warm=0 MiB total=2)
+0.33.024.585 I slot print_timing: id  0 | task 0 | prompt eval time =    4789.64 ms /  1490 tokens (    3.21 ms per token,   311.09 tokens per second)
+0.33.024.590 I slot print_timing: id  0 | task 0 |        eval time =    2992.86 ms /    42 tokens (   71.26 ms per token,    14.03 tokens per second)
+0.33.024.591 I slot print_timing: id  0 | task 0 |       total time =    7782.50 ms /  1532 tokens
+0.33.024.596 I slot print_timing: id  0 | task 0 |    graphs reused =         24
+0.33.024.601 I slot print_timing: id  0 | task 0 | draft acceptance = 0.10119 (   17 accepted /   168 generated), mean len =  1.71
+0.33.024.765 I slot      release: id  0 | task 0 | stop processing: n_tokens = 1531, truncated = 0
+0.33.024.781 I SSD cache: turn 2 complete (hot=174 MiB warm=0 MiB cold=0 checkpoints=2)
+0.33.100.730 I srv    operator(): operator(): cleaning up before exit...
+0.33.103.386 W ~llama_context: Vulkan_Host compute buffer size of  72.0000 MiB, does not match expectation of  15.0235 MiB

@@ -22,11 +22,13 @@ Profiles scale automatically with the APU's VRAM carveout via
 conservative 64K-token settings tuned for the 780M's 6GB VRAM envelope.
 
 Performance work on hybrid architectures - Qwen3.6, Qwen3-Coder-Next,
-and Nemotron-3-Super (attention+Mamba MoE) - lives as commits in the
-[CachyLLama](https://github.com/fewtarius/CachyLLama) git history. GLM-4.7
-uses MLA (multi-head latent attention, similar to DeepSeek) and Gemma 4
-uses sliding-window/global attention; neither is a Mamba hybrid. The
-submodule here points at the fork, not at ggml-org/llama.cpp.
+Qwen3.5-122B (all attention+Mamba MoE), and Laguna-S-2.1 (DFlash target)
+- lives as commits in the
+[CachyLLama](https://github.com/fewtarius/CachyLLama) git history. DeepSeek-V4-Flash
+uses Lightning Indexer (deepseek4) plus MLAttention. GLM-4.7 uses MLA
+(multi-head latent attention, deepseek2) and Gemma 4 uses
+sliding-window/global attention; neither is a Mamba hybrid. The submodule
+here points at the fork, not at ggml-org/llama.cpp.
 
 ## Quick start
 
@@ -159,11 +161,13 @@ MoE=true, SSM=false)`).
 
 ### Hybrid MoE architectures
 
-Qwen3.6, Qwen3-Coder-Next, and Nemotron-3-Super mix attention layers
-with recurrent (Mamba) layers. CachyLLama handles these correctly: KV
-cache shifting, attention-only memory clearing that preserves recurrent
-state, and checkpoint overflow prevention - so same-conversation state
-is always accepted regardless of size.
+Qwen3.6 (both dense and MoE variants), Qwen3-Coder-Next, and
+Qwen3.5-122B mix attention layers with recurrent (Mamba) layers.
+Laguna-S-2.1 is a DFlash target with shared experts and sliding
+window. CachyLLama handles these correctly: KV cache shifting,
+attention-only memory clearing that preserves recurrent state, and
+checkpoint overflow prevention - so same-conversation state is always
+accepted regardless of size.
 
 ### MoE expert tracking
 
@@ -277,44 +281,57 @@ with 30-day expiry.
 ### Strix Halo (Nimo Axis N161)
 
 Radeon 8060S, 96GB APU VRAM, Vulkan backend. Large prompt results
-only - [full data](benchmarks/) with all sizes and per-model breakdowns. Speedup is
-prompt eval speedup, not wall-clock.
+only - [full data](benchmarks/20260810-0548/) with all sizes and
+per-model breakdowns. Speedup is prompt eval speedup: cold `prompt_ms`
+divided by warm `prompt_ms` (with warm path restoring the prefix from
+SSD rather than re-evaluating it).
 
 | Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
 |-------|----------:|----------:|--------:|--------:|
-| GPT-OSS-120B Q8_K_XL (117B, 5B active MoE) | 27.9s | 1.46s | **19.2x** | 9-11 |
-| Nemotron-3-Super-120B Q4_K_XL (120B, 12B active MoE) | 71.6s | 0.49s | **145.2x** | 10-13 |
-| gpt-oss-20b Q6_K_XL (20B, 3.6B active MoE) | 12.7s | 0.17s | **77.0x** | 29-67 |
-| GLM-4.7-Flash Q8_K_XL (30B, 3B active MoE) | 40.6s | 1.07s | **37.8x** | 29-35 |
-| Qwen3.6-35B Q8_K_XL (35B, 3B active MoE) | 20.3s | 0.47s | **43.0x** | 35-43 |
-| Qwen3.6-27B Q4_K_XL (27B, dense) | 55.8s | 0.31s | **179.2x** | 8-10 |
-| gemma-4-26B Q5_K_M (26B, 4B active MoE) | 23.6s | 0.17s | **143.0x** | 30-40 |
-| Qwen3-Coder-Next Q8_K_XL (80B, 3B active MoE) | 26.3s | 0.31s | **85.8x** | 21-34 |
-| MiniMax-M2.7 Q2_K_XL (230B, 10B active MoE) | 107.3s | 18.4s | **5.8x** | 4-26 |
+| DeepSeek-V4-Flash-0731 UD-IQ3_XXS (256x8.4B MoE, Lightning Indexer) | 97.0s | 0.34s | **282x** | 6.3-17.5 |
+| MiniMax-M2.7 Q2_K_XL (256x4.9B MoE) | 60.3s | 3.19s | **19x** | 12.0-17.2 |
+| Qwen3-235B-A22B Thinking-2507 IQ2_M (235B-A22B MoE) | 100.5s | 1.04s | **96x** | 10.6-13.6 |
+| Qwen3.5-122B-A10B Q5_K_M (122B-A10B MoE, Mamba hybrid) | 52.9s | 0.31s | **171x** | 9.5-10.6 |
+| Qwen3.5-122B-A10B UD-Q4_K_XL (122B-A10B MoE, Mamba hybrid) | 53.5s | 0.28s | **189x** | 23.5-32.7 |
+| gpt-oss-120b Q8_K_XL (120B MoE) | 25.0s | 0.24s | **104x** | 18.2-19.9 |
+| Qwen3-Coder-Next Q8_K_XL (512x2.5B MoE, Mamba hybrid) | 48.5s | 0.22s | **221x** | 18.9-19.9 |
+| Qwen3.6-35B-A3B Q8_K_XL (35B-A3B MoE, Mamba hybrid) | 20.5s | 0.14s | **149x** | 14.2-17.5 |
+| GLM-4.7-Flash Q8_K_XL (64x2.6B MoE, MLA) | 85.5s | 0.18s | **478x** | 13.9-20.3 |
+| gemma-4-26B-A4B Q5_K_M (26B-A4B MoE, sliding window) | 16.7s | 0.14s | **123x** | 14.0-14.7 |
+| Qwen3.6-27B Q8_K_XL (27B dense, Mamba hybrid) | 85.3s | 0.36s | **238x** | 4.7-4.8 |
+| Laguna-S-2.1 Q4_K_XL (256x4.5B MoE, DFlash target) | 50.0s | 0.48s | **104x** | 11.2-16.9 |
+| gpt-oss-20b Q6_K_XL (20B MoE) | 11.1s | 0.10s | **112x** | 22.3-23.8 |
 
 ### Architecture notes
 
-**Dense vs MoE.** Qwen3.6-27B is the only dense model in the table -
-all 27B parameters activate per token, trading generation speed (8-10
-t/s) for prompt eval throughput. MoE models activate 3-12B parameters
-per token, hitting 29-67 t/s. Dense models show the largest speedup
-numbers from SSD caching (179x) because cold eval is proportionally
-slower, but generation speed is the real-world tradeoff.
+**MoE vs dense.** Qwen3.6-27B is the only dense model in the table -
+all 27B parameters activate per token, trading generation speed
+(4.7-4.8 t/s) for prompt eval throughput. MoE models activate
+2.6-22B parameters per token, hitting 9-32 t/s. Dense models show the
+largest speedup numbers from SSD caching (238x) because cold eval is
+proportionally slower, but generation speed is the real-world tradeoff.
 
-**Mamba hybrids.** Qwen3.6-35B, Qwen3-Coder-Next, and Nemotron-3-Super
-interleave attention layers with recurrent (Mamba-2) layers. These
-require attention-only KV cache clearing to preserve recurrent state
-across cache restores. GLM-4.7 uses MLA (multi-head latent attention,
-no Mamba), and Gemma 4 uses interleaved sliding-window/global
-attention. Neither is a Mamba hybrid.
+**Mamba hybrids.** Qwen3.6 (both dense and MoE variants),
+Qwen3-Coder-Next, and Qwen3.5-122B interleave attention layers with
+recurrent (Mamba-2) layers. These require attention-only KV cache
+clearing to preserve recurrent state across cache restores. Qwen3-235B
+(qwen3moe) is pure attention MoE - no Mamba. GLM-4.7 uses MLA (multi-head
+latent attention, no Mamba), Gemma 4 uses interleaved
+sliding-window/global attention, and DeepSeek-V4-Flash uses Lightning
+Indexer. None of these are Mamba hybrids.
 
 **Quantization.** Most models run at Q8_K_XL (30-82GB on disk).
-Qwen3.6-27B at Q4_K_XL fits comfortably alongside a full 32K KV cache.
-MiniMax-M2.7 at Q2_K_XL pushes the frontier - 230B parameters, 256
-experts, 10B active per token, running at 4-26 t/s in 96GB VRAM.
+Qwen3.5-122B-A10B at Q4_K_XL hits 32.7 t/s (vs 9.5 t/s at Q5_K_M) due
+to lower memory-bandwidth pressure on decode. MiniMax-M2.7 at Q2_K_XL
+pushes the frontier - 230B parameters, 256 experts, 4.9B active per
+token, running in 96GB VRAM. DeepSeek-V4-Flash IQ3_XXS sits at the top
+of the model size chart at ~1.6T parameters (256 experts, 8.4B active).
 
-All warm runs restore from SSD, cold from scratch. Warm TTFT stays
-under 1.5s across most models. See [benchmarks/](benchmarks/) for full
+All warm runs restore the cached prefix from SSD; cold from scratch.
+Warm TTFT stays under 1.5s across most models - MiniMax-M2.7 at 3.19s
+is the outlier (its 300 MiB warm-path SSD payload for a 15K-token q8_0
+KV cache costs more on the SSD restore path than smaller models).
+See [benchmarks/20260810-0548/](benchmarks/20260810-0548/) for full
 results with per-model breakdowns and all prompt sizes.
 
 ### Ayaneo Flip KB

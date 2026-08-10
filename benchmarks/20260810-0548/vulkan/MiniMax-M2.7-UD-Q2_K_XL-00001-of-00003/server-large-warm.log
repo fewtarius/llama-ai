@@ -1,0 +1,40 @@
+0.00.016.621 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.016.704 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.017.047 W srv  llama_server: -----------------
+0.00.017.048 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.017.048 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.017.048 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.017.048 W srv  llama_server: -----------------
+0.00.018.270 I srv    load_model: loading model '/home/deck/llama-ai/models/MiniMax-M2.7-UD-Q2_K_XL-00001-of-00003.gguf'
+0.28.869.112 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+0.28.869.236 I SSD cache: model compat_hash 646152995c8e5c98 (arch dims + type_k=8 type_v=8)
+0.28.875.619 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.29.587.706 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-646152995c8e5c98 (loaded=1, entries=1, bytes=1844.7 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.29.587.716 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-646152995c8e5c98
+0.29.596.736 I srv  llama_server: model loaded
+0.29.596.744 I srv  llama_server: listening on http://0.0.0.0:9090
+0.32.351.193 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.32.351.393 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.32.351.479 I SSD cache: continuation found conv=13a83cf2ee61c5e5 overlap=100.0%
+0.32.351.479 I SSD cache: reusing conversation 13a83cf2ee61c5e5 for cold restart
+0.32.351.510 I SSD cache: auto-sized hot=21328 MiB warm=7109 MiB (avail=33456 MiB)
+0.32.351.535 I SSD cache: loaded 1 checkpoints from /home/deck/llama-ai/ssd-cache/13a83cf2ee61c5e5 (next_id=2)
+0.32.351.536 I SSD cache: model compat_hash set to 646152995c8e5c98
+0.32.351.540 I SSD cache: created new conversation cache conv=13a83cf2ee61c5e5 (total=1)
+0.32.351.591 I SSD cache: match checkpoint 1 conv=13a83cf2ee61c5e5 turn=1 n_tokens=15080 lcp=4096
+0.33.014.455 I SSD cache: promoted checkpoint 1 cold->hot (1940 MiB)
+0.33.496.950 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=4096 ssd_n_tokens=15080 pos=[0,15079] n_push=15080 overlap=100.0% continuation=1
+0.33.496.978 W slot   operator(): id  0 | task 0 | need to evaluate at least 1 token for each active slot (n_past = 15080, task.n_tokens() = 15080)
+0.33.496.979 W slot   operator(): id  0 | task 0 | n_past was set to 15079
+0.35.432.798 I system cache: refreshed entry hash=3d3cf94e78548c9a tokens=27 size=1940.3 MiB
+0.35.432.816 I slot maybe_extrac: id  0 | task 0 | stored system prompt cache entry: n_sys=27, size=2034520508 bytes
+0.35.846.069 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 2 (pos_min = 0, pos_max = 15079, n_tokens = 15080, size = 1940.399 MiB)
+0.37.453.772 I SSD cache: stored checkpoint 2 slot=0 tokens=15080 tgt=1940 dft=0 spec=0 MiB (hot=3880 MiB warm=0 MiB total=2)
+0.44.227.676 I slot print_timing: id  0 | task 0 | n_decoded =    100, tg =  11.51 t/s, tg_3s =  11.51 t/s
+0.46.133.206 I slot print_timing: id  0 | task 0 | prompt eval time =    3189.29 ms /     1 tokens ( 3189.29 ms per token,     0.31 tokens per second)
+0.46.133.213 I slot print_timing: id  0 | task 0 |        eval time =   10592.50 ms /   128 tokens (   82.75 ms per token,    12.08 tokens per second)
+0.46.133.214 I slot print_timing: id  0 | task 0 |       total time =   13781.79 ms /   129 tokens
+0.46.133.217 I slot print_timing: id  0 | task 0 |    graphs reused =        127
+0.46.133.696 I slot      release: id  0 | task 0 | stop processing: n_tokens = 15207, truncated = 0
+0.46.133.710 I SSD cache: turn 3 complete (hot=1940 MiB warm=1940 MiB cold=0 checkpoints=2)
+0.46.199.547 I srv    operator(): operator(): cleaning up before exit...

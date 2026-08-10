@@ -1,0 +1,41 @@
+0.00.016.231 W DEPRECATED: argument '--ctx-checkpoints' specified multiple times, use comma-separated values instead (only last value will be used)
+0.00.016.325 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.016.658 W srv  llama_server: -----------------
+0.00.016.659 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.016.659 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.016.659 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.016.659 W srv  llama_server: -----------------
+0.00.017.866 I srv    load_model: loading model '/home/deck/llama-ai/models/Qwen3.5-122B-A10B-UD-Q4_K_XL-00001-of-00003.gguf'
+0.23.811.869 W srv    load_model: cache_reuse is not supported by this context, it will be disabled
+0.23.997.824 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 131072, kv_unified = 'true'
+0.24.091.992 I SSD cache: model compat_hash d9c4e8d514118191 (arch dims + type_k=8 type_v=8)
+0.24.099.481 I srv    load_model: SSD cache enabled: path=/home/deck/llama-ai/ssd-cache, hot=0 MiB, warm=0 MiB
+0.24.099.554 I system cache: initialized at /home/deck/llama-ai/ssd-cache/sys-d9c4e8d514118191 (loaded=0, entries=0, bytes=0.0 MiB, rejected=0, max_entries=8, max_unused_days=30)
+0.24.099.554 I srv    load_model: system prompt cache enabled: max_entries=8, max_days=30, path=/home/deck/llama-ai/ssd-cache/sys-d9c4e8d514118191
+0.24.102.219 I srv  llama_server: model loaded
+0.24.102.227 I srv  llama_server: listening on http://0.0.0.0:9090
+0.26.259.981 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.26.260.053 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.26.260.144 I SSD cache: continuation found conv=11aa8b1970d45b55 overlap=100.0%
+0.26.260.146 I SSD cache: reusing conversation 11aa8b1970d45b55 for cold restart
+0.26.260.178 I SSD cache: auto-sized hot=29231 MiB warm=9743 MiB (avail=45852 MiB)
+0.26.260.206 I SSD cache: loaded 2 checkpoints from /home/deck/llama-ai/ssd-cache/11aa8b1970d45b55 (next_id=3)
+0.26.260.208 I SSD cache: model compat_hash set to d9c4e8d514118191
+0.26.260.212 I SSD cache: created new conversation cache conv=11aa8b1970d45b55 (total=1)
+0.26.260.249 I SSD cache: match checkpoint 2 conv=11aa8b1970d45b55 turn=1 n_tokens=5411 lcp=4096
+0.26.351.577 I SSD cache: promoted checkpoint 2 cold->hot (227 MiB)
+0.26.399.932 I slot   operator(): id  0 | task 0 | SSD cache restore: lcp=4096 ssd_n_tokens=5411 pos=[0,5410] n_push=5411 overlap=100.0% continuation=1
+0.26.399.963 W slot   operator(): id  0 | task 0 | need to evaluate at least 1 token for each active slot (n_past = 5411, task.n_tokens() = 5411)
+0.26.399.963 W slot   operator(): id  0 | task 0 | n_past was set to 5410
+0.26.400.627 W find_slot: non-consecutive token position 5410 after 5410 for sequence 0 with 1 new tokens
+0.26.404.477 W find_slot: non-consecutive token position 5410 after 5410 for sequence 0 with 1 new tokens
+0.26.491.257 I slot deferred_cre: id  0 | task 0 | created final context checkpoint 2 of 2 (pos_min = 0, pos_max = 5410, n_tokens = 5411, size = 159.735 MiB)
+0.26.754.263 I SSD cache: stored checkpoint 3 slot=0 tokens=5411 tgt=216 dft=10 spec=0 MiB (hot=454 MiB warm=0 MiB total=3)
+0.29.369.518 I slot print_timing: id  0 | task 0 | prompt eval time =     201.75 ms /     1 tokens (  201.75 ms per token,     4.96 tokens per second)
+0.29.369.524 I slot print_timing: id  0 | task 0 |        eval time =    2907.57 ms /    72 tokens (   40.38 ms per token,    24.76 tokens per second)
+0.29.369.525 I slot print_timing: id  0 | task 0 |       total time =    3109.32 ms /    73 tokens
+0.29.369.530 I slot print_timing: id  0 | task 0 |    graphs reused =         33
+0.29.369.534 I slot print_timing: id  0 | task 0 | draft acceptance = 0.60606 (   40 accepted /    66 generated), mean len =  2.21
+0.29.370.097 I slot      release: id  0 | task 0 | stop processing: n_tokens = 5484, truncated = 0
+0.29.370.118 I SSD cache: turn 3 complete (hot=227 MiB warm=227 MiB cold=1 checkpoints=3)
+0.29.435.110 I srv    operator(): operator(): cleaning up before exit...
