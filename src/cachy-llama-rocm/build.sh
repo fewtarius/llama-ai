@@ -45,7 +45,7 @@ cmake "$LLAMA_DIR" \
     -DGGML_NATIVE=OFF \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_EXAMPLES=ON
+    -DLLAMA_BUILD_EXAMPLES=OFF
 
 cmake --build . --config Release -j$(nproc)
 log_ok "ROCm build complete"
