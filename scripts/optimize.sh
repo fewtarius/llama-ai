@@ -195,10 +195,11 @@ _opt_start_optimistic() {
         # ubatch=2048: HTTP-server benchmark on Nimo (Qwen3.6-35B-A3B
         # Q8_K_XL, ctx=262144) gives 67.8 t/s decode vs 18.3 t/s at
         # ubatch=512. MTP draft expansion benefits from the larger
-        # ubatch. batch=4096 keeps enough headroom for ~4k-token prefills.
+        # ubatch. batch=2048 is the legacy default across the Strix Halo
+        # and 780M hardware range; we don't assume Nimo-specific headroom.
         # Standard/handheld use smaller values to fit smaller APUs
         # (e.g. Steam Deck 780M, 16 GB VRAM+GTT) where ubatch=2048 OOMs.
-        halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=4096 ;;
+        halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=2048 ;;
         standard)  SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
         handheld)  SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
         *)         SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
