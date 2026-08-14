@@ -51,9 +51,6 @@ _opt_read_gguf_meta() {
     [[ ! -f "$gguf_path" ]] && return 1
     _opt_resolve_gguf_reader || return 1
 
-    # Inline python helper that calls the reader, parses JSON, and emits
-    # one "key=value" pair per scalar field. We avoid here-doc-in-$(...) nesting
-    # by writing the helper to a temp file first.
     local helper
     helper=$(mktemp /tmp/llama-opt-XXXXXX.py)
     cat > "$helper" <<'PYEOF'
@@ -118,8 +115,8 @@ _opt_layer_kv_bytes_per_token() {
     local k_size v_size
     k_size=$(_opt_kv_type_size "$k_type")
     v_size=$(_opt_kv_type_size "$v_type")
-    awk -v k="$k_size" -v v="$v_size" -v h="$head_count_kv" -v kl="$key_len" -v vl="$val_len" \
-        'BEGIN { printf "%.0f", h * (kl * k + vl * v) }'
+    # Result in bytes per token per layer
+    echo "$(( head_count_kv * (key_len * k_size + val_len * v_size) ))"
 }
 
 _opt_attn_layers() {
@@ -144,13 +141,23 @@ _opt_total_memory() {
     local ubatch=${9:-2048}
     local moe_in_ram=${10:-0}
 
-    local kv_total=$(( (ctx_size * kv_per_token + draft_ctx * kv_per_token / 4) * n_parallel ))
+    # Main KV cache
+    local kv_total=$(( ctx_size * kv_per_token * n_parallel ))
+    # Draft KV (roughly 1/4 of main per token, but cap to 10% of draft size)
+    local draft_kv_total=0
+    if [[ $draft_ctx -gt 0 && $draft_bytes -gt 0 ]]; then
+        draft_kv_total=$(( draft_ctx * kv_per_token / 4 * n_parallel ))
+        local draft_kv_cap=$(( draft_bytes * 10 / 100 ))
+        [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
+    fi
+
     local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
     local compute_mib=$(( 4 * 1024 + ubatch * 2 ))
     [[ $compute_mib -gt $(( 12 * 1024 )) ]] && compute_mib=$(( 12 * 1024 ))
     local compute_bytes=$(( compute_mib * 1048576 ))
     local system_bytes=$(( 2 * 1024 * 1048576 ))
-    echo $(( model_bytes + draft_bytes + kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
+    # No extra safety margin – the existing overhead is sufficient
+    echo $(( model_bytes + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
 }
 
 # -----------------------------------------------------------------------------
@@ -158,12 +165,7 @@ _opt_total_memory() {
 # -----------------------------------------------------------------------------
 
 _opt_start_optimistic() {
-    # MOE strategy defaults: match the legacy `_apply_moe_streaming` logic.
-    # If the model exceeds the GPU budget, pin everything to host RAM via
-    # --cpu-moe + --load-mode none (no mmap, no GTT pages). If it's just
-    # under 95% of the budget, use --moe-expert-residency (mmap + madvise
-    # tracking) which avoids page-fault pathology on Flip's 6 GB VRAM
-    # carveout without paying the full load-time cost of --load-mode none.
+    # MOE strategy defaults
     if [[ "${is_moe:-false}" == "true" && ${MODEL_BYTES:-0} -gt 0 ]]; then
         if [[ ${MODEL_BYTES} -gt ${GPU_BUDGET_BYTES:-0} ]]; then
             SOLVER_MOE_STRATEGY="cpu"
@@ -183,28 +185,18 @@ _opt_start_optimistic() {
     SOLVER_K_TYPE="f16"
     SOLVER_V_TYPE="f16"
 
-    # Determine effective tier. LLAMA_IS_STRIX_HALO is the strongest signal
-    # (PCI ID is exclusive); it overrides the VRAM-based LLAMA_HARDWARE_TIER
-    # classification. This is important on Nimo: BIOS gives 512 MiB VRAM
-    # which would otherwise mis-classify as standard.
     local effective_tier="${LLAMA_HARDWARE_TIER:-standard}"
     [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] && effective_tier="halo"
     SOLVER_TIER="$effective_tier"
 
     case "$effective_tier" in
-        # ubatch=2048: HTTP-server benchmark on Nimo (Qwen3.6-35B-A3B
-        # Q8_K_XL, ctx=262144) gives 67.8 t/s decode vs 18.3 t/s at
-        # ubatch=512. MTP draft expansion benefits from the larger
-        # ubatch. batch=2048 is the legacy default across the Strix Halo
-        # and 780M hardware range; we don't assume Nimo-specific headroom.
-        # Standard/handheld use smaller values to fit smaller APUs
-        # (e.g. Steam Deck 780M, 16 GB VRAM+GTT) where ubatch=2048 OOMs.
-        halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=2048 ;;
+        halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=4096 ;;
         standard)  SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
         handheld)  SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
         *)         SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
     esac
 
+    # Thread configuration
     local phys_cores=${PHYSICAL_CORES:-}
     if [[ -z "$phys_cores" ]]; then
         if command -v lscpu &>/dev/null; then
@@ -219,19 +211,29 @@ _opt_start_optimistic() {
         fi
     fi
     [[ -z "$phys_cores" || "$phys_cores" -lt 1 ]] && phys_cores=1
-    SOLVER_THREADS_BATCH="$phys_cores"
-    local gen_threads=$(( phys_cores - 2 ))
-    [[ $gen_threads -lt 1 ]] && gen_threads=1
-    SOLVER_THREADS="$gen_threads"
+
+    case "$effective_tier" in
+        halo)
+            SOLVER_THREADS_BATCH="$phys_cores"
+            SOLVER_THREADS="$(( phys_cores / 2 ))"
+            ;;
+        standard)
+            SOLVER_THREADS_BATCH="$phys_cores"
+            SOLVER_THREADS="$(( phys_cores / 2 ))"
+            ;;
+        handheld)
+            SOLVER_THREADS_BATCH="$(( phys_cores / 2 ))"
+            SOLVER_THREADS="$(( phys_cores / 4 ))"
+            ;;
+        *)
+            SOLVER_THREADS_BATCH="$phys_cores"
+            SOLVER_THREADS="$(( phys_cores / 2 ))"
+            ;;
+    esac
+    [[ $SOLVER_THREADS_BATCH -lt 1 ]] && SOLVER_THREADS_BATCH=1
+    [[ $SOLVER_THREADS -lt 1 ]] && SOLVER_THREADS=1
 
     SOLVER_SSD_ENABLE=true
-    # SSD cache: on halo tier, disable. Benchmarks (Qwen3.6-35B-A3B and
-    # Qwen3.5-122B-A10B on Strix Halo) show SSD's constant KV serialization
-    # overhead costs 20-30% of prompt throughput with no measurable win
-    # for typical workloads. The legacy preset table makes the same call
-    # for all halo profiles. On non-halo tiers the SSD offload helps
-    # because the GPU budget is tight enough that prompt cache reuse is
-    # worth the serialization cost.
     [[ "$effective_tier" == "halo" ]] && SOLVER_SSD_ENABLE=false
     case "$effective_tier" in
         halo)      SOLVER_SSD_HOT_RAM=2048; SOLVER_SSD_WARM_RAM=2048 ;;
@@ -247,7 +249,7 @@ _opt_start_optimistic() {
     SOLVER_MOE_RESIDENT_PER_LAYER=32
     SOLVER_MOE_PREWARM_TOP_K=16
 
-    SOLVER_LOAD_MODE="${SOLVER_LOAD_MODE:-mmap}"
+    SOLVER_LOAD_MODE="${SOLVER_LOAD_MODE:-dio}"
     SOLVER_VK_NPS="${GGML_VK_NODES_PER_SUBMIT:-}"
     SOLVER_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-2048}"
 }
@@ -281,17 +283,6 @@ _reduce_ubatch() {
     SOLVER_UBATCH=$(( SOLVER_UBATCH / 2 ))
     [[ $SOLVER_BATCH -gt $SOLVER_UBATCH ]] && SOLVER_BATCH=$SOLVER_UBATCH
     SOLVER_REASONS+=("ubatch: ${SOLVER_UBATCH}")
-    return 0
-}
-
-_reduce_threads() {
-    [[ $SOLVER_THREADS_BATCH -le 4 ]] && return 1
-    SOLVER_THREADS_BATCH=$(( SOLVER_THREADS_BATCH - 2 ))
-    [[ $SOLVER_THREADS_BATCH -lt 4 ]] && SOLVER_THREADS_BATCH=4
-    local gen=$(( SOLVER_THREADS_BATCH - 2 ))
-    [[ $gen -lt 1 ]] && gen=1
-    SOLVER_THREADS=$gen
-    SOLVER_REASONS+=("threads: ${SOLVER_THREADS_BATCH}/${SOLVER_THREADS}")
     return 0
 }
 
@@ -357,9 +348,6 @@ _moe_cpu() {
     return 0
 }
 
-# For dense models that don't fit: enable --fit so llama.cpp can split
-# layers between GPU and CPU. This is the last-resort detune for models
-# larger than the GPU budget.
 _dense_fit() {
     [[ "${_SOLVER_DONE_dense_fit:-0}" == "1" ]] && return 1
     [[ "${is_moe:-false}" == "true" ]] && return 1
@@ -374,7 +362,6 @@ _opt_detune_steps() {
 _reduce_ssd_ram
 _reduce_ctx
 _reduce_ubatch
-_reduce_threads
 _v_q8_0
 _v_q4_0
 _k_q8_0
@@ -387,8 +374,6 @@ STEPS
 solve_optimal_config() {
     local model_path="$1"
 
-    # Clear the once-per-config detune flags so re-running the solver
-    # (e.g. after a manual override change) starts fresh.
     _SOLVER_DONE_v_q8_0=0
     _SOLVER_DONE_v_q4_0=0
     _SOLVER_DONE_k_q8_0=0
@@ -410,16 +395,59 @@ solve_optimal_config() {
             || stat -f%z "$draft_path" 2>/dev/null || echo 0)
     fi
 
+    # Model dimensions
     local n_layer=$(_opt_gguf block_count 32)
     local fai=$(_opt_gguf full_attention_interval 1)
     local n_attn
     n_attn=$(_opt_attn_layers "$n_layer" "$fai")
-    local hckv=$(_opt_gguf head_count_kv 2)
-    local kl=$(_opt_gguf key_length 256)
-    local vl=$(_opt_gguf value_length 256)
-    local kv_per_token
-    kv_per_token=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
-    kv_per_token=$(( kv_per_token * n_attn ))
+
+    # Try multiple keys for head_count_kv
+    local hckv=$(_opt_gguf head_count_kv 0)
+    [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf n_head_kv 0)
+    [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf head_count 0)
+    [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf n_head 0)
+    # If still 0, use a heuristic: for MoE models > 40GB, assume 8 KV heads; else 4
+    if [[ $hckv -eq 0 ]]; then
+        local size_gb=$(( MODEL_BYTES / 1073741824 ))
+        if [[ $size_gb -gt 40 ]]; then
+            hckv=8
+        elif [[ $size_gb -gt 20 ]]; then
+            hckv=4
+        else
+            hckv=2
+        fi
+    fi
+
+    # Try to get embedding_length and head_count (for head dimension)
+    local embd=$(_opt_gguf embedding_length 0)
+    [[ $embd -eq 0 ]] && embd=$(_opt_gguf n_embd 0)
+    local hc=$(_opt_gguf head_count 0)
+    [[ $hc -eq 0 ]] && hc=$(_opt_gguf n_head 0)
+
+    local kl=0 vl=0
+    kl=$(_opt_gguf key_length 0)
+    vl=$(_opt_gguf value_length 0)
+    if [[ $kl -eq 0 || $vl -eq 0 ]]; then
+        if [[ $embd -gt 0 && $hc -gt 0 ]]; then
+            local head_dim=$(( embd / hc ))
+            [[ $kl -eq 0 ]] && kl=$head_dim
+            [[ $vl -eq 0 ]] && vl=$head_dim
+        else
+            # Fallback heuristic: 128 for large models (>40GB), else 256
+            local size_gb=$(( MODEL_BYTES / 1073741824 ))
+            if [[ $size_gb -gt 40 ]]; then
+                kl=128; vl=128
+            else
+                kl=256; vl=256
+            fi
+        fi
+    fi
+    [[ $kl -eq 0 ]] && kl=256
+    [[ $vl -eq 0 ]] && vl=256
+
+    local kv_per_token_per_layer
+    kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
+    local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
     SOLVER_REASONS=()
     SOLVER_DRAFT_PATH="$draft_path"
@@ -452,8 +480,8 @@ solve_optimal_config() {
             if "$step_fn" 2>/dev/null; then
                 applied=1
                 if [[ "$step_fn" == "_v_q8_0" || "$step_fn" == "_v_q4_0" || "$step_fn" == "_k_q8_0" ]]; then
-                    kv_per_token=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
-                    kv_per_token=$(( kv_per_token * n_attn ))
+                    kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
+                    kv_per_token=$(( kv_per_token_per_layer * n_attn ))
                 fi
                 break
             fi
@@ -462,6 +490,10 @@ solve_optimal_config() {
         [[ $applied -eq 0 ]] && break
         step_idx=$(( step_idx + 1 ))
     done
+
+    # Compute the required KV cache size in MiB (no extra margin)
+    local kv_cache_bytes=$(( SOLVER_CTX_SIZE * kv_per_token ))
+    SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))  # +1 GiB for safety
 
     SOLVER_PROFILE_NAME=$(_opt_pick_legacy_profile "$n_attn" "${MODEL_BYTES:-0}")
 }
@@ -487,31 +519,25 @@ _opt_pick_legacy_profile() {
 
 apply_user_overrides() {
     SOLVER_OVERRIDES=()
-    # User-set variables (set via CLI flags). Use the actual user-set value,
-    # NOT the LLAMA_* default that might still hold the default value.
     [[ -n "${USER_CTX_SIZE:-}" ]] && { SOLVER_CTX_SIZE="$CTX_SIZE"; SOLVER_OVERRIDES+=("ctx-size"); }
     [[ -n "${USER_KV_CACHE_TYPE:-}" ]] && { SOLVER_K_TYPE="$KV_CACHE_TYPE_K"; SOLVER_V_TYPE="$KV_CACHE_TYPE_V"; SOLVER_OVERRIDES+=("kv-cache-type"); }
     [[ -n "${KV_CACHE_K_OVERRIDE:-}" ]] && { SOLVER_K_TYPE="$KV_CACHE_K_OVERRIDE"; SOLVER_OVERRIDES+=("cache-type-k"); }
     [[ -n "${KV_CACHE_V_OVERRIDE:-}" ]] && { SOLVER_V_TYPE="$KV_CACHE_V_OVERRIDE"; SOLVER_OVERRIDES+=("cache-type-v"); }
-    [[ -n "${LLAMA_THREADS_OVERRIDE:-}" ]] && { SOLVER_THREADS="$LLAMA_THREADS_OVERRIDE"; SOLVER_THREADS_BATCH="$LLAMA_THREADS_OVERRIDE"; SOLVER_OVERRIDES+=("threads"); }
-    # If no explicit user override, use LLAMA_THREADS (auto-detected by
-    # detect-gpu.sh). This includes SMT threads (e.g., 32 on Nimo's 16-core
-    # Strix Halo). The legacy preset table uses LLAMA_THREADS directly, and
-    # benchmark data on Qwen3.5-122B shows 32 threads gives +40% prefill
-    # vs 14 because prefill is compute-bound and SMT helps saturate cores.
-    if [[ -z "${LLAMA_THREADS_OVERRIDE:-}" && -n "${LLAMA_THREADS:-}" ]]; then
-        SOLVER_THREADS="$LLAMA_THREADS"
+
+    if [[ -n "${LLAMA_THREADS_OVERRIDE:-}" ]]; then
+        SOLVER_THREADS_BATCH="$LLAMA_THREADS_OVERRIDE"
+        SOLVER_THREADS="$(( LLAMA_THREADS_OVERRIDE / 2 ))"
+        [[ $SOLVER_THREADS -lt 1 ]] && SOLVER_THREADS=1
+        SOLVER_OVERRIDES+=("threads")
+    elif [[ -n "${LLAMA_THREADS:-}" ]]; then
         SOLVER_THREADS_BATCH="$LLAMA_THREADS"
-        # Don't add to SOLVER_OVERRIDES (it's the default, not a user override).
+        SOLVER_THREADS="$(( LLAMA_THREADS / 2 ))"
+        [[ $SOLVER_THREADS -lt 1 ]] && SOLVER_THREADS=1
     fi
+
     [[ -n "${MOE_UBATCH_OVERRIDE:-}" ]] && { SOLVER_UBATCH="$MOE_UBATCH_OVERRIDE"; SOLVER_OVERRIDES+=("ubatch"); }
     [[ -n "${OVERRIDE_UBATCH_SIZE:-}" ]] && { SOLVER_UBATCH="$OVERRIDE_UBATCH_SIZE"; SOLVER_OVERRIDES+=("ubatch-size"); }
     [[ -n "${OVERRIDE_CACHE_RAM:-}" ]] && { SOLVER_SSD_HOT_RAM="$OVERRIDE_CACHE_RAM"; SOLVER_SSD_WARM_RAM="$OVERRIDE_CACHE_RAM"; SOLVER_OVERRIDES+=("cache-ram"); }
-    # SSD hot/warm RAM defaults (LLAMA_SSD_HOT_RAM / LLAMA_SSD_WARM_RAM) are
-    # not treated as user overrides -- they're defaults the legacy code used
-    # for SSD buffer sizes. The solver decides the right value based on tier.
-    # To force a specific value, use --cache-ssd-hot-ram / --cache-ssd-warm-ram
-    # CLI flags (which set SSD_HOT_RAM / SSD_WARM_RAM in the integration code).
     if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then
         SOLVER_SSD_ENABLE=false
         SOLVER_OVERRIDES+=("no-ssd-cache")
