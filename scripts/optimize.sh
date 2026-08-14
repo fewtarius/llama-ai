@@ -115,8 +115,11 @@ _opt_layer_kv_bytes_per_token() {
     local k_size v_size
     k_size=$(_opt_kv_type_size "$k_type")
     v_size=$(_opt_kv_type_size "$v_type")
-    # Result in bytes per token per layer
-    echo "$(( head_count_kv * (key_len * k_size + val_len * v_size) ))"
+    # Result in bytes per token per layer (use awk: k_size/v_size may be
+    # fractional, e.g. 0.5625 for q4_0/q5_0/iq4_nl, which bash arithmetic
+    # cannot handle)
+    awk -v k="$k_size" -v v="$v_size" -v h="$head_count_kv" -v kl="$key_len" -v vl="$val_len" \
+        'BEGIN { printf "%.0f", h * (kl * k + vl * v) }'
 }
 
 _opt_attn_layers() {
