@@ -7,18 +7,18 @@
 # Source this file (do not execute directly):
 #   source scripts/optimize.sh
 #
-# Replaces the static preset table with a solver that:
-#   1. Starts with the maximum-performance configuration (f16 KV, full SSD,
-#      draft model, max ctx, max ubatch)
-#   2. Computes the memory cost
-#   3. Iteratively detunes by LEAST performance impact until the config fits
-#      in the available memory budget
-#
+# Agentic development requires a large context window; the solver will not
+# reduce context below MIN_CTX (default 65536) unless absolutely impossible.
 # Outputs are exposed via globals prefixed with SOLVER_*. llama-run.sh reads
 # these after calling solve_optimal_config() and applies user overrides last.
 
 [[ -n "${_LLAMA_OPTIMIZE_LOADED:-}" ]] && return 0
 _LLAMA_OPTIMIZE_LOADED=1
+
+# -----------------------------------------------------------------------------
+# Minimum context size for agentic workloads (override via MIN_CTX env)
+# -----------------------------------------------------------------------------
+: "${MIN_CTX:=65536}"
 
 # -----------------------------------------------------------------------------
 # GGUF metadata reader
@@ -115,9 +115,6 @@ _opt_layer_kv_bytes_per_token() {
     local k_size v_size
     k_size=$(_opt_kv_type_size "$k_type")
     v_size=$(_opt_kv_type_size "$v_type")
-    # Result in bytes per token per layer (use awk: k_size/v_size may be
-    # fractional, e.g. 0.5625 for q4_0/q5_0/iq4_nl, which bash arithmetic
-    # cannot handle)
     awk -v k="$k_size" -v v="$v_size" -v h="$head_count_kv" -v kl="$key_len" -v vl="$val_len" \
         'BEGIN { printf "%.0f", h * (kl * k + vl * v) }'
 }
@@ -132,21 +129,33 @@ _opt_attn_layers() {
     fi
 }
 
-_opt_total_memory() {
-    local model_bytes=$1
-    local kv_per_token=$2
-    local ctx_size=$3
-    local draft_bytes=${4:-0}
-    local draft_ctx=${5:-0}
-    local ssd_hot_mib=${6:-0}
-    local ssd_warm_mib=${7:-0}
-    local n_parallel=${8:-1}
-    local ubatch=${9:-2048}
-    local moe_in_ram=${10:-0}
+_opt_offloaded_bytes() {
+    local ngl="$1"
+    local n_layer="$2"
+    local total_model_bytes="$3"
+    if [[ "$ngl" -le 0 ]]; then
+        echo 0
+    elif [[ "$ngl" -ge "$n_layer" ]]; then
+        echo "$total_model_bytes"
+    else
+        awk -v ngl="$ngl" -v nl="$n_layer" -v total="$total_model_bytes" \
+            'BEGIN { printf "%.0f", (ngl / nl) * total }'
+    fi
+}
 
-    # Main KV cache
+_opt_total_memory() {
+    local offloaded_bytes="$1"
+    local kv_per_token="$2"
+    local ctx_size="$3"
+    local draft_bytes="$4"
+    local draft_ctx="$5"
+    local ssd_hot_mib="$6"
+    local ssd_warm_mib="$7"
+    local n_parallel="$8"
+    local ubatch="$9"
+    local moe_in_ram="${10:-0}"
+
     local kv_total=$(( ctx_size * kv_per_token * n_parallel ))
-    # Draft KV (roughly 1/4 of main per token, but cap to 10% of draft size)
     local draft_kv_total=0
     if [[ $draft_ctx -gt 0 && $draft_bytes -gt 0 ]]; then
         draft_kv_total=$(( draft_ctx * kv_per_token / 4 * n_parallel ))
@@ -155,12 +164,12 @@ _opt_total_memory() {
     fi
 
     local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
-    local compute_mib=$(( 4 * 1024 + ubatch * 2 ))
-    [[ $compute_mib -gt $(( 12 * 1024 )) ]] && compute_mib=$(( 12 * 1024 ))
-    local compute_bytes=$(( compute_mib * 1048576 ))
-    local system_bytes=$(( 2 * 1024 * 1048576 ))
-    # No extra safety margin – the existing overhead is sufficient
-    echo $(( model_bytes + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
+    # More conservative overhead: 2 GiB compute + 1 GiB system
+    local compute_bytes=$(( 2 * 1024 * 1048576 + ubatch * 512 ))
+    local system_bytes=$(( 1 * 1024 * 1048576 ))
+    local raw=$(( offloaded_bytes + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
+    # Add 10% safety margin to avoid OOM
+    echo $(( raw * 110 / 100 ))
 }
 
 # -----------------------------------------------------------------------------
@@ -168,7 +177,7 @@ _opt_total_memory() {
 # -----------------------------------------------------------------------------
 
 _opt_start_optimistic() {
-    # MOE strategy defaults
+    # MOE strategy defaults – kept but ngl reduction will be secondary
     if [[ "${is_moe:-false}" == "true" && ${MODEL_BYTES:-0} -gt 0 ]]; then
         if [[ ${MODEL_BYTES} -gt ${GPU_BUDGET_BYTES:-0} ]]; then
             SOLVER_MOE_STRATEGY="cpu"
@@ -184,6 +193,9 @@ _opt_start_optimistic() {
     local ctx_cap=$(( ctx_train * 4 ))
     [[ $ctx_cap -gt 1048576 ]] && ctx_cap=1048576
     [[ $SOLVER_CTX_SIZE -gt $ctx_cap ]] && SOLVER_CTX_SIZE=$ctx_cap
+    if [[ $SOLVER_CTX_SIZE -lt $MIN_CTX ]]; then
+        SOLVER_CTX_SIZE=$MIN_CTX
+    fi
 
     SOLVER_K_TYPE="f16"
     SOLVER_V_TYPE="f16"
@@ -199,7 +211,6 @@ _opt_start_optimistic() {
         *)         SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
     esac
 
-    # Thread configuration
     local phys_cores=${PHYSICAL_CORES:-}
     if [[ -z "$phys_cores" ]]; then
         if command -v lscpu &>/dev/null; then
@@ -255,6 +266,45 @@ _opt_start_optimistic() {
     SOLVER_LOAD_MODE="${SOLVER_LOAD_MODE:-dio}"
     SOLVER_VK_NPS="${GGML_VK_NODES_PER_SUBMIT:-}"
     SOLVER_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-2048}"
+
+    # Start with all layers offloaded
+    SOLVER_NGL="$SOLVER_N_LAYER"
+}
+
+# New detune order: ctx first, then ngl, then others
+_reduce_ctx() {
+    local min_ctx=$MIN_CTX
+    if [[ $SOLVER_CTX_SIZE -le $min_ctx ]]; then
+        return 1
+    fi
+    # Step down: 262144 → 131072 → 65536 → 32768 → ...
+    local ctx_values=(262144 131072 65536 32768 16384 8192)
+    for c in "${ctx_values[@]}"; do
+        if [[ $SOLVER_CTX_SIZE -gt $c && $c -ge $min_ctx ]]; then
+            SOLVER_CTX_SIZE=$c
+            SOLVER_REASONS+=("ctx: ${c}")
+            return 0
+        fi
+    done
+    return 1
+}
+
+_reduce_ngl() {
+    [[ "${_SOLVER_DONE_reduce_ngl:-0}" == "1" ]] && return 1
+    local total_layers="$SOLVER_N_LAYER"
+    local current="$SOLVER_NGL"
+    if [[ "$current" -le 0 ]]; then
+        _SOLVER_DONE_reduce_ngl=1
+        return 1
+    fi
+    local reduction=$(( total_layers / 10 ))
+    [[ $reduction -lt 1 ]] && reduction=1
+    local new_ngl=$(( current - reduction ))
+    [[ $new_ngl -lt 0 ]] && new_ngl=0
+    SOLVER_NGL="$new_ngl"
+    SOLVER_REASONS+=("ngl: $new_ngl")
+    [[ $new_ngl -eq 0 ]] && _SOLVER_DONE_reduce_ngl=1
+    return 0
 }
 
 _reduce_ssd_ram() {
@@ -265,27 +315,6 @@ _reduce_ssd_ram() {
     SOLVER_SSD_WARM_RAM=$(( SOLVER_SSD_WARM_RAM / 2 ))
     [[ $SOLVER_SSD_WARM_RAM -lt 256 ]] && SOLVER_SSD_WARM_RAM=256
     SOLVER_REASONS+=("SSD RAM: ${SOLVER_SSD_HOT_RAM}/${SOLVER_SSD_WARM_RAM} MiB")
-    return 0
-}
-
-_reduce_ctx() {
-    local ctx_values=(262144 131072 65536 32768 16384 8192)
-    local c
-    for c in "${ctx_values[@]}"; do
-        if [[ $SOLVER_CTX_SIZE -gt $c ]]; then
-            SOLVER_CTX_SIZE=$c
-            SOLVER_REASONS+=("ctx: ${c}")
-            return 0
-        fi
-    done
-    return 1
-}
-
-_reduce_ubatch() {
-    [[ $SOLVER_UBATCH -le 512 ]] && return 1
-    SOLVER_UBATCH=$(( SOLVER_UBATCH / 2 ))
-    [[ $SOLVER_BATCH -gt $SOLVER_UBATCH ]] && SOLVER_BATCH=$SOLVER_UBATCH
-    SOLVER_REASONS+=("ubatch: ${SOLVER_UBATCH}")
     return 0
 }
 
@@ -331,46 +360,25 @@ _drop_ssd() {
     return 0
 }
 
-_moe_residency() {
-    [[ "${_SOLVER_DONE_moe_residency:-0}" == "1" || "$SOLVER_MOE_STRATEGY" != "gpu" ]] && return 1
-    [[ "${is_moe:-false}" != "true" ]] && return 1
-    SOLVER_MOE_STRATEGY="residency"
-    SOLVER_LOAD_MODE="mmap"
-    _SOLVER_DONE_moe_residency=1
-    SOLVER_REASONS+=("MoE: residency")
-    return 0
-}
-
-_moe_cpu() {
-    [[ "${_SOLVER_DONE_moe_cpu:-0}" == "1" || "$SOLVER_MOE_STRATEGY" == "cpu" ]] && return 1
-    [[ "${is_moe:-false}" != "true" ]] && return 1
-    SOLVER_MOE_STRATEGY="cpu"
-    SOLVER_LOAD_MODE="none"
-    _SOLVER_DONE_moe_cpu=1
-    SOLVER_REASONS+=("MoE: cpu-moe + load-mode none")
-    return 0
-}
-
-_dense_fit() {
-    [[ "${_SOLVER_DONE_dense_fit:-0}" == "1" ]] && return 1
-    [[ "${is_moe:-false}" == "true" ]] && return 1
-    SOLVER_NGL=-1
-    _SOLVER_DONE_dense_fit=1
-    SOLVER_REASONS+=("dense-fit: ngl=auto")
+_reduce_ubatch() {
+    [[ $SOLVER_UBATCH -le 512 ]] && return 1
+    SOLVER_UBATCH=$(( SOLVER_UBATCH / 2 ))
+    [[ $SOLVER_BATCH -gt $SOLVER_UBATCH ]] && SOLVER_BATCH=$SOLVER_UBATCH
+    SOLVER_REASONS+=("ubatch: ${SOLVER_UBATCH}")
     return 0
 }
 
 _opt_detune_steps() {
     cat <<'STEPS'
-_reduce_ssd_ram
 _reduce_ctx
-_reduce_ubatch
+_reduce_ngl
+_reduce_ssd_ram
 _v_q8_0
 _v_q4_0
 _k_q8_0
 _drop_draft
 _drop_ssd
-_dense_fit
+_reduce_ubatch
 STEPS
 }
 
@@ -382,11 +390,13 @@ solve_optimal_config() {
     _SOLVER_DONE_k_q8_0=0
     _SOLVER_DONE_drop_draft=0
     _SOLVER_DONE_drop_ssd=0
-    _SOLVER_DONE_moe_residency=0
-    _SOLVER_DONE_moe_cpu=0
-    _SOLVER_DONE_dense_fit=0
+    _SOLVER_DONE_reduce_ngl=0
 
     _opt_read_gguf_meta "$model_path" || SOLVER_GGUF=()
+
+    local n_layer=$(_opt_gguf block_count 32)
+    SOLVER_N_LAYER="$n_layer"
+
     _opt_start_optimistic
 
     local draft_path=""
@@ -398,18 +408,14 @@ solve_optimal_config() {
             || stat -f%z "$draft_path" 2>/dev/null || echo 0)
     fi
 
-    # Model dimensions
-    local n_layer=$(_opt_gguf block_count 32)
     local fai=$(_opt_gguf full_attention_interval 1)
     local n_attn
     n_attn=$(_opt_attn_layers "$n_layer" "$fai")
 
-    # Try multiple keys for head_count_kv
     local hckv=$(_opt_gguf head_count_kv 0)
     [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf n_head_kv 0)
     [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf head_count 0)
     [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf n_head 0)
-    # If still 0, use a heuristic: for MoE models > 40GB, assume 8 KV heads; else 4
     if [[ $hckv -eq 0 ]]; then
         local size_gb=$(( MODEL_BYTES / 1073741824 ))
         if [[ $size_gb -gt 40 ]]; then
@@ -421,7 +427,6 @@ solve_optimal_config() {
         fi
     fi
 
-    # Try to get embedding_length and head_count (for head dimension)
     local embd=$(_opt_gguf embedding_length 0)
     [[ $embd -eq 0 ]] && embd=$(_opt_gguf n_embd 0)
     local hc=$(_opt_gguf head_count 0)
@@ -436,7 +441,6 @@ solve_optimal_config() {
             [[ $kl -eq 0 ]] && kl=$head_dim
             [[ $vl -eq 0 ]] && vl=$head_dim
         else
-            # Fallback heuristic: 128 for large models (>40GB), else 256
             local size_gb=$(( MODEL_BYTES / 1073741824 ))
             if [[ $size_gb -gt 40 ]]; then
                 kl=128; vl=128
@@ -456,12 +460,15 @@ solve_optimal_config() {
     SOLVER_DRAFT_PATH="$draft_path"
     local step_idx=0
     while [[ $step_idx -lt 50 ]]; do
+        local offloaded_bytes
+        offloaded_bytes=$(_opt_offloaded_bytes "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}")
+
         local eff_draft_bytes=0
         [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
 
         local mem_needed
         mem_needed=$(_opt_total_memory \
-            "${MODEL_BYTES:-0}" \
+            "$offloaded_bytes" \
             "$kv_per_token" \
             "$SOLVER_CTX_SIZE" \
             "$eff_draft_bytes" \
@@ -494,9 +501,8 @@ solve_optimal_config() {
         step_idx=$(( step_idx + 1 ))
     done
 
-    # Compute the required KV cache size in MiB (no extra margin)
     local kv_cache_bytes=$(( SOLVER_CTX_SIZE * kv_per_token ))
-    SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))  # +1 GiB for safety
+    SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))
 
     SOLVER_PROFILE_NAME=$(_opt_pick_legacy_profile "$n_attn" "${MODEL_BYTES:-0}")
 }
@@ -544,6 +550,10 @@ apply_user_overrides() {
     if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then
         SOLVER_SSD_ENABLE=false
         SOLVER_OVERRIDES+=("no-ssd-cache")
+    fi
+    if [[ -n "${OVERRIDE_NGL:-}" ]]; then
+        SOLVER_NGL="$OVERRIDE_NGL"
+        SOLVER_OVERRIDES+=("ngl-override")
     fi
     [[ "${OVERRIDE_FIT:-}" == "on" ]] && { SOLVER_NGL=-1; SOLVER_OVERRIDES+=("--fit on"); }
     [[ -n "${OVERRIDE_REASONING_BUDGET:-}" ]] && { SOLVER_REASONING_BUDGET="$OVERRIDE_REASONING_BUDGET"; SOLVER_OVERRIDES+=("reasoning-budget"); }
