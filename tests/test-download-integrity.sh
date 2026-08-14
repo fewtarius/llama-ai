@@ -24,6 +24,9 @@ setup_case() {
 
     mkdir -p "$case_dir/scripts" "$case_dir/models" "$case_dir/bin"
     cp "$PROJECT_ROOT/llama-run.sh" "$case_dir/llama-run.sh"
+    cp "$PROJECT_ROOT/scripts/optimize.sh" "$case_dir/scripts/optimize.sh"
+    # The solver sources a GGUF metadata reader; copy it alongside optimize.sh.
+    [[ -f "$PROJECT_ROOT/scripts/read_gguf_kv.py" ]] && cp "$PROJECT_ROOT/scripts/read_gguf_kv.py" "$case_dir/scripts/read_gguf_kv.py"
 
     cat > "$case_dir/scripts/detect-gpu.sh" <<'EOF'
 #!/bin/bash

@@ -15,6 +15,7 @@ PROJECT_ROOT="$SCRIPT_DIR"
 
 # Auto-detect GPU and system resources
 source "$PROJECT_ROOT/scripts/detect-gpu.sh"
+source "$PROJECT_ROOT/scripts/optimize.sh"
 
 # =============================================================================
 # Centralised defaults (all overridable via environment)
@@ -745,6 +746,155 @@ _apply_moe_streaming() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# Solver-based profile (default since the optimistic-first solver landed)
+# -----------------------------------------------------------------------------
+# Calls solve_optimal_config from scripts/optimize.sh and translates its
+# SOLVER_* globals into the same EXTRA_SERVER_ARGS / MODEL_BYTES / THREADS
+# outputs that the legacy assign_profile() produced. Existing user overrides
+# (USER_CTX_SIZE, KV_CACHE_K_OVERRIDE, LLAMA_THREADS, etc.) are reapplied
+# after the solver runs so they always win.
+assign_profile_solver() {
+    local model_path="$1"
+    local filename=$(basename "$model_path")
+    local size_bytes
+
+    if [[ "$model_path" =~ -([0-9]{5})-of-([0-9]{5})\.gguf$ ]]; then
+        local shard_base="${model_path%-${BASH_REMATCH[1]}-of-${BASH_REMATCH[2]}.gguf}"
+        local shard_count=$((10#${BASH_REMATCH[2]}))
+        size_bytes=0
+        for ((i=1; i<=shard_count; i++)); do
+            local sf=$(printf "%s-%05d-of-%05d.gguf" "$shard_base" "$i" "$shard_count")
+            [[ -f "$sf" ]] && size_bytes=$((size_bytes + $(stat -c%s "$sf" 2>/dev/null || stat -f%z "$sf" 2>/dev/null || echo 0)))
+        done
+        [[ $size_bytes -eq 0 ]] && size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    else
+        size_bytes=$(stat -c%s "$model_path" 2>/dev/null || stat -f%z "$model_path" 2>/dev/null || echo 0)
+    fi
+    MODEL_BYTES="$size_bytes"
+    local size_gb=$((size_bytes / 1073741824))
+
+    is_moe="false"; is_ssm="false"; is_mtp="false"
+    if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
+        is_moe=true
+    fi
+    if echo "$filename" | grep -qiE "ssm|mamba|jamba|falcon-h1|rwkv"; then
+        is_ssm=true
+    fi
+    _scan_gguf_arch "$model_path"
+
+    # Detect draft models (DSpark / DFlash). Set prof_* as globals so the
+    # solver can use them.
+    prof_dspark=$(_detect_draft_model "$MODEL" "dspark")
+    prof_dflash=$(_detect_draft_model "$MODEL" "dflash")
+
+    # Run the solver.
+    solve_optimal_config "$model_path"
+
+    # Apply user overrides AFTER the solver. These always win.
+    apply_user_overrides
+
+    # Map solver output to the existing globals.
+    CTX_SIZE="${SOLVER_CTX_SIZE}"
+    KV_CACHE_TYPE_K="${SOLVER_K_TYPE}"
+    KV_CACHE_TYPE_V="${SOLVER_V_TYPE}"
+    THREADS="${SOLVER_THREADS}"
+    THREADS_BATCH="${SOLVER_THREADS_BATCH}"
+    OVERRIDE_BATCH_SIZE="--batch-size ${SOLVER_BATCH} --ubatch-size ${SOLVER_UBATCH}"
+
+    # Translate MOE strategy to --cpu-moe / --moe-expert-residency / --load-mode.
+    if [[ "${is_moe}" == "true" ]]; then
+        case "${SOLVER_MOE_STRATEGY}" in
+            cpu)
+                local total_mem=$(get_total_memory_bytes)
+                if [[ ${MODEL_BYTES:-0} -lt $total_mem ]]; then
+                    EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
+                else
+                    EXTRA_SERVER_ARGS+=" --cpu-moe"
+                fi
+                ;;
+            residency)
+                if [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] || check_ac_power; then
+                    EXTRA_SERVER_ARGS+=" --moe-expert-residency"
+                else
+                    log_warn "MoE expert residency skipped: standard tier on battery"
+                fi
+                ;;
+        esac
+    fi
+
+    # Reasoning defaults (unchanged from legacy code).
+    _apply_reasoning_defaults
+
+    # SSD: when disabled by solver, set the disable flag for the legacy code
+    # path that prints the SSD section in print_profile_summary.
+    if [[ "${SOLVER_SSD_ENABLE}" != "true" ]]; then
+        _SSD_DISABLE=true
+    else
+        _SSD_DISABLE=false
+        # Sync the legacy LLAMA_SSD_* env vars with the solver's choice so the
+        # RAM budget breakdown (compute_ram_budget_breakdown) reports the
+        # right numbers. The solver has already accounted for any user
+        # overrides via apply_user_overrides().
+        SSD_HOT_RAM="${SOLVER_SSD_HOT_RAM}"
+        SSD_WARM_RAM="${SOLVER_SSD_WARM_RAM}"
+        LLAMA_SSD_HOT_RAM="${SOLVER_SSD_HOT_RAM}"
+        LLAMA_SSD_WARM_RAM="${SOLVER_SSD_WARM_RAM}"
+    fi
+
+    # Apply draft model if the solver kept it.
+    if [[ "${SOLVER_DRAFT_ENABLE}" == "true" && -n "${prof_dspark:-}" ]]; then
+        log_info "DSpark speculative decoding enabled: $prof_dspark (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DSPARK)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dspark --spec-type draft-dspark --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DSPARK --fit off"
+    elif [[ "${is_mtp}" == "true" && "${SOLVER_DRAFT_ENABLE}" == "true" ]]; then
+        log_info "MTP speculative decoding enabled (n_max=$LLAMA_SPEC_DRAFT_N_MAX_MTP)"
+        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_MTP --fit off"
+    elif [[ "${SOLVER_DRAFT_ENABLE}" == "true" && -n "${prof_dflash:-}" ]]; then
+        log_info "DFlash speculative decoding enabled: $prof_dflash (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DFLASH)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DFLASH --fit off"
+    fi
+
+    profile_name="${SOLVER_PROFILE_NAME}"
+
+    # Context checkpointing. Legacy profiles use sparse checkpoints
+    # (--ctx-checkpoints 2 with --checkpoint-min-step 32768) to avoid
+    # serializing the KV cache on every step. The default LLAMA_CTXCP=64
+    # creates a checkpoint per step, which thrashes the SSD and adds
+    # significant HTTP-server overhead. We match the legacy defaults.
+    SOLVER_CHECKPOINT_MIN="${SOLVER_CHECKPOINT_MIN:-32768}"
+    SOLVER_CHECKPOINTS="${SOLVER_CHECKPOINTS:-8}"
+
+    # Base args (load mode + flash attn)
+    EXTRA_SERVER_ARGS="--no-mmproj --load-mode ${SOLVER_LOAD_MODE} --flash-attn ${LLAMA_FLASH_ATTN} ${EXTRA_SERVER_ARGS}"
+    # Replace any default --ctx-checkpoints the script added later.
+    EXTRA_SERVER_ARGS+=" --checkpoint-min-step ${SOLVER_CHECKPOINT_MIN} --ctx-checkpoints ${SOLVER_CHECKPOINTS}"
+    EXTRA_SERVER_ARGS+=" --no-checkpoint-near-end"
+
+    # Cache-ram: derived from SOLVER_SSD_HOT_RAM + SOLVER_SSD_WARM_RAM.
+    # When SSD is disabled, use SOLVER_SSD_HOT_RAM as a plain in-RAM cache.
+    local cache_ram_mib
+    if [[ "${SOLVER_SSD_ENABLE}" == "true" ]]; then
+        cache_ram_mib=$(( SOLVER_SSD_HOT_RAM + SOLVER_SSD_WARM_RAM ))
+    else
+        cache_ram_mib=$(( SOLVER_SSD_HOT_RAM + SOLVER_SSD_WARM_RAM ))
+        [[ $cache_ram_mib -lt 0 ]] && cache_ram_mib=0
+    fi
+    # Compute cache-ram from GPU budget using the legacy breakdown (handles
+    # draft model KV, parallel slots, etc. correctly).
+    local breakdown_cache
+    breakdown_cache=$(compute_cache_ram)
+    [[ $breakdown_cache -gt 0 ]] && cache_ram_mib=$breakdown_cache
+    EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
+
+    log_info "Solver chose: ctx=$CTX_SIZE KV=$KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V ubatch=$SOLVER_UBATCH batch=$SOLVER_BATCH threads=$SOLVER_THREADS_BATCH/$SOLVER_THREADS"
+    if [[ ${#SOLVER_REASONS[@]} -gt 0 ]]; then
+        log_info "Solver detune steps: ${SOLVER_REASONS[*]}"
+    fi
+    log_info "Solver overrides applied: ${SOLVER_OVERRIDES[*]:-(none)}"
+    printf '%bAuto profile (solver): %b%s%b (%sGB, MoE=%s, SSM=%s)%b\n' \
+        "$CYAN" "$GREEN" "$profile_name" "$NC" "$size_gb" "${is_moe:-false}" "${is_ssm:-false}" "$NC"
+}
+
 # Find an auxiliary draft model next to the main model. Auxiliary models
 # follow the convention `<main-base>-<TAG>-<quant>.gguf` where TAG is the
 # lowercased draft architecture name (e.g. "dspark" for DeepSeek Spark,
@@ -1208,6 +1358,7 @@ ${YELLOW}Options:${NC}
     --is-strix-halo         Force Strix Halo preset
     --no-strix-halo         Force non-Strix-Halo preset
     --no-ssd-cache          Disable SSD KV cache entirely
+    --noauto                Disable the optimistic-first solver (use legacy preset table)
     -h, --help              Show this help
 
 ${YELLOW}Environment overrides:${NC}
@@ -1246,6 +1397,7 @@ fi
 # Variables that track user overrides for later use
 USER_CTX_SIZE=""
 USER_KV_CACHE_TYPE=""
+NOAUTO=false
 
 # Initialise all variables used later to avoid 'unbound variable' errors
 BACKEND="auto"
@@ -1332,6 +1484,7 @@ while [[ $# -gt 0 ]]; do
         --no-strix-halo) LLAMA_IS_STRIX_HALO_OVERRIDE="0"; shift ;;
         --interactive|-i) INTERACTIVE=true; shift ;;
         --server|-s) SERVER_MODE=true; shift ;;
+        --noauto) NOAUTO=true; shift ;;
         --fit) OVERRIDE_FIT="on"; shift ;;
         --print-profile) PRINT_PROFILE=true; shift ;;
         --port) PORT="$2"; shift 2 ;;
@@ -1341,7 +1494,19 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage ;;
         --) shift; break ;;
         -*) log_error "Unknown option: $1"; exit 1 ;;
-        *) [[ -z "$MODEL" ]] && MODEL="$1"; shift ;;
+        *) [[ -z "$MODEL" ]] && MODEL="$1" || {
+               # Second positional arg treated as --ctx-size if it's a
+               # plain integer. Common pattern: `lrun MODEL CTX`. This is
+               # how the legacy preset table was used interactively; we
+               # preserve the shortcut here.
+               if [[ "$1" =~ ^[0-9]+$ ]]; then
+                   CTX_SIZE="$1"
+                   USER_CTX_SIZE=1
+                   shift
+                   # outer shift skipped -- we already consumed the arg
+                   continue
+               fi
+           }; shift ;;
     esac
 done
 PROMPT="$*"
@@ -1383,7 +1548,12 @@ _user_kv_k="${KV_CACHE_TYPE_K:-}"
 _user_kv_v="${KV_CACHE_TYPE_V:-}"
 _user_kv_set="${USER_KV_CACHE_TYPE:-}"
 
-assign_profile "$MODEL"
+if [[ "$NOAUTO" == "true" ]]; then
+    log_info "Solver disabled via --noauto; using legacy preset table"
+    assign_profile "$MODEL"
+else
+    assign_profile_solver "$MODEL"
+fi
 
 if [[ -n "$_user_kv_set" ]]; then
     KV_CACHE_TYPE_K="$_user_kv_k"

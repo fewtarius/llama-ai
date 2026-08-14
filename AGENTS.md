@@ -162,10 +162,17 @@ log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
 
 ## Profile selection
 
-`llama-run.sh` picks a preset from a small table based on three signals:
-`LLAMA_IS_STRIX_HALO` (true/false), model kind (MoE / dense / SSM, read
-from the GGUF header), and model size. Tier is no longer a separate axis
-— the only meaningful boundary is Strix Halo vs everything else.
+`llama-run.sh` runs an **optimistic-first solver** (`scripts/optimize.sh`)
+by default. The solver reads GGUF metadata (layer count, GQA ratio,
+training context, full_attention_interval for hybrid SSM models,
+nextn_predict_layers for MTP), starts with the maximum-performance
+configuration, and iteratively detunes by least performance impact until
+the config fits in the GPU budget.
+
+The legacy preset table is preserved as a fallback and is the source of
+the profile name shown in `--print-profile` (the solver maps its
+output to a legacy preset name for backward compatibility). Pass
+`--noauto` to bypass the solver and use the legacy table directly.
 
 | Preset | When | ctx (default) | KV | batch | SSD cache | `--cpu-moe` |
 |--------|------|---------------|-----|-------|-----------|-------------|
@@ -182,10 +189,25 @@ from the GGUF header), and model size. Tier is no longer a separate axis
 ≥23 GiB to avoid the mmap + `--moe-expert-residency` page-fault pathology
 (see LTM). Halo tier never triggers this because GTT holds the model.
 
-Override via `--hardware-tier halo|standard|handheld` (CLI flag) or
-`LLAMA_HARDWARE_TIER_OVERRIDE` env var. Per-knob overrides still work:
-`--checkpoint-min-step N`, `--ctx-checkpoints N`, `--cache-ram N`,
-`--ubatch-size N`, `--ctx-size N`, `--no-ssd-cache`.
+The solver typically picks the same values as the legacy preset for
+common models but is more aggressive about:
+
+- KV cache type (f16/f16 by default for decode throughput, detunes to
+  q8_0/q8_0 or q4_0/q4_0 only when memory pressure requires it)
+- Context size (training context vs fixed presets; 262k for Qwen3.5/3.6,
+  1M-capable for DeepSeek-V4-Flash)
+- SSD cache (enabled on halo when budget permits, legacy always off)
+- Hybrid SSM awareness (KV cache size scales with attention-layer count
+  only, not total layers — Qwen3.5/3.6 hybrid = ~25% attention layers)
+
+See [SOLVER.md](SOLVER.md) for the full algorithm, override precedence,
+and benchmark data.
+
+Override the solver via `--hardware-tier halo|standard|handheld` (CLI
+flag) or `LLAMA_HARDWARE_TIER_OVERRIDE` env var, or use `--noauto` to
+disable it. Per-knob overrides still work: `--checkpoint-min-step N`,
+`--ctx-checkpoints N`, `--cache-ram N`, `--ubatch-size N`,
+`--ctx-size N`, `--no-ssd-cache`.
 
 ## GPU memory budget
 

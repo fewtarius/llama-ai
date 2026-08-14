@@ -1,0 +1,237 @@
+{
+  "model": "gpt-oss-20b-UD-Q6_K_XL",
+  "backend": "vulkan",
+  "results": [
+    {
+      "size_label": "large",
+      "size_bytes": 61440,
+      "cold": {
+        "prompt_tokens": 15381,
+        "completion_tokens": 128,
+        "cached_tokens": 0,
+        "prompt_ms": 10234.5,
+        "generation_ms": 6001.8,
+        "total_ms": 16236.3,
+        "ttft_ms": 10234.5,
+        "wall_ttft_ms": 16285,
+        "tps": 21.3,
+        "prompt_tps": 1502.9,
+        "prompt_per_token_ms": 0.7,
+        "predicted_per_token_ms": 46.9,
+        "wall_ms": 16285
+      },
+      "warm": {
+        "prompt_tokens": 15381,
+        "completion_tokens": 128,
+        "cached_tokens": 15380,
+        "prompt_ms": 110.2,
+        "generation_ms": 6074.7,
+        "total_ms": 6184.9,
+        "ttft_ms": 110.2,
+        "wall_ttft_ms": 6234,
+        "tps": 21.1,
+        "prompt_tps": 139549.4,
+        "prompt_per_token_ms": 110.2,
+        "predicted_per_token_ms": 47.5,
+        "wall_ms": 6234
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 406988928,
+        "mib": 388.1,
+        "files": 4
+      },
+      "prompt_eval_speedup": 92.87,
+      "ttft_speedup": 2.61,
+      "cold_prompt_tps": 1502.9,
+      "warm_prompt_tps": 139549.4,
+      "cold_ppt_ms": 0.7,
+      "warm_ppt_ms": 110.2,
+      "cold_gen_ppt_ms": 46.9,
+      "warm_gen_ppt_ms": 47.5,
+      "cold_ttft_ms": 10234.5,
+      "warm_ttft_ms": 110.2,
+      "cold_wall_ttft_ms": 16285,
+      "warm_wall_ttft_ms": 6234
+    },
+    {
+      "size_label": "medium",
+      "size_bytes": 20480,
+      "cold": {
+        "prompt_tokens": 5251,
+        "completion_tokens": 128,
+        "cached_tokens": 0,
+        "prompt_ms": 3404.4,
+        "generation_ms": 5714.7,
+        "total_ms": 9119.1,
+        "ttft_ms": 3404.4,
+        "wall_ttft_ms": 9144,
+        "tps": 22.4,
+        "prompt_tps": 1542.4,
+        "prompt_per_token_ms": 0.6,
+        "predicted_per_token_ms": 44.6,
+        "wall_ms": 9144
+      },
+      "warm": {
+        "prompt_tokens": 5251,
+        "completion_tokens": 128,
+        "cached_tokens": 5250,
+        "prompt_ms": 69.8,
+        "generation_ms": 5862.9,
+        "total_ms": 5932.7,
+        "ttft_ms": 69.8,
+        "wall_ttft_ms": 5957,
+        "tps": 21.8,
+        "prompt_tps": 75220.6,
+        "prompt_per_token_ms": 69.8,
+        "predicted_per_token_ms": 45.8,
+        "wall_ms": 5957
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 142231248,
+        "mib": 135.6,
+        "files": 4
+      },
+      "prompt_eval_speedup": 48.77,
+      "ttft_speedup": 1.54,
+      "cold_prompt_tps": 1542.4,
+      "warm_prompt_tps": 75220.6,
+      "cold_ppt_ms": 0.6,
+      "warm_ppt_ms": 69.8,
+      "cold_gen_ppt_ms": 44.6,
+      "warm_gen_ppt_ms": 45.8,
+      "cold_ttft_ms": 3404.4,
+      "warm_ttft_ms": 69.8,
+      "cold_wall_ttft_ms": 9144,
+      "warm_wall_ttft_ms": 5957
+    },
+    {
+      "size_label": "small",
+      "size_bytes": 4096,
+      "cold": {
+        "prompt_tokens": 1205,
+        "completion_tokens": 128,
+        "cached_tokens": 0,
+        "prompt_ms": 997.8,
+        "generation_ms": 5731.8,
+        "total_ms": 6729.6,
+        "ttft_ms": 997.8,
+        "wall_ttft_ms": 6745,
+        "tps": 22.3,
+        "prompt_tps": 1207.7,
+        "prompt_per_token_ms": 0.8,
+        "predicted_per_token_ms": 44.8,
+        "wall_ms": 6745
+      },
+      "warm": {
+        "prompt_tokens": 1205,
+        "completion_tokens": 128,
+        "cached_tokens": 1204,
+        "prompt_ms": 55.2,
+        "generation_ms": 5592.6,
+        "total_ms": 5647.8,
+        "ttft_ms": 55.2,
+        "wall_ttft_ms": 5663,
+        "tps": 22.9,
+        "prompt_tps": 21824.2,
+        "prompt_per_token_ms": 55.2,
+        "predicted_per_token_ms": 43.7,
+        "wall_ms": 5663
+      },
+      "cache_cold": {
+        "cache_state": "miss",
+        "ssd_stored": 2,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "cache_warm": {
+        "cache_state": "ssd_warm",
+        "ssd_stored": 1,
+        "divergences": 0,
+        "total_checkpoints": 2
+      },
+      "moe_cold": {
+        "enabled": false,
+        "present": false
+      },
+      "moe_warm": {
+        "enabled": false,
+        "present": false
+      },
+      "profile": {
+        "profile": "default",
+        "features": [
+          "kv-unified"
+        ]
+      },
+      "ssd_size": {
+        "bytes": 36484992,
+        "mib": 34.8,
+        "files": 4
+      },
+      "prompt_eval_speedup": 18.08,
+      "ttft_speedup": 1.19,
+      "cold_prompt_tps": 1207.7,
+      "warm_prompt_tps": 21824.2,
+      "cold_ppt_ms": 0.8,
+      "warm_ppt_ms": 55.2,
+      "cold_gen_ppt_ms": 44.8,
+      "warm_gen_ppt_ms": 43.7,
+      "cold_ttft_ms": 997.8,
+      "warm_ttft_ms": 55.2,
+      "cold_wall_ttft_ms": 6745,
+      "warm_wall_ttft_ms": 5663
+    }
+  ]
+}

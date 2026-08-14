@@ -46,3 +46,7 @@ ssd-cache/
 patches/
 scratch/
 reference/
+
+# Python
+__pycache__/
+*.pyc
