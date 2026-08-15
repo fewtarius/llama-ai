@@ -189,10 +189,11 @@ _opt_start_optimistic() {
     fi
 
     local ctx_train=$(_opt_gguf context_length 32768)
-    SOLVER_CTX_SIZE="$ctx_train"
     local ctx_cap=$(( ctx_train * 4 ))
     [[ $ctx_cap -gt 1048576 ]] && ctx_cap=1048576
-    [[ $SOLVER_CTX_SIZE -gt $ctx_cap ]] && SOLVER_CTX_SIZE=$ctx_cap
+    # Start at maximum possible context (ctx_cap), not training context.
+    # This enables the optimistic-first approach: try max context, detune if needed.
+    SOLVER_CTX_SIZE="$ctx_cap"
     if [[ $SOLVER_CTX_SIZE -lt $MIN_CTX ]]; then
         SOLVER_CTX_SIZE=$MIN_CTX
     fi
@@ -318,27 +319,23 @@ _reduce_ssd_ram() {
     return 0
 }
 
-_v_q8_0() {
-    [[ "${_SOLVER_DONE_v_q8_0:-0}" == "1" ]] && return 1
-    SOLVER_V_TYPE="q8_0"
-    _SOLVER_DONE_v_q8_0=1
-    SOLVER_REASONS+=("V: q8_0")
-    return 0
-}
-
-_v_q4_0() {
-    [[ "${_SOLVER_DONE_v_q4_0:-0}" == "1" ]] && return 1
-    SOLVER_V_TYPE="q4_0"
-    _SOLVER_DONE_v_q4_0=1
-    SOLVER_REASONS+=("V: q4_0")
-    return 0
-}
-
-_k_q8_0() {
-    [[ "${_SOLVER_DONE_k_q8_0:-0}" == "1" ]] && return 1
+# Reduce both K and V cache to q8_0 together (paired quantization)
+_reduce_kv_q8_0() {
+    [[ "${_SOLVER_DONE_kv_q8_0:-0}" == "1" ]] && return 1
     SOLVER_K_TYPE="q8_0"
-    _SOLVER_DONE_k_q8_0=1
-    SOLVER_REASONS+=("K: q8_0")
+    SOLVER_V_TYPE="q8_0"
+    _SOLVER_DONE_kv_q8_0=1
+    SOLVER_REASONS+=("KV: q8_0/q8_0")
+    return 0
+}
+
+# Reduce both K and V cache to q4_0 together (last resort before context reduction)
+_reduce_kv_q4_0() {
+    [[ "${_SOLVER_DONE_kv_q4_0:-0}" == "1" ]] && return 1
+    SOLVER_K_TYPE="q4_0"
+    SOLVER_V_TYPE="q4_0"
+    _SOLVER_DONE_kv_q4_0=1
+    SOLVER_REASONS+=("KV: q4_0/q4_0")
     return 0
 }
 
@@ -370,27 +367,24 @@ _reduce_ubatch() {
 
 _opt_detune_steps() {
     cat <<'STEPS'
-_reduce_ctx
+_reduce_kv_q8_0
+_reduce_kv_q4_0
 _reduce_ngl
 _reduce_ssd_ram
-_v_q8_0
-_v_q4_0
-_k_q8_0
 _drop_draft
 _drop_ssd
 _reduce_ubatch
+_reduce_ctx
 STEPS
 }
 
 solve_optimal_config() {
     local model_path="$1"
 
-    _SOLVER_DONE_v_q8_0=0
-    _SOLVER_DONE_v_q4_0=0
-    _SOLVER_DONE_k_q8_0=0
     _SOLVER_DONE_drop_draft=0
     _SOLVER_DONE_drop_ssd=0
     _SOLVER_DONE_reduce_ngl=0
+    _SOLVER_DONE_reduce_ubatch=0
 
     _opt_read_gguf_meta "$model_path" || SOLVER_GGUF=()
 
@@ -452,12 +446,100 @@ solve_optimal_config() {
     [[ $kl -eq 0 ]] && kl=256
     [[ $vl -eq 0 ]] && vl=256
 
+    SOLVER_REASONS=()
+    SOLVER_DRAFT_PATH="$draft_path"
+
+    # -------------------------------------------------------------------------
+    # Phase 1: Find optimal (context, KV quality) pair using utility scoring
+    # Utility = ctx * KV_weight, where KV_weight(f16)=5, q8=4, q4=1
+    # Weights chosen to match user preference:
+    # - 131072@q8 (utility=524288) > 262144@q4 (262144) and 65536@f16 (327680)
+    # - At same context: f16(5) > q8(4) > q4(1)
+    # - More context at same KV always wins
+    # -------------------------------------------------------------------------
+    local ctx_values=(262144 131072 65536 32768 16384 8192)
+    # Weights chosen to match user preference:
+# - 131072@q8 (utility=524288) > 262144@q4 (262144) and 65536@f16 (327680)
+# - At same context: f16(5) > q8(4) > q4(1)
+# - More context at same KV always wins
+local kv_qualities=("f16/f16:5" "q8_0/q8_0:4" "q4_0/q4_0:1")
+    local best_utility=-1
+    local best_ctx=0
+    local best_k_type=""
+    local best_v_type=""
+    local best_reason=""
+
+    for ctx in "${ctx_values[@]}"; do
+        [[ $ctx -lt $MIN_CTX ]] && continue
+        [[ $ctx -gt $SOLVER_CTX_SIZE ]] && continue
+
+        for kvq_weight in "${kv_qualities[@]}"; do
+            local kvq="${kvq_weight%%:*}"
+            local weight="${kvq_weight##*:}"
+            local k_type="${kvq%%/*}"
+            local v_type="${kvq##*/}"
+
+            local kv_per_token_per_layer
+            kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$k_type" "$v_type" "$hckv" "$kl" "$vl")
+            local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
+
+            local offloaded_bytes
+            offloaded_bytes=$(_opt_offloaded_bytes "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}")
+
+            local eff_draft_bytes=0
+            [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
+
+            local mem_needed
+            mem_needed=$(_opt_total_memory \
+                "$offloaded_bytes" \
+                "$kv_per_token" \
+                "$ctx" \
+                "$eff_draft_bytes" \
+                "$ctx" \
+                "$SOLVER_SSD_HOT_RAM" \
+                "$SOLVER_SSD_WARM_RAM" \
+                "${OVERRIDE_N_PARALLEL:-1}" \
+                "$SOLVER_UBATCH" \
+                0)
+
+            if [[ $mem_needed -le ${GPU_BUDGET_BYTES:-0} ]] || [[ ${GPU_BUDGET_BYTES:-0} -le 0 ]]; then
+                local utility=$(( ctx * weight ))
+                # Tiebreaker: prefer higher KV weight (better quality) when utility equal
+                if [[ $utility -gt $best_utility ]] || \
+                   [[ $utility -eq $best_utility && $weight -gt ${best_weight:-0} ]]; then
+                    best_utility=$utility
+                    best_weight=$weight
+                    best_ctx=$ctx
+                    best_k_type="$k_type"
+                    best_v_type="$v_type"
+                    best_reason="ctx: ${ctx} KV: ${kvq} (utility=$utility, weight=$weight)"
+                fi
+            fi
+        done
+    done
+
+    if [[ $best_utility -eq -1 ]]; then
+        # Absolute fallback: MIN_CTX with q4_0/q4_0
+        SOLVER_CTX_SIZE=$MIN_CTX
+        SOLVER_K_TYPE="q4_0"
+        SOLVER_V_TYPE="q4_0"
+        SOLVER_REASONS+=("ctx: ${MIN_CTX} KV: q4_0/q4_0 (fallback)")
+    else
+        SOLVER_CTX_SIZE=$best_ctx
+        SOLVER_K_TYPE=$best_k_type
+        SOLVER_V_TYPE=$best_v_type
+        SOLVER_REASONS+=("$best_reason")
+    fi
+
+    # Recompute kv_per_token for the chosen config
     local kv_per_token_per_layer
     kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
     local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
-    SOLVER_REASONS=()
-    SOLVER_DRAFT_PATH="$draft_path"
+    # -------------------------------------------------------------------------
+    # Phase 2: Apply remaining detunes if still over budget
+    # Order: ngl -> ssd_ram -> draft -> ubatch
+    # -------------------------------------------------------------------------
     local step_idx=0
     while [[ $step_idx -lt 50 ]]; do
         local offloaded_bytes
@@ -489,13 +571,9 @@ solve_optimal_config() {
             [[ -z "$step_fn" || "$step_fn" == \#* ]] && continue
             if "$step_fn" 2>/dev/null; then
                 applied=1
-                if [[ "$step_fn" == "_v_q8_0" || "$step_fn" == "_v_q4_0" || "$step_fn" == "_k_q8_0" ]]; then
-                    kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
-                    kv_per_token=$(( kv_per_token_per_layer * n_attn ))
-                fi
                 break
             fi
-        done < <(_opt_detune_steps)
+        done < <(_opt_detune_steps_phase2)
 
         [[ $applied -eq 0 ]] && break
         step_idx=$(( step_idx + 1 ))
@@ -505,6 +583,17 @@ solve_optimal_config() {
     SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))
 
     SOLVER_PROFILE_NAME=$(_opt_pick_legacy_profile "$n_attn" "${MODEL_BYTES:-0}")
+}
+
+# Phase 2 detune steps (after context+KV are fixed)
+_opt_detune_steps_phase2() {
+    cat <<'STEPS'
+_reduce_ngl
+_reduce_ssd_ram
+_drop_draft
+_drop_ssd
+_reduce_ubatch
+STEPS
 }
 
 _opt_pick_legacy_profile() {
