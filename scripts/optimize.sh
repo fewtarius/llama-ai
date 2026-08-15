@@ -70,9 +70,12 @@ try:
             v = int(v)
         if isinstance(v, (int, float)):
             sys.stdout.write(f"{k}={v}\n")
-            if arch and k.startswith(arch + "."):
-                short = k[len(arch) + 1:]
-                sys.stdout.write(f"{short}={v}\n")
+            # Strip ALL prefix components, keep only the last segment.
+            # This ensures head_count_kv, key_length, value_length resolve
+            # regardless of nesting depth (qwen35moe.attention.head_count_kv
+            # -> head_count_kv). GGUF keys don't collide on final segments.
+            short = k.rsplit(".", 1)[-1]
+            sys.stdout.write(f"{short}={v}\n")
 except Exception:
     sys.exit(1)
 PYEOF
@@ -129,6 +132,48 @@ _opt_attn_layers() {
     fi
 }
 
+# Estimate GPU-resident model footprint based on MoE strategy.
+# - gpu:       full model mmap'd into GPU address space (all pages can be resident)
+# - residency: --moe-expert-residency keeps attention/embedding/LM head GPU-side
+#              and pages experts via madvise(MADV_FREE). Empirically the working
+#              set for active tokens + small expert cache is ~15-20% of MODEL_BYTES.
+# - cpu:       --cpu-moe + --load-mode none pins FFN weights to host RAM; GPU side
+#              is just attention/embedding/LM head (~5-10% of MODEL_BYTES).
+#
+# Returns bytes to use in place of offloaded_bytes for budget calculation.
+_opt_model_gpu_footprint() {
+    local ngl="$1" n_layer="$2" total_model_bytes="$3" moe_strategy="${4:-gpu}" is_ssm_flag="${5:-false}"
+    if [[ "$ngl" -le 0 ]]; then
+        echo 0
+        return
+    fi
+    # Fraction of model that actually lives on GPU (0.0 - 1.0)
+    local gpu_fraction=1
+    case "$moe_strategy" in
+        gpu)
+            gpu_fraction=1
+            ;;
+        residency)
+            # ~18% of model stays GPU-side (attention + small expert cache + emb/head).
+            # Empirically validated: 35B Q4_K_XL MoE on Flip uses ~3-4 GB GPU pages.
+            gpu_fraction=0.18
+            ;;
+        cpu)
+            # --cpu-moe + --load-mode none keeps FFN off GPU; only attn/emb/head.
+            # ~6% of model GPU-resident.
+            gpu_fraction=0.06
+            ;;
+    esac
+
+    if [[ "$ngl" -ge "$n_layer" ]]; then
+        awk -v frac="$gpu_fraction" -v total="$total_model_bytes" \
+            'BEGIN { printf "%.0f", frac * total }'
+    else
+        awk -v ngl="$ngl" -v nl="$n_layer" -v frac="$gpu_fraction" -v total="$total_model_bytes" \
+            'BEGIN { printf "%.0f", (ngl / nl) * frac * total }'
+    fi
+}
+
 _opt_offloaded_bytes() {
     local ngl="$1"
     local n_layer="$2"
@@ -163,13 +208,42 @@ _opt_total_memory() {
         [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
     fi
 
+    # SSD hot/warm buffers live in system RAM, NOT GPU memory. They're
+    # accounted for separately against total system memory below.
     local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
-    # More conservative overhead: 2 GiB compute + 1 GiB system
-    local compute_bytes=$(( 2 * 1024 * 1048576 + ubatch * 512 ))
-    local system_bytes=$(( 1 * 1024 * 1048576 ))
+    local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))    # 0.5 GiB base + ubatch scratch
+    local system_bytes=$(( 256 * 1048576 ))                     # 0.25 GiB system/driver
     local raw=$(( offloaded_bytes + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
-    # Add 10% safety margin to avoid OOM
-    echo $(( raw * 110 / 100 ))
+    # 5% safety margin (was 10%; tighter so 100% GPU offload has a chance to
+    # fit on UMA APUs like the Flip where mmap lets the kernel evict cold
+    # pages automatically).
+    echo $(( raw * 105 / 100 ))
+}
+
+# GPU-only memory check (excludes SSD RAM which lives in system memory).
+# This is what the solver uses to find a (strategy, kv, ctx) that fits in
+# VRAM+GTT without forcing SSD buffers to be reclaimed.
+_opt_gpu_memory() {
+    local offloaded_bytes="$1"
+    local kv_per_token="$2"
+    local ctx_size="$3"
+    local draft_bytes="$4"
+    local draft_ctx="$5"
+    local n_parallel="$6"
+    local ubatch="$7"
+    local moe_in_ram="${8:-0}"
+
+    local kv_total=$(( ctx_size * kv_per_token * n_parallel ))
+    local draft_kv_total=0
+    if [[ $draft_ctx -gt 0 && $draft_bytes -gt 0 ]]; then
+        draft_kv_total=$(( draft_ctx * kv_per_token / 4 * n_parallel ))
+        local draft_kv_cap=$(( draft_bytes * 10 / 100 ))
+        [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
+    fi
+    local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
+    local system_bytes=$(( 256 * 1048576 ))
+    local raw=$(( offloaded_bytes + draft_bytes + kv_total + draft_kv_total + compute_bytes + system_bytes + moe_in_ram ))
+    echo $(( raw * 105 / 100 ))
 }
 
 # -----------------------------------------------------------------------------
@@ -177,16 +251,21 @@ _opt_total_memory() {
 # -----------------------------------------------------------------------------
 
 _opt_start_optimistic() {
-    # MOE strategy defaults – kept but ngl reduction will be secondary
-    if [[ "${is_moe:-false}" == "true" && ${MODEL_BYTES:-0} -gt 0 ]]; then
-        if [[ ${MODEL_BYTES} -gt ${GPU_BUDGET_BYTES:-0} ]]; then
-            SOLVER_MOE_STRATEGY="cpu"
-            SOLVER_LOAD_MODE="none"
-        elif [[ ${MODEL_BYTES} -gt $(( ${GPU_BUDGET_BYTES:-0} * 95 / 100 )) ]]; then
-            SOLVER_MOE_STRATEGY="residency"
-            SOLVER_LOAD_MODE="mmap"
-        fi
-    fi
+    local effective_tier="${LLAMA_HARDWARE_TIER:-standard}"
+    [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] && effective_tier="halo"
+    SOLVER_TIER="$effective_tier"
+
+    # MOE strategy is selected LATER in solve_optimal_config via first-fit
+    # iteration: the solver tries every (strategy, kv, ctx) combination
+    # starting with 100% GPU offload ("gpu") and only falls back to
+    # "residency" or "cpu" when nothing fits. This matches user priority:
+    #   1. 100% GPU offload
+    #   2. Highest KV quant (f16 > q8 > q4)
+    #   3. Largest context
+    #   4. Cache RAM
+    # Default to "gpu" / "dio" so the solver starts from the optimistic end.
+    SOLVER_MOE_STRATEGY="gpu"
+    SOLVER_LOAD_MODE="dio"
 
     local ctx_train=$(_opt_gguf context_length 32768)
     local ctx_cap=$(( ctx_train * 4 ))
@@ -200,10 +279,6 @@ _opt_start_optimistic() {
 
     SOLVER_K_TYPE="f16"
     SOLVER_V_TYPE="f16"
-
-    local effective_tier="${LLAMA_HARDWARE_TIER:-standard}"
-    [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]] && effective_tier="halo"
-    SOLVER_TIER="$effective_tier"
 
     case "$effective_tier" in
         halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=4096 ;;
@@ -278,8 +353,10 @@ _reduce_ctx() {
     if [[ $SOLVER_CTX_SIZE -le $min_ctx ]]; then
         return 1
     fi
-    # Step down: 262144 → 131072 → 65536 → 32768 → ...
-    local ctx_values=(262144 131072 65536 32768 16384 8192)
+    # Step down: 262144 -> 196608 -> 131072 -> 98304 -> 65536 -> 49152 -> 32768 -> ...
+    # Intermediate values (72k, 96k, etc.) give the solver room to settle at
+    # non-power-of-two sizes when memory pressure requires a small reduction.
+    local ctx_values=(262144 196608 131072 98304 65536 49152 32768 16384 8192)
     for c in "${ctx_values[@]}"; do
         if [[ $SOLVER_CTX_SIZE -gt $c && $c -ge $min_ctx ]]; then
             SOLVER_CTX_SIZE=$c
@@ -449,33 +526,48 @@ solve_optimal_config() {
     SOLVER_REASONS=()
     SOLVER_DRAFT_PATH="$draft_path"
 
-    # -------------------------------------------------------------------------
-    # Phase 1: Find optimal (context, KV quality) pair using utility scoring
-    # Utility = ctx * KV_weight, where KV_weight(f16)=5, q8=4, q4=1
-    # Weights chosen to match user preference:
-    # - 131072@q8 (utility=524288) > 262144@q4 (262144) and 65536@f16 (327680)
-    # - At same context: f16(5) > q8(4) > q4(1)
-    # - More context at same KV always wins
-    # -------------------------------------------------------------------------
-    local ctx_values=(262144 131072 65536 32768 16384 8192)
-    # Weights chosen to match user preference:
-# - 131072@q8 (utility=524288) > 262144@q4 (262144) and 65536@f16 (327680)
-# - At same context: f16(5) > q8(4) > q4(1)
-# - More context at same KV always wins
-local kv_qualities=("f16/f16:5" "q8_0/q8_0:4" "q4_0/q4_0:1")
-    local best_utility=-1
-    local best_ctx=0
-    local best_k_type=""
-    local best_v_type=""
-    local best_reason=""
+    # The solver uses VRAM+GTT (raw) as its effective budget. The legacy
+    # GPU_BUDGET_BYTES already subtracts 2 GiB for safety, and the solver's
+    # _opt_total_memory accounts for runtime overheads (compute/system) plus a
+    # 5% margin. Adding the 2 GiB back here lets the solver explore the full
+    # address space without double-counting safety.
+    local solver_budget_bytes
+    if [[ ${GPU_BUDGET_BYTES:-0} -gt 0 ]]; then
+        solver_budget_bytes=$(( GPU_BUDGET_BYTES + 2 * 1024 * 1048576 ))
+    else
+        solver_budget_bytes=0
+    fi
 
-    for ctx in "${ctx_values[@]}"; do
-        [[ $ctx -lt $MIN_CTX ]] && continue
-        [[ $ctx -gt $SOLVER_CTX_SIZE ]] && continue
+    # -------------------------------------------------------------------------
+    # Phase 1: First-fit search over (strategy, kv, ctx).
+    #
+    # Iteration order matches user priority:
+    #   1. moe_strategy: gpu -> residency -> cpu  (residency is LAST resort)
+    #   2. kv quality:   f16 -> q8_0 -> q4_0     (highest quant first)
+    #   3. ctx size:     max -> ... -> min       (largest first within kv)
+    #
+    # The first combination that fits the GPU budget wins; cache RAM is then
+    # maximized from the remaining budget. Detuning to partial GPU offload or
+    # residency only happens when no (gpu, kv, ctx) combination fits.
+    # -------------------------------------------------------------------------
+    local ctx_values=(262144 196608 131072 98304 65536 49152 32768 16384 8192)
+    local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
+    local strategies=("gpu" "residency")
+    [[ "${is_moe:-false}" == "true" ]] && strategies+=("cpu")
 
-        for kvq_weight in "${kv_qualities[@]}"; do
-            local kvq="${kvq_weight%%:*}"
-            local weight="${kvq_weight##*:}"
+    local chosen_strategy=""
+    local chosen_ctx=0
+    local chosen_kvq=""
+    local chosen_k_type=""
+    local chosen_v_type=""
+    local found=0
+
+    for strategy in "${strategies[@]}"; do
+        # Compute GPU footprint for this strategy
+        local offloaded_bytes
+        offloaded_bytes=$(_opt_model_gpu_footprint "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}" "$strategy" "${is_ssm:-false}")
+
+        for kvq in "${kv_qualities[@]}"; do
             local k_type="${kvq%%/*}"
             local v_type="${kvq##*/}"
 
@@ -483,52 +575,64 @@ local kv_qualities=("f16/f16:5" "q8_0/q8_0:4" "q4_0/q4_0:1")
             kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$k_type" "$v_type" "$hckv" "$kl" "$vl")
             local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
-            local offloaded_bytes
-            offloaded_bytes=$(_opt_offloaded_bytes "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}")
+            for ctx in "${ctx_values[@]}"; do
+                [[ $ctx -lt $MIN_CTX ]] && continue
 
-            local eff_draft_bytes=0
-            [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
+                local eff_draft_bytes=0
+                [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
 
-            local mem_needed
-            mem_needed=$(_opt_total_memory \
-                "$offloaded_bytes" \
-                "$kv_per_token" \
-                "$ctx" \
-                "$eff_draft_bytes" \
-                "$ctx" \
-                "$SOLVER_SSD_HOT_RAM" \
-                "$SOLVER_SSD_WARM_RAM" \
-                "${OVERRIDE_N_PARALLEL:-1}" \
-                "$SOLVER_UBATCH" \
-                0)
+                # GPU-only memory check (excludes SSD RAM which lives in
+                # system memory, not VRAM+GTT).
+                local mem_needed
+                mem_needed=$(_opt_gpu_memory \
+                    "$offloaded_bytes" \
+                    "$kv_per_token" \
+                    "$ctx" \
+                    "$eff_draft_bytes" \
+                    "$ctx" \
+                    "${OVERRIDE_N_PARALLEL:-1}" \
+                    "$SOLVER_UBATCH" \
+                    0)
 
-            if [[ $mem_needed -le ${GPU_BUDGET_BYTES:-0} ]] || [[ ${GPU_BUDGET_BYTES:-0} -le 0 ]]; then
-                local utility=$(( ctx * weight ))
-                # Tiebreaker: prefer higher KV weight (better quality) when utility equal
-                if [[ $utility -gt $best_utility ]] || \
-                   [[ $utility -eq $best_utility && $weight -gt ${best_weight:-0} ]]; then
-                    best_utility=$utility
-                    best_weight=$weight
-                    best_ctx=$ctx
-                    best_k_type="$k_type"
-                    best_v_type="$v_type"
-                    best_reason="ctx: ${ctx} KV: ${kvq} (utility=$utility, weight=$weight)"
+                if [[ $mem_needed -le $solver_budget_bytes ]] || [[ $solver_budget_bytes -le 0 ]]; then
+                    chosen_strategy="$strategy"
+                    chosen_ctx=$ctx
+                    chosen_kvq="$kvq"
+                    chosen_k_type="$k_type"
+                    chosen_v_type="$v_type"
+                    found=1
+                    break 3
                 fi
-            fi
+            done
         done
     done
 
-    if [[ $best_utility -eq -1 ]]; then
-        # Absolute fallback: MIN_CTX with q4_0/q4_0
+    if [[ $found -eq 0 ]]; then
+        # Nothing fits - absolute fallback to MIN_CTX @ q4_0
         SOLVER_CTX_SIZE=$MIN_CTX
         SOLVER_K_TYPE="q4_0"
         SOLVER_V_TYPE="q4_0"
-        SOLVER_REASONS+=("ctx: ${MIN_CTX} KV: q4_0/q4_0 (fallback)")
+        SOLVER_REASONS+=("ctx: ${MIN_CTX} KV: q4_0/q4_0 (no fit at any strategy/kv/ctx)")
     else
-        SOLVER_CTX_SIZE=$best_ctx
-        SOLVER_K_TYPE=$best_k_type
-        SOLVER_V_TYPE=$best_v_type
-        SOLVER_REASONS+=("$best_reason")
+        SOLVER_CTX_SIZE=$chosen_ctx
+        SOLVER_K_TYPE=$chosen_k_type
+        SOLVER_V_TYPE=$chosen_v_type
+        # Update MOE strategy and load mode based on chosen strategy
+        case "$chosen_strategy" in
+            cpu)
+                SOLVER_MOE_STRATEGY="cpu"
+                SOLVER_LOAD_MODE="none"
+                ;;
+            residency)
+                SOLVER_MOE_STRATEGY="residency"
+                SOLVER_LOAD_MODE="mmap"
+                ;;
+            *)
+                SOLVER_MOE_STRATEGY="gpu"
+                SOLVER_LOAD_MODE="dio"
+                ;;
+        esac
+        SOLVER_REASONS+=("ctx: ${chosen_ctx} KV: ${chosen_kvq} strategy=${chosen_strategy}")
     fi
 
     # Recompute kv_per_token for the chosen config
@@ -537,31 +641,30 @@ local kv_qualities=("f16/f16:5" "q8_0/q8_0:4" "q4_0/q4_0:1")
     local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
     # -------------------------------------------------------------------------
-    # Phase 2: Apply remaining detunes if still over budget
-    # Order: ngl -> ssd_ram -> draft -> ubatch
+    # Phase 2: Apply remaining detunes if still over GPU budget (excluding
+    # SSD RAM, which uses system memory and is checked separately).
+    # Order: ngl -> draft -> ubatch
     # -------------------------------------------------------------------------
     local step_idx=0
     while [[ $step_idx -lt 50 ]]; do
         local offloaded_bytes
-        offloaded_bytes=$(_opt_offloaded_bytes "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}")
+        offloaded_bytes=$(_opt_model_gpu_footprint "$SOLVER_NGL" "$SOLVER_N_LAYER" "${MODEL_BYTES:-0}" "${SOLVER_MOE_STRATEGY:-gpu}" "${is_ssm:-false}")
 
         local eff_draft_bytes=0
         [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
 
         local mem_needed
-        mem_needed=$(_opt_total_memory \
+        mem_needed=$(_opt_gpu_memory \
             "$offloaded_bytes" \
             "$kv_per_token" \
             "$SOLVER_CTX_SIZE" \
             "$eff_draft_bytes" \
             "$SOLVER_CTX_SIZE" \
-            "$SOLVER_SSD_HOT_RAM" \
-            "$SOLVER_SSD_WARM_RAM" \
             "${OVERRIDE_N_PARALLEL:-1}" \
             "$SOLVER_UBATCH" \
             0)
 
-        if [[ $mem_needed -le ${GPU_BUDGET_BYTES:-0} ]] || [[ ${GPU_BUDGET_BYTES:-0} -le 0 ]]; then
+        if [[ $mem_needed -le $solver_budget_bytes ]] || [[ $solver_budget_bytes -le 0 ]]; then
             break
         fi
 

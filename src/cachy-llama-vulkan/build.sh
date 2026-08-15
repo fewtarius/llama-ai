@@ -42,11 +42,12 @@ cmake "$LLAMA_DIR" \
     -DGGML_HIP=OFF \
     -DGGML_HIPBLAS=OFF \
     -DGGML_VULKAN=ON \
+    -DGGML_VULKAN_USE_COOPMAT=ON \
     -DGGML_CPU=ON \
-    -DGGML_NATIVE=OFF \
+    -DGGML_NATIVE=ON \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_BUILD_TESTS=OFF \
-    -DLLAMA_BUILD_EXAMPLES=ON
+    -DLLAMA_BUILD_EXAMPLES=OFF
 
 cmake --build . --config Release -j$(nproc)
 log_ok "Vulkan build complete"
