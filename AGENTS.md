@@ -1,35 +1,65 @@
 # AGENTS.md
 
-Technical reference for AI agents working on this project.
+Technical reference for llama-ai development (the runner scripts, solver, GPU
+detection, and build orchestration layer). For C/C++ engine development, see
+[CachyLLama/AGENTS.md](CachyLLama/AGENTS.md). For project methodology (the
+Unbroken Method, checkpoint workflow, session handoff), see
+`.clio/instructions.md`.
+
+---
+
+## Project overview
+
+llama-ai is the runner layer that sits on top of the CachyLLama inference engine.
+It handles:
+
+- GPU/CPU auto-detection (`scripts/detect-gpu.sh`)
+- Build orchestration for Vulkan, ROCm, and Metal backends (`scripts/rebuild.sh`)
+- Adaptive profile selection via an optimistic-first solver (`scripts/optimize.sh`)
+- Server launch with the right flags (`llama-run.sh`)
+- Benchmark harness (`scripts/benchmark.sh`)
+- GPU memory configuration (`scripts/apply-ttm-kernel-params.sh`)
+- Model download and integrity testing (`scripts/lib-discover-models.sh`,
+  `tests/test-download-integrity.sh`)
+
+- **Languages:** Bash (scripts, runner), Python (GGUF metadata reader, log analysis)
+- **Build system:** CMake via `scripts/rebuild.sh`
+- **Primary target:** Nimo Axis N161 (Strix Halo, Ryzen AI Max+ 395, gfx1151)
+- **Secondary:** Ayaneo Flip KB (7840U / gfx1103), Minisforum UM580 (5800H / gfx90c)
+- **License:** GPL-3.0-or-later (source), CC-BY-NC-SA-4.0 (documentation)
+
+---
 
 ## Directory structure
 
 ```
 llama-ai/
 ├── llama-run.sh              # Main entry point — model detection, server launch
-├── CachyLLama/               # Submodule — fork of ggml-org/llama.cpp
+├── CachyLLama/               # Submodule — our fork of llama.cpp
 ├── scripts/
-│   ├── rebuild.sh            # Download ROCm SDK + build both backends
+│   ├── rebuild.sh            # Build script (Vulkan default, optional ROCm)
 │   ├── env.sh                # Environment setup (source before ROCm tools)
-│   ├── detect-gpu.sh         # GPU/APU auto-detection library
-│   ├── benchmark.sh          # Performance testing
-│   └── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
+│   ├── detect-gpu.sh         # GPU/APU and CPU ISA auto-detection
+│   ├── optimize.sh           # Optimistic-first solver (sourced by llama-run.sh)
+│   ├── benchmark.sh          # KV cache performance testing
+│   ├── apply-ttm-kernel-params.sh  # GPU memory config (GRUB + systemd-boot)
+│   ├── install-deps.sh       # Dependency installer
+│   ├── lib-discover-models.sh  # HuggingFace model discovery
+│   ├── read_gguf_kv.py       # GGUF metadata reader (used by solver)
+│   └── log_analyzer.py       # Benchmark log analysis
 ├── src/
-│   ├── cachy-llama-rocm/     # ROCm build
-│   │   ├── build.sh          # Build script (references $PROJECT_ROOT/CachyLLama)
-│   │   └── build/            # Build output (binaries, libs)
-│   └── cachy-llama-vulkan/   # Vulkan build
-│       ├── build.sh          # Build script (references $PROJECT_ROOT/CachyLLama)
-│       └── build/            # Build output (binaries, libs)
-├── deps/                     # ROCm SDK (downloaded, gitignored)
+│   ├── cachy-llama-vulkan/   # Vulkan build output + build.sh
+│   ├── cachy-llama-rocm/     # ROCm build output + build.sh
+│   └── cachy-llama-metal/    # Metal build output + build.sh (macOS)
+├── deps/                     # ROCm SDK (downloaded by rebuild.sh, gitignored)
 ├── models/                   # GGUF files (gitignored)
-├── kv-cache/                 # Persistent KV cache (gitignored)
-├── ssd-cache/                # SSD-backed KV cache (gitignored)
-├── tests/
-│   └── test-download-integrity.sh  # Download cache and split-shard validation
+├── kv-cache/                 # SSD-backed KV cache (gitignored)
 ├── scratch/                  # Transient working files (gitignored)
-└── patches/                  # DEPRECATED - kept for historical reference only
+└── tests/
+    └── test-download-integrity.sh  # Download cache and split-shard validation
 ```
+
+---
 
 ## Build
 
@@ -37,33 +67,35 @@ llama-ai/
 # Full setup from fresh checkout (builds Vulkan backend by default)
 ./scripts/rebuild.sh
 
-# Full rebuild with ROCm support (adds --rocm flag)
-./scripts/rebuild.sh --rocm
-
-# Build Vulkan only (default)
-./scripts/rebuild.sh
-
-# Build ROCm only (optional - ROCm has stability issues on RDNA3)
+# Full rebuild with ROCm support
 ./scripts/rebuild.sh --rocm
 
 # Build both backends
-./scripts/rebuild.sh --rocm  # (Vulkan is always built by default)
+./scripts/rebuild.sh --both
+
+# Full rebuild from scratch (cleans first)
+./scripts/rebuild.sh --rebuild
+
+# Build Metal on macOS (auto-detected)
+./scripts/rebuild.sh
 ```
 
-Build scripts in `src/cachy-llama-rocm/build.sh` and `src/cachy-llama-vulkan/build.sh` reference `$PROJECT_ROOT/CachyLLama` for the source.
+Build scripts in `src/cachy-llama-vulkan/build.sh` and
+`src/cachy-llama-rocm/build.sh` reference `$PROJECT_ROOT/CachyLLama` for the
+source. CachyLLama is maintained directly in its git history — no patches are
+applied. See [CachyLLama/AGENTS.md](CachyLLama/AGENTS.md) for C++ development
+conventions.
 
-`scripts/rebuild.sh` automatically applies patches from `patches/` to the submodule before building. Patches are checked for idempotency — if already applied, they're skipped.
-Note: patch application is deprecated since we now maintain CachyLLama directly.
-The `patches/` directory is kept for historical reference only.
+### Build flow
 
-## Tests
+1. `scripts/rebuild.sh` detects the platform and selects the backend(s)
+2. Downloads the ROCm SDK (if `--rocm` or `--both`) into `deps/`
+3. Sources `scripts/env.sh` to set `ROCM_PATH`, `HIP_PATH`, `LD_LIBRARY_PATH`
+4. Sources `scripts/detect-gpu.sh` to get GPU/CPU info and cmake flags
+5. Runs cmake with the right flags, including CPU ISA detection
+6. Builds in `src/cachy-llama-*/build/`
 
-Run the model download integrity tests after changing Hugging Face discovery,
-cache handling, or download verification in `llama-run.sh`:
-
-```bash
-./tests/test-download-integrity.sh
-```
+---
 
 ## Environment
 
@@ -71,143 +103,129 @@ cache handling, or download verification in `llama-run.sh`:
 # Required before using Vulkan tools (default)
 source scripts/env.sh vulkan
 
-# Or for ROCm (optional - ROCm has stability issues on RDNA3)
+# Or for ROCm (optional — ROCm has stability issues on RDNA3)
 source scripts/env.sh rocm
 ```
 
-Sets `ROCM_PATH`, `HIP_PATH`, `LD_LIBRARY_PATH`, `PATH`.
+Sets `ROCM_PATH`, `HIP_PATH`, `LD_LIBRARY_PATH`, `PATH`. On macOS, Metal is
+auto-detected and no environment sourcing is needed.
 
-## GPU Detection
+---
 
-`scripts/detect-gpu.sh` auto-detects the AMD GPU via PCI ID and sets:
-- `HSA_OVERRIDE_GFX_VERSION` (e.g. `11.0.3` for Phoenix, `11.5.1` for Strix Halo)
-- `LLAMA_GFX_ARCH` (e.g. `gfx1103`, `gfx1151`)
-- `LLAMA_GPU_NAME` (e.g. `Radeon 780M`, `Radeon 8060S`)
-- `LLAMA_THREADS` (optimal thread count)
-- `LLAMA_TOTAL_RAM_GB` / `LLAMA_APU_VRAM_GB` / `LLAMA_RECOMMENDED_GTT_GB`
-- `LLAMA_IS_STRIX_HALO` (`1` on Strix Halo, `0` elsewhere) — true/false
-  signal that `llama-run.sh` reads to pick the halo preset. Detected via
-  PCI ID `1002:1586` or `1002:1660` (exclusive to Strix Halo silicon), with
-  a fallback of `gfx1150/gfx1151/gfx1152` plus `LLAMA_TOTAL_RAM_GB >= 64`.
-- `LLAMA_HARDWARE_TIER` (`handheld` / `standard` / `halo`) - kept for
-  back-compat, derived from `LLAMA_APU_VRAM_GB`. New code in `llama-run.sh`
-  branches on `LLAMA_IS_STRIX_HALO` rather than the tier string.
+## GPU detection
 
-User overrides via environment:
+`scripts/detect-gpu.sh` is sourced by `llama-run.sh` and `rebuild.sh`. It
+identifies your AMD GPU via PCI device ID and sets:
+
+| Variable | Description |
+|----------|-------------|
+| `LLAMA_IS_STRIX_HALO` | `1` on Strix Halo (`1002:1586`), `0` elsewhere |
+| `LLAMA_HARDWARE_TIER` | `halo` / `standard` / `handheld` (back-compat) |
+| `LLAMA_APU_VRAM_GB` | VRAM carveout in GB |
+| `LLAMA_TOTAL_RAM_GB` | Total system RAM in GB |
+| `LLAMA_THREADS` | Optimal thread count (physical cores / 2 for batch) |
+| `LLAMA_GFX_ARCH` | e.g. `gfx1151` (Strix Halo), `gfx1103` (7840U) |
+| `LLAMA_GPU_NAME` | e.g. `Radeon 8060S`, `Radeon 780M` |
+| `LLAMA_RECOMMENDED_GTT_GB` | Recommended GTT size in GB |
+
+The script also detects CPU ISA level and exports cmake flags:
+
+| CPU | ISA flags |
+|-----|-----------|
+| Zen 4 (Phoenix, Strix Halo) | `GGML_AVX512=ON GGML_AVX512_BF16=ON` |
+| Zen 3 (7840U, 5800H) | `GGML_AVX2=ON` |
+| Apple Silicon | `GGML_NATIVE=ON` |
+
+### Adding a new GPU
+
+Find your PCI ID:
 ```bash
-LLAMA_GFX_VERSION_OVERRIDE=11.0.3  # skip detection
-LLAMA_GTT_SIZE=18                  # override GTT recommendation
-LLAMA_IS_STRIX_HALO_OVERRIDE=1     # force halo preset (e.g. Apple Silicon with 64+ GB unified memory)
-LLAMA_HARDWARE_TIER_OVERRIDE=halo  # mirror of the above for the tier string
+lspci -nn | grep VGA
 ```
 
-Or via the CLI flag on `llama-run.sh` itself:
+Add an entry to the `GPU_MAP` array in `scripts/detect-gpu.sh`:
 ```bash
-./llama-run.sh --model ... --hardware-tier halo    # or --hardware-tier standard
-./llama-run.sh --model ... --is-strix-halo         # shorthand for halo
-./llama-run.sh --model ... --no-strix-halo         # shorthand for standard
+GPU_MAP["1002:1586"]="11.5.1:gfx1151:Radeon 8060S"
 ```
 
-The GPU map (`GPU_MAP` array in `detect-gpu.sh`) maps PCI device IDs to GFX versions. To add a new device, find your PCI ID with `lspci -nn | grep VGA` and add an entry.
+Format: `"PCI_ID= GFX_VERSION:gfx_arch:GPU_NAME"`
 
-## Code style
+### Overrides
 
-All scripts are bash:
-
-- `set -euo pipefail` at top
-- `$(command)` for expansion (not backticks)
-- `[[ ]]` for conditionals
-- `function_name()` for functions
-- 4-space indent
-- `SCRIPT_DIR` / `PROJECT_ROOT` for paths (never hardcode)
-
-Logging helpers:
 ```bash
-log_info() { echo -e "\033[0;34m[INFO]\033[0m $1"; }
-log_ok()   { echo -e "\033[0;32m[OK]\033[0m   $1"; }
-log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
+# Environment
+LLAMA_GFX_VERSION_OVERRIDE=11.0.3
+LLAMA_IS_STRIX_HALO_OVERRIDE=1
+LLAMA_HARDWARE_TIER_OVERRIDE=halo
+
+# CLI
+./llama-run.sh --model ... --hardware-tier halo
+./llama-run.sh --model ... --is-strix-halo
+./llama-run.sh --model ... --no-strix-halo
 ```
 
-## Key constraints
+---
 
-- Everything self-contained in this directory — no system ROCm
-- `deps/`, `models/`, `kv-cache/`, `build/` directories are gitignored
-- `CachyLLama/` is a git submodule — use `--recurse-submodules` when cloning
-- **Vulkan (RADV) is the default backend** — ROCm has stability issues on RDNA3
-  (GLM-4.7-Flash/DeepSeek2 MLA produces zero generation tokens on ROCm)
-- **Primary target: Nimo Axis N161 (Strix Halo "max")** — AMD Ryzen AI Max+ 395,
-  Radeon 8060S iGPU on RDNA3.5 / gfx1151, 128GB unified memory. As of 2026-08 the
-  machine boots with a **512 MiB BIOS VRAM carveout** (the documented 96GB
-  carveout is NOT active — OS sees ~125GB RAM, GPU only 512 MiB VRAM). GTT is
-  raised to 112 GiB via kernel params (`amdgpu.gttsize=114688 ttm.pages_limit=
-  29360128 ttm.page_pool_size=29360128`, see GPU memory budget below), so
-  GPU-visible ≈ 112.5 GiB. The 512 MiB carveout is the **supported state**
-  on this hardware — `detect-gpu.sh` recognises Strix Halo via PCI ID
-  (`1002:1586`) regardless of BIOS VRAM allocation. If the BIOS carveout is
-  restored to 96GB the GTT kernel params are no longer required (default
-  ~16GB GTT is sufficient when VRAM is large), and `LLAMA_HARDWARE_TIER`
-  switches from `standard` to `halo` automatically.
-- **RADV APU memory split** — RADV reports only 2/3 of (VRAM+GTT) as the
-  DEVICE_LOCAL heap on APUs (game-compat heuristic in `radv_physical_device.c`:
-  "report 2/3 as VRAM and 1/3 as GTT"). With the 512 MiB carveout that caps
-  DEVICE_LOCAL at ~42 GiB. `~/.drirc` enables `radv_enable_unified_heap_on_apu`
-  for `llama-server`/`llama-cli`/`llama-bench` so DEVICE_LOCAL = full
-  VRAM+GTT. Without it, models > 2/3 of GPU-visible memory crash with
-  `vk::DeviceLostError` at load; `llama-run.sh` now has a pre-flight guard that
-  fails with a clear message instead.
-- **Secondary: Ayaneo Flip KB** (7840U / gfx1103 / Radeon 780M, 32GB physical RAM,
-  6GB VRAM carveout via `amdgpu.vis_vramlimit=6144`, 18GB GTT via
-  `amdgpu.gttsize=18432`, ~26GB available to OS).
-- **Tertiary: Minisforum UM580 "zaphod"** (5800H / gfx90c / 16GB RAM)
+## The solver (`scripts/optimize.sh`)
 
-## Profile selection
+`llama-run.sh` sources `scripts/optimize.sh` and calls `solve_optimal_config()`
+to compute the best profile for a given model and hardware. The solver is
+optimistic-first: it starts with maximum performance and iteratively detunes
+by least performance impact until the config fits the GPU budget.
 
-`llama-run.sh` runs an **optimistic-first solver** (`scripts/optimize.sh`)
-by default. The solver reads GGUF metadata (layer count, GQA ratio,
-training context, full_attention_interval for hybrid SSM models,
-nextn_predict_layers for MTP), starts with the maximum-performance
-configuration, and iteratively detunes by least performance impact until
-the config fits in the GPU budget.
+### Detune priority
 
-The legacy preset table is preserved as a fallback and is the source of
-the profile name shown in `--print-profile` (the solver maps its
-output to a legacy preset name for backward compatibility). Pass
-`--noauto` to bypass the solver and use the legacy table directly.
+1. Reduce SSD hot/warm RAM (no prefill/decode impact)
+2. Reduce context size (mild impact on long-context recall)
+3. Reduce ubatch (reduces prefill throughput)
+4. Reduce threads (small prefill impact)
+5. V cache q8_0 (~50% memory save, minor quality)
+6. V cache q4_0 (~75% memory save, more quality)
+7. K cache q8_0
+8. Drop draft model (some decode throughput loss)
+9. Drop SSD entirely
+10. MoE residency (mmap + madvise tracking)
+11. MoE cpu-moe + load-mode none (slow on small GPU)
+12. Auto layer split for dense models that still don't fit
 
-| Preset | When | ctx (default) | KV | batch | SSD cache | `--cpu-moe` |
-|--------|------|---------------|-----|-------|-----------|-------------|
+Each step has a "done" flag so it only applies once.
+
+### Override precedence (low to high)
+
+1. Built-in defaults (solver starts here)
+2. System detection (GPU memory, hardware tier)
+3. Solver output
+4. User overrides via env vars and CLI flags
+5. `--noauto` (disables solver, uses legacy preset table)
+
+User overrides recognized by `apply_user_overrides()`:
+- `LLAMA_CTX_SIZE` / `--ctx-size`
+- `KV_CACHE_K_OVERRIDE` / `KV_CACHE_V_OVERRIDE`
+- `LLAMA_THREADS_OVERRIDE` / `--threads`
+- `MOE_UBATCH_OVERRIDE` / `OVERRIDE_UBATCH_SIZE` / `--ubatch-size`
+- `OVERRIDE_CACHE_RAM` / `--cache-ram`
+- `--no-ssd-cache`
+- `--fit on`
+
+### Legacy preset table (`--noauto`)
+
+| Preset | When | ctx | KV | batch | SSD | cpu-moe |
+|--------|------|-----|-----|-------|-----|---------|
 | `halo-moe-large` | Strix Halo, MoE, >50 GB | 131072 | q8_0 | 2048/512 | off | — |
 | `halo-moe-small` | Strix Halo, MoE, ≤50 GB | 196608 | f16 | 2048/512 | off | — |
-| `halo-dense` | Strix Halo, dense (any size) | 131072 | f16 | 2048/512 | off | — |
+| `halo-dense` | Strix Halo, dense (any) | 131072 | f16 | 2048/512 | off | — |
 | `std-moe-large` | non-Halo, MoE, >18 GB | 65536 | q8_0 | 1024/256 | on | auto¹ |
 | `std-moe-small` | non-Halo, MoE, ≤18 GB | 32768 | q8_0 | 1024/256 | on | auto¹ |
 | `std-dense-large` | non-Halo, dense, >15 GB | 32768 | q4_0 | 1024/256 | on | — |
 | `std-dense-small` | non-Halo, dense, ≤15 GB | 32768 | q8_0 | 1024/256 | on | — |
-| `ssm` | Mamba / Jamba / Falcon-H1 / RWKV | 65536 (262144 on halo) | q8_0 | 1024/512 | off | — |
+| `ssm` | Mamba / Jamba / RWKV | 65536 (262144 on halo) | q8_0 | 1024/512 | off | — |
 
-¹ `--cpu-moe + --load-mode none` is added automatically when the model is
-≥23 GiB to avoid the mmap + `--moe-expert-residency` page-fault pathology
-(see LTM). Halo tier never triggers this because GTT holds the model.
+¹ `--cpu-moe + --load-mode none` is added automatically when the model is ≥23 GiB.
 
-The solver typically picks the same values as the legacy preset for
-common models but is more aggressive about:
+See [SOLVER.md](SOLVER.md) for the full algorithm, benchmark data, and edge-case
+analysis.
 
-- KV cache type (f16/f16 by default for decode throughput, detunes to
-  q8_0/q8_0 or q4_0/q4_0 only when memory pressure requires it)
-- Context size (training context vs fixed presets; 262k for Qwen3.5/3.6,
-  1M-capable for DeepSeek-V4-Flash)
-- SSD cache (enabled on halo when budget permits, legacy always off)
-- Hybrid SSM awareness (KV cache size scales with attention-layer count
-  only, not total layers — Qwen3.5/3.6 hybrid = ~25% attention layers)
-
-See [SOLVER.md](SOLVER.md) for the full algorithm, override precedence,
-and benchmark data.
-
-Override the solver via `--hardware-tier halo|standard|handheld` (CLI
-flag) or `LLAMA_HARDWARE_TIER_OVERRIDE` env var, or use `--noauto` to
-disable it. Per-knob overrides still work: `--checkpoint-min-step N`,
-`--ctx-checkpoints N`, `--cache-ram N`, `--ubatch-size N`,
-`--ctx-size N`, `--no-ssd-cache`.
+---
 
 ## GPU memory budget
 
@@ -215,35 +233,216 @@ GPU-visible memory = VRAM carveout (`mem_info_vram_total`) + GTT
 (`mem_info_gtt_total`). On UMA both are the same DRAM; GTT pages are mapped
 from system RAM on demand.
 
-- Check current state:
-  `cat /sys/class/drm/card0/device/mem_info_{vram,gtt}_total`
-- Raise GTT: `sudo ./scripts/apply-ttm-kernel-params.sh 104` (GiB; writes
-  `amdgpu.gttsize`, `ttm.pages_limit`, `ttm.page_pool_size` into the
-  systemd-boot entry and requires a reboot). `amdgpu.gttsize` is deprecated on
-  modern kernels but still honored; `ttm.pages_limit`/`ttm.page_pool_size` are
-  the canonical way. On the AI Max+ 395, ~108GB GTT is the practical ceiling
-  (110GB caused segfaults loading large models).
-- SteamFork dual-ESP installs (Nimo): the real loader entries live on an
-  UNMOUNTED ESP (`nvme1n1p1`); `/boot` is a redundant empty ESP.
-  `apply-ttm-kernel-params.sh` now probes other vfat partitions and edits the
-  entry in place. SteamFork OS updates regenerate the loader entry, so
-  re-run the script after updates.
-- RADV APU 2/3 split: DEVICE_LOCAL heap = 2/3 of (VRAM+GTT) unless
-  `radv_enable_unified_heap_on_apu` is enabled for the app (~/.drirc, scoped to
-  llama tools).
-- `llama-run.sh` pre-flight: fails with a clear message when the model exceeds
-  the GPU-visible budget (2 GiB reserved for compute/staging) instead of the
-  `radv/amdgpu: Not enough memory for command submission` DeviceLost crash.
+### Nimo Axis N161 (Strix Halo, primary target)
 
-## Patch management
+- BIOS carves out **512 MiB** of VRAM (the documented 96 GB carveout is NOT
+  active)
+- OS sees ~125 GB RAM; GTT defaults to ~62.5 GB when `amdgpu.gttsize` is unset
+- GPU-visible total: ~63 GB
+- `detect-gpu.sh` recognizes Strix Halo via PCI ID (`1002:1586`) regardless of
+  BIOS VRAM allocation
+- Raise GTT: `sudo ./scripts/apply-ttm-kernel-params.sh 104` (~104 GiB ceiling)
+- Practical ceiling is ~108 GB GTT (110 GB caused segfaults loading large models)
 
-The `patches/` directory is **deprecated**. We now maintain `CachyLLama` directly as a fork rather than applying patches to an upstream submodule. The git history in `CachyLLama/` is the canonical source of truth.
+If the BIOS carveout is restored to 96 GB, the GTT kernel params are no longer
+required (default ~16 GB GTT is sufficient), and `LLAMA_HARDWARE_TIER` switches
+from `standard` to `halo` automatically.
 
-### Historical reference
+### RADV APU 2/3 split
 
-The old patch workflow (generating incremental and consolidated patches after each commit) is no longer needed. All custom changes are committed directly to the `CachyLLama/` fork's git history.
+RADV on APUs (`has_dedicated_vram=false`) reports only 2/3 of (VRAM + GTT) as
+the DEVICE_LOCAL heap and 1/3 as host heap (game-compat heuristic in
+`radv_physical_device.c`). `~/.drirc` enables
+`radv_enable_unified_heap_on_apu` for `llama-server`/`llama-cli`/`llama-bench`
+so DEVICE_LOCAL = full VRAM + GTT. Without it, models > 2/3 of GPU-visible
+memory crash with `vk::DeviceLostError` at load.
+
+### Secondary: Ayaneo Flip KB
+
+7840U / gfx1103 / Radeon 780M, 32 GB physical RAM, 6 GB VRAM carveout via
+`amdgpu.vis_vramlimit=6144`, 18 GB GTT via `amdgpu.gttsize=18432`, ~26 GB
+available to OS.
+
+### Tertiary: Minisforum UM580 "zaphod"
+
+5800H / gfx90c / 16 GB RAM, 24 GB GTT.
+
+### Pre-flight guard
+
+`llama-run.sh` checks if the model exceeds the GPU-visible budget (2 GiB
+reserved for compute/staging). If it does, the server fails with a clear
+message instead of the `radv/amdgpu: Not enough memory for command
+submission` DeviceLost crash.
+
+---
+
+## Code style
+
+All scripts are bash. Follow these conventions:
+
+- `set -euo pipefail` at top
+- `$(command)` for expansion (not backticks)
+- `[[ ]]` for conditionals
+- `function_name()` for functions
+- 4-space indent
+- `SCRIPT_DIR` / `PROJECT_ROOT` for paths (never hardcode)
+- Use `log_info()`, `log_ok()`, `log_warn()`, `log_error()` for output
+
+Logging helpers:
+```bash
+log_info()  { echo -e "\033[0;34m[INFO]\033[0m $1"; }
+log_ok()    { echo -e "\033[0;32m[OK]\033[0m   $1"; }
+log_warn()  { echo -e "\033[0;33m[WARN]\033[0m   $1"; }
+log_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
+```
+
+### Variable naming
+
+| Pattern | Purpose | Examples |
+|---------|---------|----------|
+| `LLAMA_*` | User-facing defaults and overrides | `LLAMA_THREADS`, `LLAMA_CTX_SIZE` |
+| `*_OVERRIDE` | User overrides that win over solver | `KV_CACHE_K_OVERRIDE`, `LLAMA_THREADS_OVERRIDE` |
+| `SOLVER_*` | Solver output (internal) | `SOLVER_CTX_SIZE`, `SOLVER_K_TYPE` |
+| `EXTRA_SERVER_ARGS` | Accumulated server arguments | (string, appended to throughout) |
+| `_SSD_DISABLE` | Internal flags | (private, prefixed with `_`) |
+
+### Sourcing pattern
+
+`llama-run.sh` sources `detect-gpu.sh` and `optimize.sh` at the top:
+```bash
+source "$PROJECT_ROOT/scripts/detect-gpu.sh"
+source "$PROJECT_ROOT/scripts/optimize.sh"
+```
+
+Shared functions in `detect-gpu.sh` and `optimize.sh` are available in
+`llama-run.sh`'s scope. Do not duplicate functions across files.
+
+---
+
+## Testing
+
+### Download integrity tests
+
+Run after changing Hugging Face discovery, cache handling, or download
+verification in `llama-run.sh`:
+
+```bash
+./tests/test-download-integrity.sh
+```
+
+Tests split-shard model download, cache validation, and integrity verification.
+
+### Solver tests
+
+```bash
+# Unit test harness
+./scratch/test-solver.sh
+
+# Multi-model comparison
+./scratch/test-solver-multi.sh
+
+# pp/tg sweep across ubatch + KV types
+./scratch/bench-solver-sweep.sh
+```
+
+### Benchmark tests
+
+```bash
+# Full benchmark with server + HTTP requests
+./scripts/benchmark.sh --model Qwen3.6-35B-A3B --prompt-size 15000
+
+# llama-bench sweeps
+./src/cachy-llama-vulkan/build/bin/llama-bench -m model.gguf
+```
+
+### C++ tests
+
+For CachyLLama C++ tests (test-backend-ops, test-sampling, etc.), see
+[CachyLLama/AGENTS.md](CachyLLama/AGENTS.md#testing).
+
+---
+
+## Key constraints
+
+- **Self-contained** — no system ROCm. The ROCm SDK is downloaded by
+  `rebuild.sh` into `deps/`.
+- **Gitignored** — `deps/`, `models/`, `kv-cache/`, `build/` directories are
+  not in version control.
+- **Submodule** — `CachyLLama/` is a git submodule. Clone with
+  `--recurse-submodules`.
+- **Vulkan default** — ROCm has stability issues on RDNA3 (GLM-4.7-Flash and
+  DeepSeek2 MLA produce zero generation tokens on ROCm).
+- **No patches** — `CachyLLama/` is maintained directly in git history. The
+  old `patches/` directory is not used.
+- **llama-cli blocks** — use `llama-server` (HTTP API) for testing model
+  functionality instead of `llama-cli` interactive mode.
+- **Never commit handoff files** — `ai-assisted/` is internal session context.
+  Before every commit: `git reset HEAD ai-assisted/` if it appears staged.
+
+---
+
+## Common commands
+
+```bash
+# Build
+./scripts/rebuild.sh
+
+# Start server
+./llama-run.sh --server
+
+# Print solver profile
+./llama-run.sh --print-profile Qwen3.6-35B-A3B
+
+# List models
+./llama-run.sh --list-models
+
+# Download model
+./llama-run.sh --download Qwen3-14B --quant Q4_K_M
+
+# Raise GTT
+sudo ./scripts/apply-ttm-kernel-params.sh 104
+
+# Run tests
+./tests/test-download-integrity.sh
+./scratch/test-solver.sh
+
+# Run benchmarks
+./scripts/benchmark.sh --model Qwen3.6-35B-A3B --prompt-size 15000
+
+# Format check (bash)
+shellcheck scripts/*.sh llama-run.sh
+
+# Search code
+grep -rn "pattern" scripts/ llama-run.sh
+```
+
+---
+
+## Session handoff
+
+When ending a session, always create a handoff directory:
+
+```
+ai-assisted/YYYYMMDD/HHMM/
+├── CONTINUATION_PROMPT.md  [MANDATORY] - Next session's complete context
+├── AGENT_PLAN.md           [MANDATORY] - Remaining priorities & blockers
+└── NOTES.md                [OPTIONAL]  - Technical notes
+```
+
+**NEVER commit handoff files.** Before every commit:
+```bash
+git status  # verify no ai-assisted/ staged
+git reset HEAD ai-assisted/  # if it appears
+git add -A && git commit -m "type(scope): description"
+```
+
+---
 
 ## License
 
-Source code: GPL-3.0-or-later (see LICENSE)
-Documentation: CC-BY-NC-SA-4.0
+**Source code:** [GPL-3.0-or-later](LICENSE)
+**Documentation:** [CC-BY-NC-SA-4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+
+CachyLLama (the inference engine in the submodule) is MIT-licensed (same as
+upstream llama.cpp). See [CachyLLama/AGENTS.md](CachyLLama/AGENTS.md) for
+C++ development conventions.
