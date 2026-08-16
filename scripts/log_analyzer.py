@@ -32,10 +32,14 @@ _TIMING_RE = re.compile(
     r'(prompt eval time|eval time)\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s+tokens\s*\([^)]+,\s*([\d.]+)\s+tokens per second\)'
 )
 _TASK_RE = re.compile(r'id\s+(\d+)\s+\|\s+task\s+(-?\d+)')
-# Log format: "loading model '/home/deck/llama-ai/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf'"
-_MODEL_RE = re.compile(r"loading model\s+'([^']+\.gguf)'")
-# Log format: "initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'"
-_CONTEXT_RE = re.compile(r'n_ctx_slot\s*=\s*(\d+)')
+# "Model:    SomeModel-Q4_K_M.gguf" at start of line (optional leading whitespace).
+# Matches the /v1/models response line in server logs. Does NOT match when
+# a timestamp prefix (e.g. "0.16.000.000 I init_print:   Model:") is present.
+_MODEL_NAME_RE = re.compile(r'^\s*Model:\s+(.+\.gguf)\s*$', re.MULTILINE)
+# Fallback: "loading model '/path/to/model.gguf'"
+_LOAD_MODEL_RE = re.compile(r"loading model\s+'([^']+\.gguf)'")
+# Context size: matches "n_ctx_slot = N", "n_ctx = N", "Context size: N", "Context size = N"
+_CONTEXT_RE = re.compile(r'(?:n_ctx_slot|n_ctx|Context size)\s*[=:]\s*(\d+)')
 # Periodic slot timing: "n_decoded =    100, tg =  11.17 t/s, tg_3s =  11.17 t/s"
 _NDECODED_RE = re.compile(
     r'id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|\s+n_decoded\s*=\s*(\d+).*?tg\s*=\s*([\d.]+)\s*t/s'
@@ -161,7 +165,10 @@ def extract_context_size(text):
 
 
 def extract_model_name(text):
-    m = _MODEL_RE.search(text)
+    m = _MODEL_NAME_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    m = _LOAD_MODEL_RE.search(text)
     if m:
         return _model_name_from_path(m.group(1))
     return "Unknown"

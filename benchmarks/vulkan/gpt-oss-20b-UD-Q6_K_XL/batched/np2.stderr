@@ -1,0 +1,5 @@
+0.00.203.624 W load: setting token '<|message|>' (200008) attribute to USER_DEFINED (16), old attributes: 8
+0.00.203.631 W load: setting token '<|start|>' (200006) attribute to USER_DEFINED (16), old attributes: 8
+0.00.203.631 W load: setting token '<|constrain|>' (200003) attribute to USER_DEFINED (16), old attributes: 8
+0.00.203.945 W load: setting token '<|channel|>' (200005) attribute to USER_DEFINED (16), old attributes: 8
+0.00.205.691 W load: special_eog_ids contains both '<|return|>' and '<|call|>', or '<|calls|>' and '<|flush|>' tokens, removing '<|end|>' token from EOG list

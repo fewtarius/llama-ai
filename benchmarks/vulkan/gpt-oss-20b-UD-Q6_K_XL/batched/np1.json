@@ -1,0 +1,2 @@
+{"n_kv_max": 131072, "n_batch": 2048, "n_ubatch": 512, "flash_attn": 1, "is_pp_shared": 0, "n_gpu_layers": 99, "n_threads": 16, "n_threads_batch": 16, "pp": 2048, "tg": 128, "pl": 1, "n_kv": 2176, "t_pp": 1.357539, "speed_pp": 1508.612183, "t_tg": 1.815169, "speed_tg": 70.516853, "t": 3.172708, "speed": 685.849426}
+

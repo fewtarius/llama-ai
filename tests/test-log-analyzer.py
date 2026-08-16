@@ -142,12 +142,12 @@ class ExtractHelpersTests(unittest.TestCase):
     def test_extract_model_with_prefix_indent(self):
         # Real server output: Model: line may appear with the timestamp prefix.
         log = SINGLE_TASK_LOG + '\n0.16.000.000 I init_print:   Model:    TestModel-7B-Q4_K_M.gguf\n'
-        # The regex requires `Model:` at line start (with optional whitespace).
-        # Server-style prefix `0.16... I init_print:   Model:` does not match
-        # because the timestamp is at column 0. That's OK - we still pick up
-        # the model name from the model_loader log line. This test documents
-        # that limitation; the analyze() function returns 'Unknown' in that case.
-        self.assertEqual(log_analyzer.extract_model_name(log), 'Unknown')
+        # The _MODEL_NAME_RE regex requires `Model:` at line start (with
+        # optional whitespace). Server-style prefix `0.16... I init_print:
+        #    Model:` does not match because the timestamp is at column 0.
+        # We fall back to the `loading model` line in SINGLE_TASK_LOG which
+        # gives us the basename (X) from 'models/X.gguf'.
+        self.assertEqual(log_analyzer.extract_model_name(log), 'X')
 
     def test_loaded_checkpoints(self):
         self.assertEqual(log_analyzer.extract_loaded_checkpoints(LOG_WITH_CKPTS), 7)
