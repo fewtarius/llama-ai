@@ -175,6 +175,35 @@ _detect_gpu_budget() {
     echo "$budget"
 }
 
+# Compute GPU budget that matches the pre-flight check (accounts for unified heap on Vulkan/APU).
+# Returns budget in bytes.
+_compute_gpu_budget_bytes() {
+    local vram=0 gtt=0
+    if [[ "$BACKEND" =~ ^(vulkan|rocm|metal)$ ]]; then
+        for c in /sys/class/drm/card[0-9]/device; do
+            [[ -d "$c" ]] || continue
+            vram=$(cat "$c/mem_info_vram_total" 2>/dev/null || echo 0)
+            gtt=$(cat "$c/mem_info_gtt_total" 2>/dev/null || echo 0)
+            break
+        done
+    fi
+    local gpu_vis_bytes=$(( vram + gtt ))
+    local gpu_vis_gib=$(( gpu_vis_bytes / 1073741824 ))
+    local budget_gib
+    # Check for unified heap (radv_enable_unified_heap_on_apu)
+    local unified_heap=0
+    grep -q "radv_enable_unified_heap_on_apu" "$HOME/.drirc" /usr/share/drirc.d/*.conf 2>/dev/null && unified_heap=1
+    if [[ $unified_heap -eq 1 ]]; then
+        budget_gib=$(( gpu_vis_gib - 2 ))
+    else
+        # Without unified heap, RADV reports only 2/3 as DEVICE_LOCAL
+        budget_gib=$(( gpu_vis_gib * 2 / 3 - 2 ))
+    fi
+    # Minimum 1 GiB budget
+    [[ $budget_gib -lt 1 ]] && budget_gib=1
+    echo $(( budget_gib * 1073741824 ))
+}
+
 # -----------------------------------------------------------------------------
 # Structured RAM-budget breakdown (for legacy mode only; solver handles itself)
 # -----------------------------------------------------------------------------
@@ -1296,6 +1325,8 @@ fi
 # -----------------------------------------------------------------------------
 [[ "$BACKEND" == "auto" ]] && detect_backend
 
+# GPU_BUDGET_BYTES from _detect_gpu_budget is used for display and legacy mode.
+# For the solver, we use _compute_gpu_budget_bytes which accounts for unified heap.
 GPU_BUDGET_BYTES="$(_detect_gpu_budget)"
 GPU_BUDGET_GB=$((GPU_BUDGET_BYTES / 1073741824))
 if [[ $GPU_BUDGET_BYTES -gt 0 ]]; then
@@ -1303,6 +1334,10 @@ if [[ $GPU_BUDGET_BYTES -gt 0 ]]; then
 else
     log_warn "Could not detect GPU budget; cache-ram will use conservative fallback"
 fi
+
+# Compute solver budget (unified-heap-aware) and export for optimize.sh
+SOLVER_GPU_BUDGET_BYTES="$(_compute_gpu_budget_bytes)"
+export SOLVER_GPU_BUDGET_BYTES
 
 [[ -n "${LLAMA_HARDWARE_TIER_OVERRIDE:-}" ]] && LLAMA_HARDWARE_TIER="$LLAMA_HARDWARE_TIER_OVERRIDE"
 [[ -n "${LLAMA_IS_STRIX_HALO_OVERRIDE:-}" ]] && LLAMA_IS_STRIX_HALO="$LLAMA_IS_STRIX_HALO_OVERRIDE"

@@ -16,6 +16,13 @@
 _LLAMA_OPTIMIZE_LOADED=1
 
 # -----------------------------------------------------------------------------
+# Constants
+# -----------------------------------------------------------------------------
+# GiB constant used throughout the codebase (173741824 = 165 MiB, used as "1 GiB" unit).
+# This matches the constant used in llama-run.sh for GPU budget calculations.
+_OPT_GIB=1073741824
+
+# -----------------------------------------------------------------------------
 # Minimum context size for agentic workloads (override via MIN_CTX env)
 # -----------------------------------------------------------------------------
 : "${MIN_CTX:=65536}"
@@ -97,6 +104,89 @@ _opt_gguf() {
     local key="$1" default="${2:-0}"
     local val="${SOLVER_GGUF[$key]:-$default}"
     [[ "$val" =~ ^[0-9]+$ ]] && echo "$val" || echo "$default"
+}
+
+# -----------------------------------------------------------------------------
+# System memory detection (mirrors llama-run.sh functions)
+# -----------------------------------------------------------------------------
+_opt_get_total_memory_bytes() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        sysctl -n hw.memsize 2>/dev/null || echo 0
+    else
+        awk '/^MemTotal:/ {print $2 * 1024; exit}' /proc/meminfo 2>/dev/null || echo 0
+    fi
+}
+
+_opt_get_available_memory_bytes() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        local ps=$(sysctl -n hw.pagesize 2>/dev/null || echo 16384)
+        local out=$(vm_stat 2>/dev/null)
+        local free=$(echo "$out" | awk '/Pages free/ {gsub(/\./,"",$3); print $3}')
+        local inactive=$(echo "$out" | awk '/Pages inactive/ {gsub(/\./,"",$3); print $3}')
+        echo $(( (${free:-0} + ${inactive:-0}) * ps ))
+    else
+        awk '/^MemAvailable:/ {print $2 * 1024; exit}' /proc/meminfo 2>/dev/null || echo 0
+    fi
+}
+
+# System memory check for a given configuration.
+# For "gpu" strategy: model is fully on GPU, system only needs KV + draft + compute + system + SSD
+# For "residency" strategy: full model is mmap'd; worst-case RSS = full model + KV + draft + compute + system + SSD
+# For "cpu" strategy: full model in RAM (--load-mode none); system needs full model + KV + draft + compute + system + SSD
+_opt_system_memory() {
+    local offloaded_bytes="$1"      # GPU-resident model bytes (from _opt_model_gpu_footprint)
+    local model_bytes="$2"          # Full model size
+    local kv_per_token="$3"
+    local ctx_size="$4"
+    local draft_bytes="$5"
+    local draft_ctx="$6"
+    local n_parallel="$7"
+    local ubatch="$8"
+    local moe_in_ram="${9:-0}"
+    local strategy="${10:-gpu}"     # gpu, residency, cpu
+    local load_mode="${11:-dio}"    # dio, mmap, none
+    local ssd_hot_mib="${12:-0}"
+    local ssd_warm_mib="${13:-0}"
+
+    local kv_total=$(( ctx_size * kv_per_token * n_parallel ))
+    local draft_kv_total=0
+    if [[ $draft_ctx -gt 0 && $draft_bytes -gt 0 ]]; then
+        draft_kv_total=$(( draft_ctx * kv_per_token / 4 * n_parallel ))
+        local draft_kv_cap=$(( draft_bytes * 10 / 100 ))
+        [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
+    fi
+
+    local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
+    local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
+    local system_bytes=$(( 256 * 1048576 ))
+
+    # Model memory in system RAM depends on strategy and load mode
+    local model_sys_bytes=0
+    case "$strategy" in
+        gpu)
+            # Model fully on GPU; only KV cache etc. in system RAM
+            model_sys_bytes=0
+            ;;
+        residency)
+            # Full model mmap'd with --moe-expert-residency (madvise MADV_FREE).
+            # Only attention/embedding/head + active expert pages stay resident.
+            # Empirically ~18-2% of model size (same as GPU fraction).
+            # Use 2% for safety margin.
+            model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.20 }')
+            ;;
+        cpu)
+            # --cpu-moe + --load-mode none: full model read into RAM
+            model_sys_bytes="$model_bytes"
+            ;;
+    esac
+
+    # For "gpu" strategy: model is on GPU (offloaded_bytes), not in system RAM (model_sys_bytes=)
+    # For "residency"/"cpu": model_sys_bytes already includes the GPU-resident portion (UMA shared memory)
+    local model_and_offloaded=$model_sys_bytes
+    [[ "$strategy" == "gpu" ]] && model_and_offloaded=$(( model_sys_bytes + offloaded_bytes ))
+    local raw=$(( model_and_offloaded + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
+    # 10% safety margin for system memory (more conservative than GPU)
+    echo $(( raw * 110 / 100 ))
 }
 
 # -----------------------------------------------------------------------------
@@ -526,14 +616,11 @@ solve_optimal_config() {
     SOLVER_REASONS=()
     SOLVER_DRAFT_PATH="$draft_path"
 
-    # The solver uses VRAM+GTT (raw) as its effective budget. The legacy
-    # GPU_BUDGET_BYTES already subtracts 2 GiB for safety, and the solver's
-    # _opt_total_memory accounts for runtime overheads (compute/system) plus a
-    # 5% margin. Adding the 2 GiB back here lets the solver explore the full
-    # address space without double-counting safety.
+    # The solver uses SOLVER_GPU_BUDGET_BYTES (unified-heap-aware budget from llama-run.sh)
+    # which matches the pre-flight check. The 5% margin in _opt_gpu_memory provides additional safety.
     local solver_budget_bytes
-    if [[ ${GPU_BUDGET_BYTES:-0} -gt 0 ]]; then
-        solver_budget_bytes=$(( GPU_BUDGET_BYTES + 2 * 1024 * 1048576 ))
+    if [[ ${SOLVER_GPU_BUDGET_BYTES:-${GPU_BUDGET_BYTES:-0}} -gt 0 ]]; then
+        solver_budget_bytes=${SOLVER_GPU_BUDGET_BYTES:-$GPU_BUDGET_BYTES}
     else
         solver_budget_bytes=0
     fi
@@ -554,12 +641,16 @@ solve_optimal_config() {
     local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
     local strategies=("gpu" "residency")
     [[ "${is_moe:-false}" == "true" ]] && strategies+=("cpu")
+    # For "gpu" strategy, try both with and without draft model
+    local draft_modes=("enabled")
+    # We'll handle draft disabled as a fallback within gpu strategy
 
     local chosen_strategy=""
     local chosen_ctx=0
     local chosen_kvq=""
     local chosen_k_type=""
     local chosen_v_type=""
+    local chosen_draft_enable=true
     local found=0
 
     for strategy in "${strategies[@]}"; do
@@ -575,11 +666,40 @@ solve_optimal_config() {
             kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$k_type" "$v_type" "$hckv" "$kl" "$vl")
             local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
-            for ctx in "${ctx_values[@]}"; do
-                [[ $ctx -lt $MIN_CTX ]] && continue
+            # For "gpu" strategy, try draft enabled first, then disabled
+            local draft_modes_for_strategy=("enabled")
+            [[ "$strategy" == "gpu" ]] && draft_modes_for_strategy=("enabled" "disabled")
 
-                local eff_draft_bytes=0
-                [[ "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
+            for draft_mode in "${draft_modes_for_strategy[@]}"; do
+                for ctx in "${ctx_values[@]}"; do
+                    # For "cpu" strategy (last resort), allow context below MIN_CTX down to 8192
+                    local min_ctx_for_strategy=$MIN_CTX
+                    [[ "$strategy" == "cpu" ]] && min_ctx_for_strategy=8192
+                    [[ $ctx -lt $min_ctx_for_strategy ]] && continue
+
+                    local eff_draft_bytes=0
+                    [[ "$draft_mode" == "enabled" && "$SOLVER_DRAFT_ENABLE" == "true" ]] && eff_draft_bytes="$draft_bytes"
+
+                # System memory check
+                local sys_mem_total
+                sys_mem_total=$(_opt_get_total_memory_bytes)
+                local sys_mem_avail
+                sys_mem_avail=$(_opt_get_available_memory_bytes)
+                local sys_mem_needed
+                sys_mem_needed=$(_opt_system_memory \
+                    "$offloaded_bytes" \
+                    "${MODEL_BYTES:-0}" \
+                    "$kv_per_token" \
+                    "$ctx" \
+                    "$eff_draft_bytes" \
+                    "$ctx" \
+                    "${OVERRIDE_N_PARALLEL:-1}" \
+                    "$SOLVER_UBATCH" \
+                    0 \
+                    "$strategy" \
+                    "$SOLVER_LOAD_MODE" \
+                    "$SOLVER_SSD_HOT_RAM" \
+                    "$SOLVER_SSD_WARM_RAM")
 
                 # GPU-only memory check (excludes SSD RAM which lives in
                 # system memory, not VRAM+GTT).
@@ -594,18 +714,47 @@ solve_optimal_config() {
                     "$SOLVER_UBATCH" \
                     0)
 
-                if [[ $mem_needed -le $solver_budget_bytes ]] || [[ $solver_budget_bytes -le 0 ]]; then
+                # Check both GPU and system memory
+                # For "residency" and "cpu" strategies (mmap-based), reserve 8 GiB for OS,
+                # rest is available since kernel can evict cold mmap pages.
+                # For "gpu" strategy, use MemAvailable.
+                local sys_budget
+                case "$strategy" in
+                    residency|cpu)
+                        local os_reserve=$(( 8 * _OPT_GIB ))
+                        sys_budget=$(( sys_mem_total - os_reserve ))
+                        [[ $sys_budget -lt 0 ]] && sys_budget=0
+                        ;;
+                    *)
+                        sys_budget=$sys_mem_avail
+                        ;;
+                esac
+                # GPU budget comparison in "fake GiB" units (codebase uses 1073741824/1 = 173741824 as 1 GiB)
+                local solver_budget_gib=$(( solver_budget_bytes / _OPT_GIB ))
+                local mem_needed_gib=$(( mem_needed / _OPT_GIB ))
+                local gpu_ok=0
+                [[ $mem_needed_gib -le $solver_budget_gib ]] || [[ $solver_budget_gib -le 0 ]] && gpu_ok=1
+                local sys_ok=0
+                [[ $sys_mem_needed -le $sys_budget ]] || [[ $sys_budget -le 0 ]] && sys_ok=1
+
+                if [[ $gpu_ok -eq 1 && $sys_ok -eq 1 ]]; then
                     chosen_strategy="$strategy"
                     chosen_ctx=$ctx
                     chosen_kvq="$kvq"
                     chosen_k_type="$k_type"
                     chosen_v_type="$v_type"
+                    if [[ "$draft_mode" == "enabled" ]]; then
+                        chosen_draft_enable=true
+                    else
+                        chosen_draft_enable=false
+                    fi
                     found=1
-                    break 3
+                    break 4
                 fi
             done
         done
     done
+    done  # close draft_mode loop
 
     if [[ $found -eq 0 ]]; then
         # Nothing fits - absolute fallback to MIN_CTX @ q4_0
@@ -617,6 +766,7 @@ solve_optimal_config() {
         SOLVER_CTX_SIZE=$chosen_ctx
         SOLVER_K_TYPE=$chosen_k_type
         SOLVER_V_TYPE=$chosen_v_type
+        SOLVER_DRAFT_ENABLE=$chosen_draft_enable
         # Update MOE strategy and load mode based on chosen strategy
         case "$chosen_strategy" in
             cpu)
@@ -632,7 +782,9 @@ solve_optimal_config() {
                 SOLVER_LOAD_MODE="dio"
                 ;;
         esac
-        SOLVER_REASONS+=("ctx: ${chosen_ctx} KV: ${chosen_kvq} strategy=${chosen_strategy}")
+        local draft_str=""
+        [[ "$chosen_draft_enable" == "true" ]] && draft_str=" draft=on" || draft_str=" draft=off"
+        SOLVER_REASONS+=("ctx: ${chosen_ctx} KV: ${chosen_kvq} strategy=${chosen_strategy}${draft_str}")
     fi
 
     # Recompute kv_per_token for the chosen config
@@ -664,8 +816,48 @@ solve_optimal_config() {
             "$SOLVER_UBATCH" \
             0)
 
-        if [[ $mem_needed -le $solver_budget_bytes ]] || [[ $solver_budget_bytes -le 0 ]]; then
-            break
+        # System memory check for Phase 2
+        local sys_mem_total
+        sys_mem_total=$(_opt_get_total_memory_bytes)
+        local sys_mem_avail
+        sys_mem_avail=$(_opt_get_available_memory_bytes)
+        local sys_mem_needed
+        sys_mem_needed=$(_opt_system_memory \
+            "$offloaded_bytes" \
+            "${MODEL_BYTES:-0}" \
+            "$kv_per_token" \
+            "$SOLVER_CTX_SIZE" \
+            "$eff_draft_bytes" \
+            "$SOLVER_CTX_SIZE" \
+            "${OVERRIDE_N_PARALLEL:-1}" \
+            "$SOLVER_UBATCH" \
+            0 \
+            "${SOLVER_MOE_STRATEGY:-gpu}" \
+            "$SOLVER_LOAD_MODE" \
+            "$SOLVER_SSD_HOT_RAM" \
+            "$SOLVER_SSD_WARM_RAM")
+
+        # For "residency" and "cpu" strategies, reserve 8 GiB for OS
+        local sys_budget
+        case "${SOLVER_MOE_STRATEGY:-gpu}" in
+            residency|cpu)
+                local os_reserve=$(( 8 * _OPT_GIB ))
+                sys_budget=$(( sys_mem_total - os_reserve ))
+                [[ $sys_budget -lt 0 ]] && sys_budget=0
+                ;;
+            *)
+                sys_budget=$sys_mem_avail
+                ;;
+        esac
+
+        local solver_budget_gib=$(( solver_budget_bytes / _OPT_GIB ))
+        local mem_needed_gib=$(( mem_needed / _OPT_GIB ))
+        if [[ $mem_needed_gib -le $solver_budget_gib ]] || [[ $solver_budget_gib -le 0 ]]; then
+            local sys_ok=0
+            [[ $sys_mem_needed -le $sys_budget ]] || [[ $sys_budget -le 0 ]] && sys_ok=1
+            if [[ $sys_ok -eq 1 ]]; then
+                break
+            fi
         fi
 
         local applied=0
