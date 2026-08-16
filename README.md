@@ -474,23 +474,87 @@ SSD restore path than smaller models).
 
 ### Ayaneo Flip KB
 
-Radeon 780M, 32 GB unified memory, Vulkan backend.
+Radeon 780M (gfx1103, Phoenix), 32 GB unified memory (26 GB OS-visible), 2 TB SSD,
+Vulkan/RADV backend, `GGML_VK_NODES_PER_SUBMIT=100`. Tested with `./scripts/benchmark.sh`
+on `v1.0.0-rc1` (CachyLLama `a461a1fce`). The `benchmarks/vulkan/` directory holds
+per-model server logs and drilldowns.
 
-| Model | Cold TTFT | Warm TTFT | Speedup | Gen t/s |
-|-------|----------:|----------:|--------:|--------:|
-| gemma-4-26B Q5_K_M (26B, dense) | 63.8s | 0.46s | **138.4x** | 14-17 |
-| gpt-oss-20b Q6_K_XL (20B, 3.6B active MoE) | 45.9s | 0.24s | **193.5x** | 25-31 |
-| Qwen3.6-35B-A3B Q4_K_XL (35B, 3B active MoE) | 70.9s | 0.38s | **187.9x** | 19-24 |
+#### Summary
 
-Gemma 4 generation nearly tripled compared to the previous Flip benchmark
-(6 -> 14-17 t/s), with cold TTFT also improving 33% (94.8s -> 63.8s).
-Qwen3.6-35B-A3B cold eval improved 16% (84s -> 70.9s) while generation maintained
-and extended its range (19-24 t/s).
+| Model | Size | Profile | pp 2K (t/s) | pp 8K (t/s) | tg 128 (t/s) | tg 512 (t/s) | Cold->Warm TTFT (15K) | Batched @8 |
+|-------|------|---------|------------:|------------:|-------------:|-------------:|---------------------:|-----------:|
+| gpt-oss-20b-UD-Q6_K_XL | 11.2 GiB | dense-large | 398.0 | 369.9 | 32.0 | 31.6 | 45.8s -> 101ms (**181x**) | 281.2 t/s |
+| Qwen3.6-35B-A3B-UD-Q4_K_XL | 21.3 GiB | moe-optimized (+residency) | 325.0 | 303.3 | 25.5 | 25.0 | 60.6s -> 150ms (**140x**) | 239.9 t/s |
+| gemma-4-26B-A4B-it-UD-Q5_K_M | 16.8 GiB | — | — | — | 0.0 | 0.0 | failed | — |
 
-MoE expert residency keeps hot experts paged in via `madvise(MADV_WILLNEED)`, so
-cold-path expert loads no longer dominate decode. All warm TTFTs converge under
-500ms — the SSD cache bridges the hardware gap between Flip KB and Strix Halo on
-subsequent turns.
+**pp N (t/s)** = prompt processing throughput at N tokens (llama-bench, tg=128).  
+**tg N (t/s)** = text generation throughput at N tokens (llama-bench, pp=512).  
+**Cold->Warm TTFT (15K)** = server-side prompt eval for ~15K tokens, cold vs warm (SSD cache restored).  
+**Batched @8** = total throughput with 8 parallel prompts (llama-batched-bench, 2048 pp / 128 tg).
+
+#### llama-bench (pure prefill / pure decode)
+
+| Model | pp 512 | pp 2K | pp 8K | pp 16K | tg 128 | tg 512 |
+|-------|-------:|------:|------:|-------:|-------:|-------:|
+| gpt-oss-20b-UD-Q6_K_XL | 401.8 | 398.0 | 369.9 | 337.5 | 32.0 | 31.6 |
+| Qwen3.6-35B-A3B-UD-Q4_K_XL | 328.2 | 325.0 | 303.3 | 280.9 | 25.5 | 25.0 |
+
+*Repetitions: 5. Lower variance at larger pp (1-2% sd).*
+
+#### SSD Cache Performance (15K / 5K / 1K token prompts)
+
+| Model | Cold TTFT | Warm TTFT | Speedup | Warm TTFT (steady) |
+|-------|----------:|----------:|--------:|-------------------:|
+| gpt-oss-20b large (15K) | 45,834 ms | 101 ms | **181x** | 63 ms |
+| gpt-oss-20b medium (5K) | 14,589 ms | 69 ms | **119x** | 55 ms |
+| gpt-oss-20b small (1K) | 3,803 ms | 52 ms | **58x** | 48 ms |
+| Qwen3.6-35B large (15K) | 60,623 ms | 150 ms | **140x** | 63 ms |
+| Qwen3.6-35B medium (5K) | 19,067 ms | 106 ms | **76x** | 55 ms |
+| Qwen3.6-35B small (1K) | 4,583 ms | 84 ms | **28x** | 48 ms |
+
+*Warm TTFT (steady) = mean of turns 2-5 after first warm restore. First warm turn includes checkpoint load overhead.*
+
+#### llama-batched-bench (concurrent throughput, 2048 pp / 128 tg)
+
+| Model | 1 prompt | 2 prompts | 4 prompts | 8 prompts |
+|-------|---------:|----------:|----------:|----------:|
+| gpt-oss-20b-UD-Q6_K_XL | 232.0 t/s | 258.4 t/s | 277.2 t/s | 281.2 t/s |
+| Qwen3.6-35B-A3B-UD-Q4_K_XL | 185.8 t/s | 215.9 t/s | 233.9 t/s | 239.9 t/s |
+
+*Total aggregate throughput. Per-slot throughput drops with concurrency (281.2/8 = 35 t/s).*
+
+#### Notes
+
+- **gpt-oss-20b** is a dense 20B model — all parameters activate per token. Higher
+  generation throughput (32 t/s) and best cache speedup (181x at 15K) because the
+  KV cache is smaller and the model fits comfortably in the 22 GiB GPU budget.
+  Runs the `dense-large` profile (f16 KV, no SSD on Halo; on Flip SSD is enabled
+  with q8_0 KV, ubatch=512, batch=1024, threads=4/8).
+
+- **Qwen3.6-35B-A3B** is a 35B MoE model (3B active, A3B = 3B active experts).
+  Runs the `moe-optimized` profile with `--moe-expert-residency` (madvise
+  MADV_FREE eviction, 64 resident experts/layer) and `kv-unified`. The residency
+  subsystem keeps hot experts paged in so cold-path expert loads don't dominate
+  decode. Generation is memory-bandwidth bound (~25 t/s) on this hardware.
+  Context capped at 65536 by the solver for MoE on handheld tier.
+
+- **gemma-4-26B-A4B** failed to generate (0 t/s across all tests). The model
+  loads but produces no output tokens — likely a tokenizer/chat template mismatch
+  or Vulkan kernel issue with the sliding-window attention pattern. Investigation
+  needed.
+
+- **GGML_VK_NODES_PER_SUBMIT=100** was used (vs conservative default 8). On the
+  7840U/Phoenix this gives ~4.6% higher tg64 throughput (22.65 vs 21.65 t/s) with
+  no amdgpu lockup_timeout observed. The conservative default (8) is kept in
+  CachyLLama to avoid regressions on other APUs.
+
+- All models use the optimistic-first solver (`scripts/optimize.sh`) — no
+  `--noauto` legacy presets. Profiles are computed from GGUF metadata and the
+  26 GB OS-visible / 22 GiB GPU budget.
+
+- Full per-model logs and drilldowns in `benchmarks/vulkan/<model>/`:
+  `summary.md` (this table), `cache/analysis.md`, `bench/report.md`,
+  `batched/report.md`, `summary.json`.
 
 ### Real-world CLIO performance
 

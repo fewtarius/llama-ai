@@ -41,6 +41,7 @@ debug.log
 patches-archive/
 kv-cache/
 ssd-cache/
+benchmarks/
 
 # Transient
 patches/
