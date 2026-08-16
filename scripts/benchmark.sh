@@ -62,6 +62,10 @@ BENCH_PP_SIZES=(512 2048 8192 16384)
 BENCH_TG_SIZES=(128 256 512 1024 2048)
 BENCH_REPETITIONS=5
 
+# Cache test: number of sequential warm turns per prompt size (in same server session).
+# Cold runs once per size (full prefill); warm runs N turns to measure cache consistency.
+CACHE_TEST_TURNS=5
+
 BATCHED_PARALLEL=(1 2 4 8)
 BATCHED_PROMPT_SIZE=2048
 BATCHED_GEN_SIZE=128
@@ -615,21 +619,32 @@ run_cache_test() {
         profile_cold=$(detect_profile "$cold_log.cmd") || profile_cold='{"profile":"unknown"}'
         stop_server
 
+        # Warm test: start server with SSD cache, run CACHE_TEST_TURNS sequential requests
         local warm_log="$out_dir/server-${size_label}-warm.log"
         if ! start_server "$model" "$extra_flags" "$backend" "$SSD_CACHE_DIR" "$warm_log"; then
             warm_pass=false; stop_server; continue
         fi
-        printf "    warm: " >&2
-        call_api "$prompt_json" "${size_label}-warm" "$out_dir" "$timeout" > /dev/null || warm_pass=false
-        local warm_stats="$out_dir/${size_label}-warm-stats.json"
-        if $warm_pass && [[ -f "$warm_stats" ]]; then
-            local pt ttft
-            pt=$(python3 -c "import json; print(json.load(open('$warm_stats')).get('prompt_tokens', 0))" 2>/dev/null || echo 0)
-            ttft=$(python3 -c "import json; print(json.load(open('$warm_stats')).get('ttft_ms', 0))" 2>/dev/null || echo 0)
-            printf "${GREEN}%s tokens, TTFT %sms${NC}\n" "$pt" "$ttft" >&2
-        else
-            printf "${RED}failed${NC}\n" >&2
-        fi
+
+        # Run multiple warm turns in the same session
+        local warm_stats_files=()
+        local warm_pass_all=true
+        for turn in $(seq 1 $CACHE_TEST_TURNS); do
+            printf "    warm (turn %d/%d): " "$turn" "$CACHE_TEST_TURNS" >&2
+            local turn_label="${size_label}-warm-t${turn}"
+            call_api "$prompt_json" "$turn_label" "$out_dir" "$timeout" > /dev/null || warm_pass_all=false
+            local turn_stats="$out_dir/${turn_label}-stats.json"
+            warm_stats_files+=("$turn_stats")
+            if [[ -f "$turn_stats" ]]; then
+                local pt ttft
+                pt=$(python3 -c "import json; print(json.load(open('$turn_stats')).get('prompt_tokens', 0))" 2>/dev/null || echo 0)
+                ttft=$(python3 -c "import json; print(json.load(open('$turn_stats')).get('ttft_ms', 0))" 2>/dev/null || echo 0)
+                printf "${GREEN}%s tokens, TTFT %sms${NC}\n" "$pt" "$ttft" >&2
+            else
+                printf "${RED}failed${NC}\n" >&2
+            fi
+        done
+        warm_pass=$warm_pass_all
+
         local cache_warm moe_warm ssd_size
         cache_warm=$(detect_cache_state "$warm_log") || cache_warm='{"cache_state":"unknown"}'
         moe_warm=$(detect_moe_residency_stats "$warm_log") || moe_warm='{"enabled":false}'
@@ -638,50 +653,84 @@ run_cache_test() {
         ssd_size=$(measure_ssd_cache "$SSD_CACHE_DIR") || ssd_size='{"mib":0,"files":0}'
 
         local result_file="$out_dir/${size_label}-result.json"
-        python3 - "$out_dir" "$size_label" "$size_bytes" "$cold_pass" "$warm_pass" \
+        python3 - "$out_dir" "$size_label" "$size_bytes" "$cold_pass" "$warm_pass" "$CACHE_TEST_TURNS" \
             "$cache_cold" "$cache_warm" "$moe_cold" "$moe_warm" "$profile_cold" "$ssd_size" "$result_file" << 'PYEOF'
-import json, sys, os
+import json, sys, os, statistics
 out_dir, size_label, size_bytes = sys.argv[1], sys.argv[2], int(sys.argv[3])
 cold_pass = sys.argv[4] == 'true'
 warm_pass = sys.argv[5] == 'true'
-cache_cold = json.loads(sys.argv[6]); cache_warm = json.loads(sys.argv[7])
-moe_cold = json.loads(sys.argv[8]);   moe_warm = json.loads(sys.argv[9])
-profile = json.loads(sys.argv[10]);   ssd_size = json.loads(sys.argv[11])
-result_file = sys.argv[12]
+cache_test_turns = int(sys.argv[6])
+cache_cold = json.loads(sys.argv[7]); cache_warm = json.loads(sys.argv[8])
+moe_cold = json.loads(sys.argv[9]);   moe_warm = json.loads(sys.argv[10])
+profile = json.loads(sys.argv[11]);   ssd_size = json.loads(sys.argv[12])
+result_file = sys.argv[13]
 
 def load(label):
     try: return json.load(open(os.path.join(out_dir, f'{label}-stats.json')))
     except Exception as e: return {'error': str(e)}
-cold = load(f'{size_label}-cold') if cold_pass else {'error':'failed'}
-warm = load(f'{size_label}-warm') if warm_pass else {'error':'failed'}
 
-cpm = cold.get('prompt_ms', 0); wpm = warm.get('prompt_ms', 0)
-cwall = cold.get('wall_ttft_ms', 0); wwall = warm.get('wall_ttft_ms', 0)
+cold = load(f'{size_label}-cold') if cold_pass else {'error':'failed'}
+
+# Load all warm turns
+warm_turns = []
+for turn in range(1, cache_test_turns + 1):
+    turn_label = f'{size_label}-warm-t{turn}'
+    w = load(turn_label) if warm_pass else {'error':'failed'}
+    warm_turns.append(w)
+
+# Aggregate warm stats: use first turn for cache state (first restore),
+# and compute statistics across all turns for TTFT, decode speed, etc.
+warm_first = warm_turns[0] if warm_turns else {'error':'failed'}
+
+cpm = cold.get('prompt_ms', 0)
+wpm_first = warm_first.get('prompt_ms', 0)
+cwall = cold.get('wall_ttft_ms', 0)
+wwall_first = warm_first.get('wall_ttft_ms', 0)
+
+# Collect per-turn metrics for statistics
+warm_ttfts = [w.get('ttft_ms', 0) for w in warm_turns if 'ttft_ms' in w]
+warm_prompt_ms = [w.get('prompt_ms', 0) for w in warm_turns if 'prompt_ms' in w]
+warm_gen_ppt = [w.get('predicted_per_token_ms', 0) for w in warm_turns if 'predicted_per_token_ms' in w]
+warm_prompt_tps = [w.get('prompt_tps', 0) for w in warm_turns if 'prompt_tps' in w]
+warm_gen_tps = [w.get('tps', 0) for w in warm_turns if 'tps' in w]
+
+def safe_mean(vals):
+    return round(statistics.mean(vals), 1) if vals else 0
+def safe_stdev(vals):
+    return round(statistics.stdev(vals), 1) if len(vals) > 1 else 0
+
 result = {
     'size_label': size_label, 'size_bytes': size_bytes,
-    'cold': cold, 'warm': warm,
+    'cold': cold, 'warm': warm_first,  # warm_first for backward compat
+    'warm_turns': warm_turns,  # all turns for detailed analysis
     'cache_cold': cache_cold, 'cache_warm': cache_warm,
     'moe_cold': moe_cold, 'moe_warm': moe_warm,
     'profile': profile, 'ssd_size': ssd_size,
-    'prompt_eval_speedup': round(cpm / wpm, 2) if wpm > 0 and cpm > 0 else 0,
-    'ttft_speedup': round(cwall / wwall, 2) if wwall > 0 and cwall > 0 else 0,
+    'prompt_eval_speedup': round(cpm / wpm_first, 2) if wpm_first > 0 and cpm > 0 else 0,
+    'ttft_speedup': round(cwall / wwall_first, 2) if wwall_first > 0 and cwall > 0 else 0,
     'cold_prompt_tps': cold.get('prompt_tps', 0),
-    'warm_prompt_tps': warm.get('prompt_tps', 0),
+    'warm_prompt_tps': safe_mean(warm_prompt_tps),
+    'warm_prompt_tps_stdev': safe_stdev(warm_prompt_tps),
     'cold_ppt_ms': cold.get('prompt_per_token_ms', 0),
-    'warm_ppt_ms': warm.get('prompt_per_token_ms', 0),
+    'warm_ppt_ms': safe_mean(warm_prompt_ms),
+    'warm_ppt_ms_stdev': safe_stdev(warm_prompt_ms),
     'cold_gen_ppt_ms': cold.get('predicted_per_token_ms', 0),
-    'warm_gen_ppt_ms': warm.get('predicted_per_token_ms', 0),
+    'warm_gen_ppt_ms': safe_mean(warm_gen_ppt),
+    'warm_gen_ppt_ms_stdev': safe_stdev(warm_gen_ppt),
     'cold_ttft_ms': cold.get('ttft_ms', 0),
-    'warm_ttft_ms': warm.get('ttft_ms', 0),
+    'warm_ttft_ms': safe_mean(warm_ttfts),
+    'warm_ttft_ms_stdev': safe_stdev(warm_ttfts),
     'cold_wall_ttft_ms': cwall,
-    'warm_wall_ttft_ms': wwall,
+    'warm_wall_ttft_ms': safe_mean(warm_ttfts),
+    'warm_gen_tps': safe_mean(warm_gen_tps),
+    'warm_gen_tps_stdev': safe_stdev(warm_gen_tps),
 }
 with open(result_file, 'w') as f: json.dump(result, f, indent=2)
 PYEOF
     done
 
     # Render per-test drilldown using log_analyzer.py on the warm logs.
-    python3 - "$out_dir" "$model_name" "$backend" << 'PYEOF'
+    python3 - "$out_dir" "$model_name" "$backend" "$CACHE_TEST_TURNS" << 'PYEOF'
 import json, os, sys, glob
 sys.path.insert(0, os.path.join(os.environ.get('PROJECT_ROOT', '/home/deck/llama-ai'), 'scripts'))
 import log_analyzer
@@ -689,6 +738,7 @@ import log_analyzer
 out_dir = sys.argv[1]
 model_name = sys.argv[2]
 backend = sys.argv[3]
+cache_test_turns = int(sys.argv[4]) if len(sys.argv) > 4 else 5
 
 results = []
 for rf in sorted(glob.glob(os.path.join(out_dir, '*-result.json'))):
@@ -700,17 +750,38 @@ with open(os.path.join(out_dir, 'summary.json'), 'w') as f:
     json.dump(summary, f, indent=2)
 
 md_parts = [f'# {model_name} — Cache Test ({backend})', '']
+
+# Aggregate summary table across all prompt sizes
+md_parts.append('## Aggregate Warm Turn Statistics (across all prompt sizes)')
+md_parts.append('')
+md_parts.append('| Size | Warm Turns | TTFT Mean ± SD (ms) | Gen t/s Mean ± SD | Prompt ms/tok Mean ± SD |')
+md_parts.append('|------|-----------:|---------------------|-------------------|------------------------:|')
+for r in results:
+    if r.get('error') or not r.get('warm_turns'):
+        md_parts.append(f'| {r.get("size_label","?")} | - | - | - | - |')
+        continue
+    n_turns = len(r['warm_turns'])
+    ttft_m = r.get('warm_ttft_ms', 0)
+    ttft_s = r.get('warm_ttft_ms_stdev', 0)
+    gen_m = r.get('warm_gen_tps', 0)
+    gen_s = r.get('warm_gen_tps_stdev', 0)
+    ppt_m = r.get('warm_ppt_ms', 0)
+    ppt_s = r.get('warm_ppt_ms_stdev', 0)
+    md_parts.append(f'| {r["size_label"]} | {n_turns} | {ttft_m} ± {ttft_s} | {gen_m} ± {gen_s} | {ppt_m} ± {ppt_s} |')
+md_parts.append('')
+
+cache_test_turns = int(sys.argv[4]) if len(sys.argv) > 4 else 5
 for rf in sorted(glob.glob(os.path.join(out_dir, '*-result.json'))):
     label = os.path.basename(rf).replace('-result.json', '')
     warm_log = os.path.join(out_dir, f'server-{label}-warm.log')
     if os.path.exists(warm_log):
-        md_parts.append(f'## Warm Run: {label} prompt')
+        md_parts.append(f'## Warm Run: {label} prompt ({cache_test_turns} turns)')
         md_parts.append('')
         metrics = log_analyzer.analyze(warm_log)
         md_parts.append(log_analyzer.render_markdown(metrics))
         md_parts.append('')
 
-md_parts.append('## Cold vs Warm Speedup')
+md_parts.append('## Cold vs Warm Speedup (first warm turn)')
 md_parts.append('')
 md_parts.append('| Size | Cold TTFT | Warm TTFT | TTFT Speedup | Cold ms/tok | Warm ms/tok | Cache | MoE hit |')
 md_parts.append('|------|-----------|-----------|--------------|-------------|-------------|-------|---------|')

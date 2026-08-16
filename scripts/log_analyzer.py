@@ -32,16 +32,32 @@ _TIMING_RE = re.compile(
     r'(prompt eval time|eval time)\s*=\s*([\d.]+)\s*ms\s*/\s*(\d+)\s+tokens\s*\([^)]+,\s*([\d.]+)\s+tokens per second\)'
 )
 _TASK_RE = re.compile(r'id\s+(\d+)\s+\|\s+task\s+(-?\d+)')
-_MODEL_RE = re.compile(r'^\s*Model:\s+(.+)$', re.MULTILINE)
-_CONTEXT_RE = re.compile(r'Context size[:=]\s+(\d+)')
+# Log format: "loading model '/home/deck/llama-ai/models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf'"
+_MODEL_RE = re.compile(r"loading model\s+'([^']+\.gguf)'")
+# Log format: "initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'true'"
+_CONTEXT_RE = re.compile(r'n_ctx_slot\s*=\s*(\d+)')
 # Periodic slot timing: "n_decoded =    100, tg =  11.17 t/s, tg_3s =  11.17 t/s"
 _NDECODED_RE = re.compile(
     r'id\s+(\d+)\s+\|\s+task\s+(\d+)\s+\|\s+n_decoded\s*=\s*(\d+).*?tg\s*=\s*([\d.]+)\s*t/s'
 )
 # "loaded N checkpoints from <path>"
 _LOADED_CKPTS_RE = re.compile(r'loaded\s+(\d+)\s+checkpoints\s+from')
+# SSD cache restore: "SSD cache restore: lcp=1244 ssd_n_tokens=1244 pos=[0,1243] n_push=1244 overlap=100.0% continuation=1"
+_SSD_RESTORE_RE = re.compile(
+    r'SSD cache restore:\s+lcp=(\d+)\s+ssd_n_tokens=(\d+)\s+pos=\[([\d,]+)\]\s+n_push=(\d+)\s+overlap=([\d.]+)%'
+)
+# MoE residency periodic: "moe-residency: decodes=10 touches=45 hits=40 misses=5 evictions=0 hit_rate=88.89%"
+_MOE_RESIDENCY_RE = re.compile(
+    r'moe-residency:\s+decodes=(\d+)\s+touches=(\d+)\s+hits=(\d+)\s+misses=(\d+)\s+evictions=(\d+)\s+hit_rate=([\d.]+)%'
+)
 # "prompt eval time" lines also include the prefill speed which we want
 # separately from the aggregate t/s
+
+# For model name extraction from path
+def _model_name_from_path(path):
+    """Extract model name from file path, removing .gguf extension."""
+    import os
+    return os.path.splitext(os.path.basename(path))[0]
 
 
 def parse_log(text):
@@ -52,6 +68,8 @@ def parse_log(text):
     """
     task_data = {}
     current_task = None
+    ssd_restores = {}  # task_id -> {lcp, ssd_n_tokens, overlap_pct}
+    moe_residency = {}  # task_id -> {decodes, touches, hits, misses, evictions, hit_rate_pct}
 
     for line in text.splitlines():
         m = _TASK_RE.search(line)
@@ -87,11 +105,38 @@ def parse_log(text):
             task_data[current_task]['n_decoded_samples'].append(int(n_dec))
             task_data[current_task]['tg_samples'].append(float(tg))
 
+        # SSD cache restore info (typically on first task after restart)
+        m = _SSD_RESTORE_RE.search(line)
+        if m and current_task is not None:
+            lcp, ssd_n_tokens, pos_range, n_push, overlap = m.groups()
+            ssd_restores[current_task] = {
+                'task_id': current_task,
+                'lcp': int(lcp),
+                'ssd_n_tokens': int(ssd_n_tokens),
+                'pos_range': pos_range,
+                'n_push': int(n_push),
+                'overlap_pct': float(overlap),
+            }
+
+        # MoE residency stats (periodic, associate with current task)
+        m = _MOE_RESIDENCY_RE.search(line)
+        if m and current_task is not None:
+            decodes, touches, hits, misses, evictions, hit_rate = m.groups()
+            moe_residency[current_task] = {
+                'task_id': current_task,
+                'decodes': int(decodes),
+                'touches': int(touches),
+                'hits': int(hits),
+                'misses': int(misses),
+                'evictions': int(evictions),
+                'hit_rate_pct': float(hit_rate),
+            }
+
     tasks = []
     for tid, d in task_data.items():
         if d['pp'] is None or d['decode'] is None:
             continue
-        tasks.append({
+        task_info = {
             'task_id': tid,
             'prompt_tokens': d['prompt_tokens'],
             'decode_tokens': d['decode_tokens'],
@@ -100,7 +145,12 @@ def parse_log(text):
             'pp_time_ms': d['prompt_time_ms'],
             'decode_time_ms': d['decode_time_ms'],
             'tg_samples': d['tg_samples'],
-        })
+        }
+        if tid in ssd_restores:
+            task_info['ssd_restore'] = ssd_restores[tid]
+        if tid in moe_residency:
+            task_info['moe_residency'] = moe_residency[tid]
+        tasks.append(task_info)
     tasks.sort(key=lambda x: x['task_id'])
     return tasks
 
@@ -112,7 +162,9 @@ def extract_context_size(text):
 
 def extract_model_name(text):
     m = _MODEL_RE.search(text)
-    return m.group(1).strip() if m else "Unknown"
+    if m:
+        return _model_name_from_path(m.group(1))
+    return "Unknown"
 
 
 def extract_loaded_checkpoints(text):
@@ -212,7 +264,7 @@ def _percentile(sorted_data, p):
 # Markdown rendering
 # =============================================================================
 
-def _bar(value, max_value, width=40, char=''):
+def _bar(value, max_value, width=40, char='█'):
     if not max_value:
         return ''
     ratio = min(value / max_value, 1.0)
@@ -232,6 +284,8 @@ def render_markdown(metrics):
     context = metrics.get('context')
     summary = metrics['summary']
     tasks = metrics['tasks']
+    ssd_restores = metrics.get('ssd_restores', [])
+    moe_residency = metrics.get('moe_residency', [])
 
     if not tasks:
         return (
@@ -248,25 +302,52 @@ def render_markdown(metrics):
         f'(long-context >{LONG_CONTEXT_THRESHOLD} tokens: {summary["n_long"]}, '
         f'short-context: {summary["n_short"]})',
         '',
-        '## Performance by Workload Type',
-        '',
-        '| Metric | Long Context | Short Context | Overall |',
-        '| :--- | :---: | :---: | :---: |',
     ]
+
+    # SSD Cache Restore section
+    if ssd_restores:
+        lines.append('## SSD Cache Restore')
+        lines.append('')
+        lines.append('| Task | LCP Tokens | SSD Tokens | Overlap | Push Tokens |')
+        lines.append('|-----:|-----------:|-----------:|--------:|------------:|')
+        for sr in ssd_restores:
+            lines.append(
+                f'| {sr.get("task_id", "?")} | {sr["lcp"]} | {sr["ssd_n_tokens"]} | '
+                f'{sr["overlap_pct"]:.1f}% | {sr["n_push"]} |'
+            )
+        lines.append('')
+
+    # MoE Residency section
+    if moe_residency:
+        lines.append('## MoE Expert Residency')
+        lines.append('')
+        lines.append('| Task | Decodes | Touches | Hits | Misses | Evictions | Hit Rate |')
+        lines.append('|-----:|--------:|--------:|-----:|-------:|----------:|---------:|')
+        for mr in moe_residency:
+            lines.append(
+                f'| {mr.get("task_id", "?")} | {mr["decodes"]} | {mr["touches"]} | '
+                f'{mr["hits"]} | {mr["misses"]} | {mr["evictions"]} | {mr["hit_rate_pct"]:.1f}% |'
+            )
+        lines.append('')
+
+    lines.append('## Performance by Workload Type')
+    lines.append('')
+    lines.append('| Metric | Long Context | Short Context | Overall |')
+    lines.append('| :--- | :---: | :---: | :---: |')
 
     pp_max = max(summary['long_pp'], summary['short_pp'], summary['all_pp'], 1)
     dec_max = max(summary['long_decode'], summary['short_decode'], summary['all_decode'], 1)
     lines.append(
         f'| **Prompt Processing** | '
-        f'{_bar(summary["long_pp"], pp_max, 30, "")} {_fmt(summary["long_pp"])} t/s | '
-        f'{_bar(summary["short_pp"], pp_max, 30, "")} {_fmt(summary["short_pp"])} t/s | '
-        f'{_bar(summary["all_pp"], pp_max, 30, "")} {_fmt(summary["all_pp"])} t/s |'
+        f'{_bar(summary["long_pp"], pp_max, 30, "█")} {_fmt(summary["long_pp"])} t/s | '
+        f'{_bar(summary["short_pp"], pp_max, 30, "█")} {_fmt(summary["short_pp"])} t/s | '
+        f'{_bar(summary["all_pp"], pp_max, 30, "█")} {_fmt(summary["all_pp"])} t/s |'
     )
     lines.append(
         f'| **Decode (Generation)** | '
-        f'{_bar(summary["long_decode"], dec_max, 30, "")} {_fmt(summary["long_decode"])} t/s | '
-        f'{_bar(summary["short_decode"], dec_max, 30, "")} {_fmt(summary["short_decode"])} t/s | '
-        f'{_bar(summary["all_decode"], dec_max, 30, "")} {_fmt(summary["all_decode"])} t/s |'
+        f'{_bar(summary["long_decode"], dec_max, 30, "█")} {_fmt(summary["long_decode"])} t/s | '
+        f'{_bar(summary["short_decode"], dec_max, 30, "█")} {_fmt(summary["short_decode"])} t/s | '
+        f'{_bar(summary["all_decode"], dec_max, 30, "█")} {_fmt(summary["all_decode"])} t/s |'
     )
     lines.append('')
 
@@ -303,28 +384,39 @@ def analyze(logfile):
         model:   model name from log
         context: context size from log
         loaded_checkpoints: int (0 if none)
+        ssd_restores: list of SSD restore info per task (if any)
+        moe_residency: list of MoE residency stats per task (if any)
     """
     with open(logfile) as f:
         text = f.read()
     tasks = parse_log(text)
+    # Extract SSD restore info and MoE residency from tasks
+    ssd_restores = [t.get('ssd_restore') for t in tasks if 'ssd_restore' in t]
+    moe_residency = [t.get('moe_residency') for t in tasks if 'moe_residency' in t]
     return {
         'tasks': tasks,
         'summary': summarize(tasks),
         'model': extract_model_name(text),
         'context': extract_context_size(text),
         'loaded_checkpoints': extract_loaded_checkpoints(text),
+        'ssd_restores': ssd_restores,
+        'moe_residency': moe_residency,
     }
 
 
 def analyze_text(text):
     """Same as analyze() but takes a raw string (for tests)."""
     tasks = parse_log(text)
+    ssd_restores = [t.get('ssd_restore') for t in tasks if 'ssd_restore' in t]
+    moe_residency = [t.get('moe_residency') for t in tasks if 'moe_residency' in t]
     return {
         'tasks': tasks,
         'summary': summarize(tasks),
         'model': extract_model_name(text),
         'context': extract_context_size(text),
         'loaded_checkpoints': extract_loaded_checkpoints(text),
+        'ssd_restores': ssd_restores,
+        'moe_residency': moe_residency,
     }
 
 
@@ -345,6 +437,8 @@ def _cli():
             'model': extract_model_name(text),
             'context': extract_context_size(text),
             'loaded_checkpoints': extract_loaded_checkpoints(text),
+            'ssd_restores': [t.get('ssd_restore') for t in tasks if 'ssd_restore' in t],
+            'moe_residency': [t.get('moe_residency') for t in tasks if 'moe_residency' in t],
         }
     else:
         metrics = analyze(args.logfile)
