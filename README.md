@@ -75,27 +75,80 @@ thinking tokens per response (default: 2048).
 
 ### Solver and profile selection
 
-`llama-run.sh` runs an optimistic-first solver by default. The solver:
+`llama-run.sh` runs an **optimistic-first solver** by default (in
+`scripts/optimize.sh`). The solver reads actual GGUF metadata and system
+memory/GPU budgets to pick the best configuration -- it is the single
+configuration path. The legacy preset table is only used with `--noauto`.
 
-1. Reads GGUF metadata (block count, head_count_kv, key/value_length,
-   full_attention_interval for hybrid SSM models, nextn_predict_layers for MTP)
-2. Starts with the maximum-performance configuration (f16/f16 KV, max context,
-   SSD cache on halo, draft model enabled)
-3. Computes the memory cost (model + KV cache + draft + SSD buffers + compute)
-4. Iteratively detunes by least performance impact until the config fits the
-   GPU budget
+**Solver pipeline:**
 
-**Detune priority:** SSD RAM → context size → ubatch → threads → V-cache q8_0 →
-V-cache q4_0 → K-cache q8_0 → drop draft → drop SSD → MoE residency →
-MoE cpu-moe → auto layer split.
+1. **Read GGUF metadata** via `scratch/read_gguf_kv.py` -- block count,
+   `head_count_kv`, `key/value_length`, `full_attention_interval` (for hybrid
+   SSM models), `nextn_predict_layers` (for MTP), `expert_count` (for MoE),
+   training context.
 
-User overrides always win: `--ctx-size`, `--ubatch-size`, `--cache-ram`,
-`--threads`, `--no-ssd-cache`, `--hardware-tier`, and all `*_OVERRIDE` env vars.
+2. **Start optimistically** -- f16/f16 KV, training context (or 4x capped),
+   SSD cache on (Halo: off), draft model enabled if found, ubatch 2048
+   (Halo) / 1024 (standard) / 512 (handheld), threads = physical cores
+   (batch) / half (gen), MoE strategy = `gpu`.
 
-Pass `--noauto` to use the legacy preset table instead:
+3. **Score and search** -- builds a priority list of all valid combinations:
+   - **Strategy**: `gpu` (300), `cpu` (250), `residency` (200)
+   - **Context**: 128K (100), 96K (95), 196K (90), 262K (85), 64K (80)
+   - **KV type**: f16 (30), q8_0 (20), q4_0 (10)
+   - **Draft**: enabled (5), disabled (0)
+   
+   Score = `strategy*1000 + ctx*10 + kv + draft`. First combo fitting both
+   GPU and system budgets with minimum cache RAM wins.
 
-| Preset | When | ctx | KV | batch | SSD | cpu-moe |
-|--------|------|-----|-----|-------|-----|---------|
+   **Strategy selection rules:**
+   - MoE model >80% of GPU budget **and** fits in system RAM (8 GiB OS reserve)
+     -> `cpu` preferred, `residency` skipped entirely.
+   - Otherwise: `gpu` -> `residency` -> `cpu`.
+   - Low-VRAM (<32 GiB GPU budget), MoE: context capped at 64K, f16 KV
+     removed (only q8_0/q4_0).
+
+4. **Cache RAM allocation** -- from **system memory leftover**, not GPU
+   leftover: total RAM - OS reserve - config system cost, capped at 25% of
+   total RAM with 10% headroom, split between prompt cache and SSD (SSD
+   capped at 1 GiB).
+
+5. **Detune safety net** -- if no fit: ctx = 65536, KV = q4_0/q4_0. If
+   still no fit, exits with error. Phase 2 fine-grained detunes: reduce
+   KV (q8->q4), reduce NGL, reduce SSD RAM, drop draft, drop SSD, reduce
+   ubatch -- each step once.
+
+**Override precedence** (low -> high):
+
+| Level | Source |
+|-------|--------|
+| 1 | Built-in defaults (solver start) |
+| 2 | System detection (GPU budget, hardware tier) |
+| 3 | Solver output |
+| 4 | User overrides (env vars / CLI flags) |
+
+**User overrides recognized:**
+
+| Override | CLI Flag | Env Var |
+|----------|----------|---------|
+| Context size | `--ctx-size` | `USER_CTX_SIZE` |
+| KV cache K/V | `--kv-cache-type` | `KV_CACHE_K_OVERRIDE` / `KV_CACHE_V_OVERRIDE` |
+| Threads | `--threads` | `LLAMA_THREADS_OVERRIDE` |
+| Ubatch | `--ubatch-size` | `OVERRIDE_UBATCH_SIZE` / `MOE_UBATCH_OVERRIDE` |
+| Cache RAM | `--cache-ram` | `OVERRIDE_CACHE_RAM` |
+| Disable SSD | `--no-ssd-cache` | `_SSD_DISABLE` |
+| GPU layers | `-ngl` / `--gpu-layers` | `OVERRIDE_NGL` |
+| Fit mode | `--fit on` | `OVERRIDE_FIT` |
+| Reasoning budget | `--reasoning-budget` | `OVERRIDE_REASONING_BUDGET` |
+
+Note: `LLAMA_SSD_HOT_RAM`, `LLAMA_SSD_WARM_RAM`, `LLAMA_THREADS`,
+`LLAMA_KV_CACHE_TYPE_K` are **defaults** (level 2), not overrides. Use the
+`*_OVERRIDE` variants to win over the solver.
+
+**Legacy preset table** (`--noauto` only -- kept for script compatibility):
+
+| Preset | When | ctx | KV | batch/ubatch | SSD | cpu-moe |
+|--------|------|-----|-----|--------------|-----|---------|
 | `halo-moe-large` | Strix Halo, MoE, >50 GB | 131072 | q8_0 | 2048/512 | off | — |
 | `halo-moe-small` | Strix Halo, MoE, ≤50 GB | 196608 | f16 | 2048/512 | off | — |
 | `halo-dense` | Strix Halo, dense (any) | 131072 | f16 | 2048/512 | off | — |
@@ -105,13 +158,40 @@ Pass `--noauto` to use the legacy preset table instead:
 | `std-dense-small` | non-Halo, dense, ≤15 GB | 32768 | q8_0 | 1024/256 | on | — |
 | `ssm` | Mamba / Jamba / RWKV | 65536 (262144 on halo) | q8_0 | 1024/512 | off | — |
 
-¹ `--cpu-moe + --load-mode none` is added automatically when the model is ≥23 GiB
-to avoid the mmap + `--moe-expert-residency` page-fault pathology. Halo tier
-never triggers this because GTT holds the model.
+¹ `--cpu-moe + --load-mode none` added when model ≥23 GiB to avoid the mmap
++ `--moe-expert-residency` page-fault pathology. Halo never triggers this.
 
-The solver maps its output to a legacy profile name for `--print-profile` so
-existing scripts keep working. See [SOLVER.md](SOLVER.md) for the full
-algorithm, override precedence, and benchmark data.
+The solver maps its output to a legacy profile name for `--print-profile`
+so existing scripts keep working. See [SOLVER.md](SOLVER.md) for the full
+algorithm, benchmark data, and hardware notes.
+
+### Hardware-specific behavior
+
+**Strix Halo (Nimo) — 128 GB RAM, 112 GB GPU budget**
+- SSD cache **disabled** (serialization overhead reduces prompt throughput 20–30%).
+- Large MoE models (DeepSeek-V4-Flash 97 GB) run with **CPU-MoE + `--load-mode none`**:
+  model in system RAM, GPU handles attention + KV only. Avoids Vulkan OOM.
+
+**AYANEO Flip — 26 GB RAM, 22 GB GPU budget**
+- SSD cache **enabled** but capped ~1 GiB.
+- MoE models: **residency** (default) or **CPU-MoE** if small enough.
+- MoE context limited to 64K; KV is q8_0 or q4_0.
+
+**Low-RAM systems (<32 GB total)**
+- Prompt cache capped at 2048 MiB.
+- SSD default: 512 MiB hot + 512 MiB warm.
+
+### Per-model architecture handling
+
+- **Hybrid SSM** (Qwen3.5/3.6, Qwen3Next): reads `full_attention_interval`,
+  scales KV cache (~25% attention layers).
+- **DeepSeek MLA**: KV cache very small; f16 at full context usually fits.
+- **Pure SSM** (Mamba, Jamba, RWKV): no KV cache; solver uses SSM profile.
+- **MTP models**: adds 5% model size (capped 0.5–2 GiB) to GPU+system
+  estimates for speculative decoding overhead.
+
+
+
 
 ---
 
@@ -412,28 +492,138 @@ cold-path expert loads no longer dominate decode. All warm TTFTs converge under
 500ms — the SSD cache bridges the hardware gap between Flip KB and Strix Halo on
 subsequent turns.
 
-### Real-world CLIO performance (Strix Halo)
+### Real-world CLIO performance
 
 CLIO sends 18-30K tokens of system prompt, tool definitions, and conversation
-context on every API call. Every prompt has a static prefix (~18K tokens — system
-prompt, tool definitions) that's identical across all turns, and a dynamic tail
-that grows as the conversation progresses.
+context on every API call. Every prompt has a static prefix (~18K tokens --
+system prompt, tool definitions) that's identical across all turns, and a
+dynamic tail that grows as the conversation progresses.
 
-This test has CLIO evaluate a project: read files, check git history, run
-commands, write a final analysis. Qwen3.6-35B Q8_K_XL, 196K context, 32 threads,
-Vulkan backend.
+Four sessions, all given the same task -- "Spend a few minutes studying this
+project and then explain it" (read files, check git history, run commands, write
+a final analysis). Two ran on the Nimo Axis N161 (Strix Halo, Ryzen AI Max+ 395,
+128 GB unified memory, 4 TB NVMe RAID) and two on the Ayaneo Flip KB (784U, 32 GB
+unified memory, 2 TB SSD). Qwen3.6 uses self-MTP speculative decoding
+(`--spec-type draft-mtp`, n_max=2); DeepSeek and Laguna do not use spec decoding
+(Laguna uses DFlash as a target architecture). All sessions use flash attention
+and reasoning budget 4096.
 
-| Turn | Prompt tokens | TTFT | Gen t/s |
-|------|---------------|------|---------|
-| T0 | 21,336 | 26.5s | 36.5 |
-| T1 | 1,623 | 2.8s | 37.9 |
-| T2 | 5,152 | 8.0s | 37.7 |
-| T3 | 4,428 | 7.5s | 38.2 |
+Metrics are from `scripts/log_analyzer.py` on the paired server logs in
+`scratch/`. PP and Gen are weighted by token count (total prompt tokens divided
+by total PP time; total decode tokens divided by total decode time).
 
-**Total: 88 seconds** (32,539 prompt tokens, 1,656 generated). First turn
-evaluates the full system prompt cold. Every subsequent turn uses in-memory
-checkpoints to restore the cached prefix, evaluating only the new content.
-Generation holds steady at 36-38 t/s across all turns.
+#### Session summary
+
+| # | Hardware | Model | Context | Draft | KV | Batch/Ubatch | Threads | GPU strat. | SSD | Cache-RAM | Turns | Time | PP (t/s) | Gen (t/s) | Draft acc. | LCP sim. | f_keep |
+|---|----------|-------|---------|-------|----|:---------:|---------|----------|-----|-----------|-------|------|---------:|----------:|------------|:--------:|:------:|
+| 1 | Nimo (Strix Halo) | Qwen3.6-35B-A3B Q8_K_XL | 131072 | Yes (self-MTP) | f16/f16 | 4096/2048 | 16/32 | gpu | off | 31 GB | 3 | 2:24 | 68 | 47 | 84% | 0.71 | 0.99 |
+| 2 | Flip KB (784U) | Qwen3.6-35B-A3B Q4_K_XL | 65536 | Yes (self-MTP) | q8_0/q8_0 | 1024/512 | 4/8 | residency | 124 MiB | 5 GB | 6 | 5:19 | 22 | 21 | 85% | 0.93 | 0.99 |
+| 3 | Nimo (Strix Halo) | DeepSeek-V4-Flash IQ3_XXS | 131072 | No | q4_0/q4_0 | 4096/2048 | 16/32 | gpu | off | 5 GB | 4 | 6:03 | 184 | 12 | -- | 0.90 | 1.00 |
+| 4 | Nimo (Strix Halo) | Laguna-S-2.1 Q5_K_XL | 131072 | No (DFlash) | q8_0/q8_0 | 4096/2048 | 16/32 | gpu | off | 11 GB | 16 | 9:36 | 376 | 16 | -- | 0.90 | 1.00 |
+
+First turn evaluates the full system prompt cold. Every subsequent turn uses
+in-memory checkpoints to restore the cached prefix, evaluating only the new
+content. Draft acceptance is the per-turn average; overall acceptance across all
+generated tokens is 72.5% (Nimo) and 76.8% (Flip). **LCP sim.** = Longest Common Prefix similarity score (mean across warm turns, threshold 0.20); **f_keep** = fraction of prompt tokens restored from checkpoint (prompt cache hit rate).
+
+#### Session 1 -- Qwen3.6-35B-A3B Q8_K_XL (Nimo, Strix Halo)
+
+Qwen3.6-35B-A3B-UD-Q8_K_XL, 131072 context, self-MTP draft (n_max=2), f16/f16 KV,
+flash attention, 16/32 threads, batch/ubatch 4096/2048, GPU strategy, SSD off,
+31 GB cache-RAM. GPU budget: 112 GiB. LCP sim: 0.948, 0.471; f_keep: 0.993, 0.986.
+
+| Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
+|---|--:|--------------:|--------------:|---------:|---------:|
+| T0 | 24,668 | 222 | 31.8 | 775.6 | 51.7 |
+| T87 | 1,410 | 427 | 1.9 | 741.5 | 56.1 |
+| T240 | 29,417 | 1,312 | 47.9 | 613.5 | 43.4 |
+
+Total: 2:24 (55,495 prompt + 1,961 decode = 57,456 tokens). Draft acceptance:
+94.2%, 92.3%, 64.4%.
+
+#### Session 2 -- Qwen3.6-35B-A3B Q4_K_XL (Flip KB)
+
+Qwen3.6-35B-A3B-UD-Q4_K_XL, 65536 context, self-MTP draft (n_max=2), q8_0/q8_0 KV,
+flash attention, 4/8 threads, batch/ubatch 1024/512, MoE residency strategy,
+SSD on (124 MiB), 5 GB cache-RAM, `--moe-expert-residency` + `--load-mode mmap`.
+GPU budget: 22 GiB. LCP sim: 0.969, 0.888, 0.880, 0.946, 0.971; f_keep: 0.995, 0.993, 0.994, 0.991, 0.994.
+
+| Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
+|---|--:|--------------:|--------------:|---------:|---------:|
+| T0 | 24,432 | 182 | 109.1 | 224.0 | 24.5 |
+| T89 | 843 | 237 | 5.1 | 164.2 | 24.4 |
+| T176 | 3,251 | 213 | 19.0 | 171.0 | 22.7 |
+| T258 | 3,954 | 303 | 23.4 | 168.9 | 20.9 |
+| T384 | 1,840 | 214 | 11.6 | 158.3 | 21.7 |
+| T467 | 1,009 | 1,274 | 6.6 | 152.6 | 20.5 |
+
+Total: 5:19 (35,329 prompt + 2,423 decode = 37,752 tokens). Draft acceptance:
+96.0%, 92.2%, 90.8%, 76.9%, 87.8%, 68.5%.
+
+#### Session 3 -- DeepSeek-V4-Flash IQ3_XXS (Nimo, Strix Halo)
+
+DeepSeek-V4-Flash-731-UD-IQ3_XXS, 131072 context, no draft, q4_0/q4_0 KV, flash
+attention, 16/32 threads, batch/ubatch 4096/2048, GPU strategy, SSD off, 5 GB
+cache-RAM. GPU budget: 112 GiB. LCP sim: 0.964, 0.824, 0.917; f_keep: 0.997, 0.996, 0.995.
+
+| Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
+|---|--:|--------------:|--------------:|---------:|---------:|
+| T0 | 24,786 | 171 | 115.0 | 215.5 | 11.8 |
+| T178 | 1,023 | 170 | 10.0 | 102.1 | 11.9 |
+| T349 | 5,607 | 238 | 39.0 | 143.9 | 11.8 |
+| T589 | 2,934 | 1,332 | 22.8 | 128.6 | 11.7 |
+
+Total: 6:03 (34,350 prompt + 1,911 decode = 36,261 tokens).
+
+#### Session 4 -- Laguna-S-2.1 Q5_K_XL (Nimo, Strix Halo)
+
+Laguna-S-2.1-UD-Q5_K_XL, 131072 context, no spec-decode draft (DFlash target
+architecture), q8_0/q8_0 KV, flash attention, 16/32 threads, batch/ubatch
+4096/2048, GPU strategy, SSD off, 11 GB cache-RAM. GPU budget: 112 GiB. LCP sim: 0.998, 0.957, 0.707, 0.979, 0.999, 0.753, 0.920, 0.852; f_keep: 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 0.996.
+
+| Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
+|---|--:|--------------:|--------------:|---------:|---------:|
+| T0 | 24,113 | 225 | 48.0 | 502.7 | 17.2 |
+| T233 | 54 | 102 | 0.9 | 63.4 | 17.5 |
+| T337 | 1,093 | 136 | 3.0 | 359.1 | 17.4 |
+| T475 | 10,634 | 206 | 26.0 | 408.7 | 16.8 |
+| T686 | 773 | 165 | 2.7 | 285.6 | 16.8 |
+| T853 | 54 | 189 | 0.9 | 62.8 | 16.8 |
+| T1044 | 12,403 | 198 | 33.6 | 368.9 | 16.2 |
+| T1247 | 4,364 | 224 | 13.2 | 329.4 | 16.0 |
+| T1474 | 9,519 | 298 | 28.8 | 330.2 | 15.6 |
+| T1776 | 2,472 | 389 | 8.7 | 283.4 | 15.4 |
+| T2168 | 1,658 | 225 | 5.7 | 289.8 | 15.4 |
+| T2395 | 2,032 | 286 | 6.9 | 293.5 | 15.3 |
+| T2683 | 2,323 | 377 | 8.7 | 265.6 | 15.2 |
+| T3063 | 1,008 | 155 | 4.0 | 250.4 | 15.2 |
+| T3220 | 63 | 51 | 1.0 | 60.2 | 15.3 |
+| T3273 | 63 | 2,114 | 1.1 | 59.9 | 15.1 |
+
+Total: 9:36 (72,626 prompt + 5,340 decode = 77,966 tokens).
+
+#### Key observations
+
+- **Strix Halo dominates.** Session 1 (Qwen3.6 Q8_K_XL, halo) hits 68 t/s prompt
+  and 47 t/s generation, versus 22/21 t/s on Flip (Session 2) with the same model
+  at Q4_K_XL. The 112 GiB GPU budget and f16 KV cache let the Lightning Indexer
+  run at full throughput.
+- **DeepSeek IQ3_XXS is compute-bound.** At 184 t/s prompt and 12 t/s generation,
+  the 1.6T-parameter model pushes the GPU hard -- generation is 3-4x slower than
+  Qwen3.6 despite similar parameter count, because DeepSeek's compressed-KV MLA
+  architecture has higher per-token compute.
+- **Laguna has the highest token throughput.** With 376 t/s prompt and 16 t/s
+  generation over 16 turns and 77,966 tokens, it sustains steady performance
+  across a long conversation. The DFlash target architecture and q8_0 KV keep
+  memory pressure low on the halo budget.
+- **Flip's small budget limits batch/ubatch.** The 22 GiB GPU budget forces
+  batch/ubatch down to 1024/512 (from 4096/2048 on halo), plus MoE residency
+  and SSD caching. Despite this, generation (21 t/s) is close to half of halo's
+  (47 t/s), not the 4x you might expect from the GPU gap -- the bottleneck shifts
+  to decode rather than prefill.
+- **Draft model helps Qwen3.6.** The self-MTP draft (n_max=2) delivers 84-85%
+  acceptance, cutting generated tokens roughly in half. DeepSeek and Laguna run
+  without spec decoding.
 
 ---
 
