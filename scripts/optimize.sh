@@ -163,11 +163,13 @@ _opt_model_gpu_footprint() {
             gpu_fraction=1
             ;;
         residency)
-            # Increased from 0.18 to 0.30 to account for initial model load
-            # and command submission overhead on low VRAM systems.
+            # 30% of model stays GPU-side (attention + small expert cache).
+            # This is a conservative estimate for initial load and command
+            # submission overhead.
             gpu_fraction=0.30
             ;;
         cpu)
+            # --cpu-moe + --load-mode none: only attn/emb/head on GPU (~6%)
             gpu_fraction=0.06
             ;;
     esac
@@ -212,7 +214,6 @@ _opt_gpu_memory() {
     local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
     local system_bytes=$(( 256 * 1048576 ))
 
-    # Add MTP overhead if enabled
     local mtp_overhead=0
     if [[ "${is_mtp:-false}" == "true" && "${SOLVER_DRAFT_ENABLE:-true}" == "true" ]]; then
         mtp_overhead=$(_opt_mtp_overhead_bytes "${MODEL_BYTES:-0}")
@@ -278,16 +279,15 @@ _opt_min_cache_ram_mib() {
     [[ ${SOLVER_GPU_BUDGET_BYTES:-0} -gt 0 && ${SOLVER_GPU_BUDGET_BYTES} -lt $(( 32 * _OPT_GIB )) ]] && low_vram=1
 
     if [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" && "${is_moe:-false}" == "true" && $size_gb -ge 50 ]]; then
-        echo 8192
+        echo 4096  # was 8192, lowered to allow more combos
     elif [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" && "${is_moe:-false}" == "true" ]]; then
-        echo 6144
+        echo 3072
     elif [[ "${LLAMA_IS_STRIX_HALO:-0}" == "1" ]]; then
-        echo 4096
+        echo 2048
     elif [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
-        # Allow more room for model/KV on low VRAM systems
         echo 1024
     else
-        echo 2048
+        echo 1024
     fi
 }
 
@@ -352,26 +352,22 @@ _opt_update_cache_ram() {
     local total_cache_mib=$(( effective_leftover * 90 / 100 / 1048576 ))
     [[ $total_cache_mib -lt 256 ]] && total_cache_mib=256
 
-    # Absolute cap: never exceed 50% of total system RAM for all caches combined
-    local max_total_cache_mib=$(( sys_total_mib / 2 ))
+    # Absolute cap: never exceed 25% of total system RAM for all caches combined
+    local max_total_cache_mib=$(( sys_total_mib / 4 ))
     [[ $total_cache_mib -gt $max_total_cache_mib ]] && total_cache_mib=$max_total_cache_mib
 
     # Split between prompt cache and SSD cache (if enabled)
     local prompt_cache_mib=$total_cache_mib
     local ssd_cache_mib=0
     if [[ "$SOLVER_SSD_ENABLE" == "true" ]]; then
-        # Allocate at most 20% of total cache to SSD, capped at 1024 MiB
         ssd_cache_mib=$(( total_cache_mib / 5 ))
         [[ $ssd_cache_mib -gt 1024 ]] && ssd_cache_mib=1024
         [[ $ssd_cache_mib -lt 128 ]] && ssd_cache_mib=128
         prompt_cache_mib=$(( total_cache_mib - ssd_cache_mib ))
     fi
 
-    # Store SSD cache portions
     SOLVER_SSD_HOT_RAM=$(( ssd_cache_mib / 2 ))
     SOLVER_SSD_WARM_RAM=$(( ssd_cache_mib - SOLVER_SSD_HOT_RAM ))
-
-    # Store prompt cache size (used for --cache-ram)
     SOLVER_CACHE_RAM=$prompt_cache_mib
 
     SOLVER_REASONS+=("cache-ram: ${prompt_cache_mib} MiB (SSD: ${ssd_cache_mib} MiB)")
@@ -424,10 +420,8 @@ _opt_start_optimistic() {
     [[ $SOLVER_THREADS_BATCH -lt 1 ]] && SOLVER_THREADS_BATCH=1
     [[ $SOLVER_THREADS -lt 1 ]] && SOLVER_THREADS=1
 
-    # Initial SSD cache setting based on total system RAM
     local sys_total_mib=$(( $(_opt_get_total_memory_bytes) / 1048576 ))
     if [[ $sys_total_mib -le 32768 ]]; then
-        # Low-memory systems: keep SSD cache but cap to ~1 GiB total
         SOLVER_SSD_ENABLE=true
         SOLVER_SSD_HOT_RAM=512
         SOLVER_SSD_WARM_RAM=512
@@ -628,12 +622,38 @@ solve_optimal_config() {
         solver_budget_bytes=0
     fi
 
-    # Determine if this is a low-VRAM system
     local low_vram=0
     [[ $solver_budget_bytes -gt 0 && $solver_budget_bytes -lt $(( 32 * _OPT_GIB )) ]] && low_vram=1
 
     # -------------------------------------------------------------------------
-    # Phase 1: First-fit search over (strategy, kv, ctx).
+    # Strategy selection:
+    #   - default: gpu -> residency -> cpu
+    #   - We now reorder for MoE when CPU-MoE is viable: gpu -> cpu -> residency
+    #     to avoid Vulkan OOM from residency on large models.
+    # -------------------------------------------------------------------------
+    local strategies=("gpu")
+    if [[ "${is_moe:-false}" == "true" ]]; then
+        # Check if CPU-MoE is viable: model fits in system RAM with OS reserve.
+        local sys_total_bytes=$(_opt_get_total_memory_bytes)
+        local os_reserve_bytes=$(( 8 * _OPT_GIB ))
+        local sys_avail_bytes=$(( sys_total_bytes - os_reserve_bytes ))
+        local model_fits_cpu=0
+        [[ ${MODEL_BYTES:-0} -le $sys_avail_bytes ]] && model_fits_cpu=1
+
+        # If model is >80% of GPU budget and CPU-MoE is viable, skip residency
+        # and use CPU only. Residency can still OOM on UMA APUs because the
+        # driver may map the full model into GPU-accessible memory.
+        if [[ $model_fits_cpu -eq 1 && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 80 / 100 )) ]]; then
+            strategies=("gpu" "cpu")
+        else
+            strategies+=("residency" "cpu")
+        fi
+    else
+        strategies+=("residency")
+    fi
+
+    # -------------------------------------------------------------------------
+    # Build scored combinations
     # -------------------------------------------------------------------------
     local ctx_values=(262144 196608 131072 98304 65536)
     if [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
@@ -645,13 +665,6 @@ solve_optimal_config() {
         kv_qualities=("q8_0/q8_0" "q4_0/q4_0")
     fi
 
-    local strategies=("gpu" "residency")
-    [[ "${is_moe:-false}" == "true" ]] && strategies+=("cpu")
-
-    if [[ $low_vram -eq 1 && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
-        strategies=("residency" "cpu")
-    fi
-
     declare -A combo_score
     for strategy in "${strategies[@]}"; do
         for ctx in "${ctx_values[@]}"; do
@@ -661,8 +674,8 @@ solve_optimal_config() {
                 for draft_mode in "${draft_modes_for_strategy[@]}"; do
                     local strategy_score=0
                     [[ "$strategy" == "gpu" ]] && strategy_score=300
+                    [[ "$strategy" == "cpu" ]] && strategy_score=250
                     [[ "$strategy" == "residency" ]] && strategy_score=200
-                    [[ "$strategy" == "cpu" ]] && strategy_score=100
 
                     local ctx_score=0
                     case "$ctx" in
