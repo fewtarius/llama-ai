@@ -52,16 +52,16 @@ discover_models() {
         #   * `-dflash-` infix (e.g. `Laguna-S-2.1-dflash-BF16.gguf`)
         #     - target-arch-aware DFlash drafts (see
         #     https://github.com/fewtarius/CachyLLama/blob/master/docs/dflash.md)
-        #   * `dspark-` prefix (e.g. `dspark-DeepSeek-V4-Flash-Q8_0.gguf`)
+        #   * `dspark-` prefix OR `*-dspark-*` infix (e.g. `dspark-DeepSeek-V4-Flash-Q8_0.gguf`
+        #     or `DeepSeek-V4-Flash-0731-DSpark-Q8_0.gguf`)
         #     - DeepSeek's DFlash draft model; loaded as `-md` for the
         #     target, fails standalone with `dflash requires ctx_other`
         #   * `mtp-` prefix (e.g. `mtp-Qwen3-27B-Q4_K_M.gguf`)
         #     - Multi-Token Prediction sidecar from the GGUF Naming spec
-        # Match case-insensitively because upstream casing varies. The
-        # anchors (`-dflash-`, `dspark-`, `mtp-`) are chosen so legitimate
-        # model names like `flash-attention-Q4_K_M.gguf` are NOT excluded.
+        # Match case-insensitively. The substrings "dflash", "dspark", "mtp-"
+        # are specific enough to avoid false positives on legitimate model names.
         local name_lc="${name,,}"
-        if [[ "$name_lc" == *-dflash-* || "$name_lc" == dspark-* || "$name_lc" == mtp-* ]]; then
+        if [[ "$name_lc" == *dflash* || "$name_lc" == *dspark* || "$name_lc" == mtp-* ]]; then
             continue
         fi
 

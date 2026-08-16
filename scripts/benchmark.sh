@@ -224,7 +224,17 @@ if [[ ${#MODELS[@]} -eq 0 ]]; then
     exit 1
 fi
 
-[[ -n "$TEST_MODEL" ]] && MODELS=("$TEST_MODEL")
+# Validate explicit --model: reject speculative-decoding draft models
+# (same filter as discover_models in lib-discover-models.sh)
+if [[ -n "$TEST_MODEL" ]]; then
+    name_lc="${TEST_MODEL,,}"
+    if [[ "$name_lc" == *dflash* || "$name_lc" == *dspark* || "$name_lc" == mtp-* ]]; then
+        log_error "Refusing to benchmark draft model: $TEST_MODEL"
+        log_error "DSpark, DFlash, and MTP models are speculative-decoding sidecars, not standalone targets."
+        exit 1
+    fi
+    MODELS=("$TEST_MODEL")
+fi
 
 for be in rocm vulkan; do
     [[ "$BACKEND" == "both" || "$BACKEND" == "$be" ]] || continue
