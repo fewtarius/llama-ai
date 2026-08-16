@@ -319,6 +319,19 @@ _opt_update_cache_ram() {
     local cache_mib=$(( leftover_mib * 90 / 100 ))
     [[ $cache_mib -lt 256 ]] && cache_mib=256
 
+    # Cap cache RAM to no more than 25% of total system RAM.
+    # This prevents cache-ram from starving the GPU and OS on unified-memory APUs.
+    local sys_total_mib=$(( $(_opt_get_total_memory_bytes) / 1048576 ))
+    local max_cache_mib=$(( sys_total_mib / 4 ))
+    [[ $cache_mib -gt $max_cache_mib ]] && cache_mib=$max_cache_mib
+
+    # Ensure cache RAM never exceeds half of the leftover GPU budget (optional safety).
+    # local gpu_leftover_mib=$(( (solver_budget_bytes - used) / 1048576 ))
+    # [[ $cache_mib -gt $(( gpu_leftover_mib / 2 )) ]] && cache_mib=$(( gpu_leftover_mib / 2 ))
+
+    # Ensure a minimum for usefulness.
+    [[ $cache_mib -lt 256 ]] && cache_mib=256
+
     SOLVER_SSD_HOT_RAM=$(( cache_mib / 2 ))
     SOLVER_SSD_WARM_RAM=$(( cache_mib - SOLVER_SSD_HOT_RAM ))
     SOLVER_REASONS+=("cache-ram: ${cache_mib} MiB")
@@ -373,12 +386,19 @@ _opt_start_optimistic() {
 
     SOLVER_SSD_ENABLE=true
     [[ "$effective_tier" == "halo" ]] && SOLVER_SSD_ENABLE=false
-    case "$effective_tier" in
-        halo)      SOLVER_SSD_HOT_RAM=2048; SOLVER_SSD_WARM_RAM=2048 ;;
-        standard)  SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
-        handheld)  SOLVER_SSD_HOT_RAM=512;  SOLVER_SSD_WARM_RAM=768  ;;
-        *)         SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
-    esac
+    local sys_total_mib=$(( $(_opt_get_total_memory_bytes) / 1048576 ))
+    if [[ $sys_total_mib -le 32768 ]]; then
+        # Low-memory systems: use smaller defaults so Phase-1 check is realistic.
+        SOLVER_SSD_HOT_RAM=512
+        SOLVER_SSD_WARM_RAM=512
+    else
+        case "$effective_tier" in
+            halo)      SOLVER_SSD_HOT_RAM=2048; SOLVER_SSD_WARM_RAM=2048 ;;
+            standard)  SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
+            handheld)  SOLVER_SSD_HOT_RAM=512;  SOLVER_SSD_WARM_RAM=768  ;;
+            *)         SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
+        esac
+    fi
 
     SOLVER_DRAFT_ENABLE=true
     SOLVER_DRAFT_N_MAX=8
