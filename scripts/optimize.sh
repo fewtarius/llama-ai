@@ -94,7 +94,7 @@ _opt_gguf() {
 }
 
 # -----------------------------------------------------------------------------
-# System memory detection
+# System memory detection (mirrors llama-run.sh functions)
 # -----------------------------------------------------------------------------
 _opt_get_total_memory_bytes() {
     if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -185,8 +185,6 @@ _opt_model_gpu_footprint() {
 # Memory check helpers (now include MTP overhead)
 # -----------------------------------------------------------------------------
 _opt_mtp_overhead_bytes() {
-    # MTP self-drafting adds a hidden context roughly 5% of model size,
-    # capped between 512 MiB and 2 GiB.
     local model_bytes="$1"
     local mtp_bytes=$(( model_bytes * 5 / 100 ))
     [[ $mtp_bytes -lt $(( 512 * 1048576 )) ]] && mtp_bytes=$(( 512 * 1048576 ))
@@ -293,6 +291,8 @@ _opt_min_cache_ram_mib() {
     fi
 }
 
+# Set SOLVER_CACHE_RAM (prompt cache) and SOLVER_SSD_HOT_RAM/WARM_RAM (SSD cache)
+# based on actual leftover system memory after accounting for model, KV, draft, etc.
 _opt_update_cache_ram() {
     local solver_budget_bytes="$1"
     local offloaded_bytes="$2"
@@ -304,8 +304,9 @@ _opt_update_cache_ram() {
 
     [[ $solver_budget_bytes -le 0 ]] && return 0
 
-    local used
-    used=$(_opt_gpu_memory \
+    # GPU leftover
+    local used_gpu
+    used_gpu=$(_opt_gpu_memory \
         "$offloaded_bytes" \
         "$kv_per_token" \
         "$ctx_size" \
@@ -314,27 +315,66 @@ _opt_update_cache_ram() {
         "$n_parallel" \
         "$ubatch" \
         0)
+    local gpu_leftover=$(( solver_budget_bytes - used_gpu ))
 
-    local leftover_mib=$(( (solver_budget_bytes - used) / 1048576 ))
-    local cache_mib=$(( leftover_mib * 90 / 100 ))
-    [[ $cache_mib -lt 256 ]] && cache_mib=256
+    # System memory leftover (without caches)
+    local sys_needed_no_cache
+    sys_needed_no_cache=$(_opt_system_memory \
+        "$offloaded_bytes" \
+        "${MODEL_BYTES:-0}" \
+        "$kv_per_token" \
+        "$ctx_size" \
+        "$draft_bytes" \
+        "$ctx_size" \
+        "$n_parallel" \
+        "$ubatch" \
+        0 \
+        "${SOLVER_MOE_STRATEGY:-gpu}" \
+        "$SOLVER_LOAD_MODE" \
+        0 \
+        0)
 
-    # Cap cache RAM to no more than 25% of total system RAM.
-    # This prevents cache-ram from starving the GPU and OS on unified-memory APUs.
     local sys_total_mib=$(( $(_opt_get_total_memory_bytes) / 1048576 ))
-    local max_cache_mib=$(( sys_total_mib / 4 ))
-    [[ $cache_mib -gt $max_cache_mib ]] && cache_mib=$max_cache_mib
+    local os_reserve_mib
+    if [[ $sys_total_mib -le 16384 ]]; then
+        os_reserve_mib=$(( sys_total_mib / 4 ))
+    else
+        os_reserve_mib=8192   # 8 GiB for systems >16 GiB
+    fi
+    local sys_budget_mib=$(( sys_total_mib - os_reserve_mib ))
+    local sys_leftover=$(( sys_budget_mib * 1048576 - sys_needed_no_cache ))
 
-    # Ensure cache RAM never exceeds half of the leftover GPU budget (optional safety).
-    # local gpu_leftover_mib=$(( (solver_budget_bytes - used) / 1048576 ))
-    # [[ $cache_mib -gt $(( gpu_leftover_mib / 2 )) ]] && cache_mib=$(( gpu_leftover_mib / 2 ))
+    # Effective leftover is the tighter of GPU and system
+    local effective_leftover=$(( gpu_leftover < sys_leftover ? gpu_leftover : sys_leftover ))
+    [[ $effective_leftover -lt 0 ]] && effective_leftover=0
 
-    # Ensure a minimum for usefulness.
-    [[ $cache_mib -lt 256 ]] && cache_mib=256
+    # Convert to MiB, apply 10% headroom
+    local total_cache_mib=$(( effective_leftover * 90 / 100 / 1048576 ))
+    [[ $total_cache_mib -lt 256 ]] && total_cache_mib=256
 
-    SOLVER_SSD_HOT_RAM=$(( cache_mib / 2 ))
-    SOLVER_SSD_WARM_RAM=$(( cache_mib - SOLVER_SSD_HOT_RAM ))
-    SOLVER_REASONS+=("cache-ram: ${cache_mib} MiB")
+    # Absolute cap: never exceed 50% of total system RAM for all caches combined
+    local max_total_cache_mib=$(( sys_total_mib / 2 ))
+    [[ $total_cache_mib -gt $max_total_cache_mib ]] && total_cache_mib=$max_total_cache_mib
+
+    # Split between prompt cache and SSD cache (if enabled)
+    local prompt_cache_mib=$total_cache_mib
+    local ssd_cache_mib=0
+    if [[ "$SOLVER_SSD_ENABLE" == "true" ]]; then
+        # Allocate at most 20% of total cache to SSD, capped at 1024 MiB
+        ssd_cache_mib=$(( total_cache_mib / 5 ))
+        [[ $ssd_cache_mib -gt 1024 ]] && ssd_cache_mib=1024
+        [[ $ssd_cache_mib -lt 128 ]] && ssd_cache_mib=128
+        prompt_cache_mib=$(( total_cache_mib - ssd_cache_mib ))
+    fi
+
+    # Store SSD cache portions
+    SOLVER_SSD_HOT_RAM=$(( ssd_cache_mib / 2 ))
+    SOLVER_SSD_WARM_RAM=$(( ssd_cache_mib - SOLVER_SSD_HOT_RAM ))
+
+    # Store prompt cache size (used for --cache-ram)
+    SOLVER_CACHE_RAM=$prompt_cache_mib
+
+    SOLVER_REASONS+=("cache-ram: ${prompt_cache_mib} MiB (SSD: ${ssd_cache_mib} MiB)")
 }
 
 # -----------------------------------------------------------------------------
@@ -384,14 +424,16 @@ _opt_start_optimistic() {
     [[ $SOLVER_THREADS_BATCH -lt 1 ]] && SOLVER_THREADS_BATCH=1
     [[ $SOLVER_THREADS -lt 1 ]] && SOLVER_THREADS=1
 
-    SOLVER_SSD_ENABLE=true
-    [[ "$effective_tier" == "halo" ]] && SOLVER_SSD_ENABLE=false
+    # Initial SSD cache setting based on total system RAM
     local sys_total_mib=$(( $(_opt_get_total_memory_bytes) / 1048576 ))
     if [[ $sys_total_mib -le 32768 ]]; then
-        # Low-memory systems: use smaller defaults so Phase-1 check is realistic.
+        # Low-memory systems: keep SSD cache but cap to ~1 GiB total
+        SOLVER_SSD_ENABLE=true
         SOLVER_SSD_HOT_RAM=512
         SOLVER_SSD_WARM_RAM=512
     else
+        SOLVER_SSD_ENABLE=true
+        [[ "$effective_tier" == "halo" ]] && SOLVER_SSD_ENABLE=false
         case "$effective_tier" in
             halo)      SOLVER_SSD_HOT_RAM=2048; SOLVER_SSD_WARM_RAM=2048 ;;
             standard)  SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
@@ -442,11 +484,11 @@ _reduce_ngl() {
 
 _reduce_ssd_ram() {
     [[ "$SOLVER_SSD_ENABLE" != "true" ]] && return 1
-    [[ $SOLVER_SSD_HOT_RAM -le 256 && $SOLVER_SSD_WARM_RAM -le 256 ]] && return 1
+    [[ $SOLVER_SSD_HOT_RAM -le 128 && $SOLVER_SSD_WARM_RAM -le 128 ]] && return 1
     SOLVER_SSD_HOT_RAM=$(( SOLVER_SSD_HOT_RAM / 2 ))
-    [[ $SOLVER_SSD_HOT_RAM -lt 256 ]] && SOLVER_SSD_HOT_RAM=256
+    [[ $SOLVER_SSD_HOT_RAM -lt 128 ]] && SOLVER_SSD_HOT_RAM=128
     SOLVER_SSD_WARM_RAM=$(( SOLVER_SSD_WARM_RAM / 2 ))
-    [[ $SOLVER_SSD_WARM_RAM -lt 256 ]] && SOLVER_SSD_WARM_RAM=256
+    [[ $SOLVER_SSD_WARM_RAM -lt 128 ]] && SOLVER_SSD_WARM_RAM=128
     SOLVER_REASONS+=("SSD RAM: ${SOLVER_SSD_HOT_RAM}/${SOLVER_SSD_WARM_RAM} MiB")
     return 0
 }
@@ -595,20 +637,17 @@ solve_optimal_config() {
     # -------------------------------------------------------------------------
     local ctx_values=(262144 196608 131072 98304 65536)
     if [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
-        # On low VRAM MoE systems, cap context to 64K to avoid huge KV
         ctx_values=(65536)
     fi
 
     local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
     if [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
-        # f16 KV too large on low VRAM MoE; use q8/q4 only
         kv_qualities=("q8_0/q8_0" "q4_0/q4_0")
     fi
 
     local strategies=("gpu" "residency")
     [[ "${is_moe:-false}" == "true" ]] && strategies+=("cpu")
 
-    # On low VRAM, skip "gpu" if model > 85% of budget (will OOM)
     if [[ $low_vram -eq 1 && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
         strategies=("residency" "cpu")
     fi
@@ -788,7 +827,7 @@ solve_optimal_config() {
     kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
     local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
-    # Phase 2: fine‑tune if still over budget
+    # Phase 2: fine-tune if still over budget
     local step_idx=0
     while [[ $step_idx -lt 50 ]]; do
         local offloaded_bytes
@@ -943,7 +982,7 @@ apply_user_overrides() {
 
     [[ -n "${MOE_UBATCH_OVERRIDE:-}" ]] && { SOLVER_UBATCH="$MOE_UBATCH_OVERRIDE"; SOLVER_OVERRIDES+=("ubatch"); }
     [[ -n "${OVERRIDE_UBATCH_SIZE:-}" ]] && { SOLVER_UBATCH="$OVERRIDE_UBATCH_SIZE"; SOLVER_OVERRIDES+=("ubatch-size"); }
-    [[ -n "${OVERRIDE_CACHE_RAM:-}" ]] && { SOLVER_SSD_HOT_RAM="$OVERRIDE_CACHE_RAM"; SOLVER_SSD_WARM_RAM="$OVERRIDE_CACHE_RAM"; SOLVER_OVERRIDES+=("cache-ram"); }
+    [[ -n "${OVERRIDE_CACHE_RAM:-}" ]] && { SOLVER_CACHE_RAM="$OVERRIDE_CACHE_RAM"; SOLVER_SSD_HOT_RAM=0; SOLVER_SSD_WARM_RAM=0; SOLVER_OVERRIDES+=("cache-ram"); }
     if [[ "${_SSD_DISABLE:-false}" == "true" ]]; then
         SOLVER_SSD_ENABLE=false
         SOLVER_OVERRIDES+=("no-ssd-cache")

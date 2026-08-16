@@ -198,18 +198,24 @@ _compute_gpu_budget_bytes() {
             break
         done
     fi
+
     local gpu_vis_bytes=$(( vram + gtt ))
     local gpu_vis_gib=$(( gpu_vis_bytes / 1073741824 ))
-    local unified_heap=0
-    grep -q "radv_enable_unified_heap_on_apu" "$HOME/.drirc" /usr/share/drirc.d/*.conf 2>/dev/null && unified_heap=1
-    local budget_gib
-    if [[ $unified_heap -eq 1 ]]; then
-        budget_gib=$(( gpu_vis_gib - 2 ))
-    else
-        budget_gib=$(( gpu_vis_gib * 2 / 3 - 2 ))
+
+    local total_ram_gib=$(( $(get_total_memory_bytes) / 1073741824 ))
+    [[ $total_ram_gib -le 0 ]] && total_ram_gib=1
+
+    local os_reserve_gib=8
+    if [[ $total_ram_gib -le 16 ]]; then
+        os_reserve_gib=$(( total_ram_gib / 4 ))
     fi
-    [[ $budget_gib -lt 1 ]] && budget_gib=1
-    echo $(( budget_gib * 1073741824 ))
+
+    local unified_budget_gib=$(( gpu_vis_gib - 2 ))
+    local system_limit_gib=$(( total_ram_gib - os_reserve_gib ))
+    [[ $unified_budget_gib -gt $system_limit_gib ]] && unified_budget_gib=$system_limit_gib
+    [[ $unified_budget_gib -lt 1 ]] && unified_budget_gib=1
+
+    echo $(( unified_budget_gib * 1073741824 ))
 }
 
 # -----------------------------------------------------------------------------
@@ -783,8 +789,8 @@ assign_profile() {
     EXTRA_SERVER_ARGS+=" --checkpoint-min-step ${SOLVER_CHECKPOINT_MIN} --ctx-checkpoints ${SOLVER_CHECKPOINTS}"
     EXTRA_SERVER_ARGS+=" --no-checkpoint-near-end"
 
-    local cache_ram_mib=$(( SOLVER_SSD_HOT_RAM + SOLVER_SSD_WARM_RAM ))
-    [[ $cache_ram_mib -lt 0 ]] && cache_ram_mib=0
+    local cache_ram_mib="${SOLVER_CACHE_RAM:-0}"
+    [[ $cache_ram_mib -gt 0 ]] && EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
     EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
 
     log_info "Solver chose: ctx=$CTX_SIZE KV=$KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V ubatch=$SOLVER_UBATCH batch=$SOLVER_BATCH threads=$THREADS_BATCH/$THREADS"
