@@ -791,7 +791,6 @@ assign_profile() {
 
     local cache_ram_mib="${SOLVER_CACHE_RAM:-0}"
     [[ $cache_ram_mib -gt 0 ]] && EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
-    EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
 
     log_info "Solver chose: ctx=$CTX_SIZE KV=$KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V ubatch=$SOLVER_UBATCH batch=$SOLVER_BATCH threads=$THREADS_BATCH/$THREADS"
     if [[ ${#SOLVER_REASONS[@]} -gt 0 ]]; then

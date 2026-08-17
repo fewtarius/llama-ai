@@ -444,6 +444,9 @@ _opt_start_optimistic() {
     SOLVER_VK_NPS="${GGML_VK_NODES_PER_SUBMIT:-}"
     SOLVER_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-2048}"
 
+    # Default checkpoint count (auto-scaled at end of solve_optimal_config)
+    SOLVER_CHECKPOINTS="${SOLVER_CHECKPOINTS:-}"
+
     SOLVER_NGL="$SOLVER_N_LAYER"
 }
 
@@ -942,6 +945,25 @@ solve_optimal_config() {
     SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))
 
     SOLVER_PROFILE_NAME=$(_opt_pick_legacy_profile "$n_attn" "${MODEL_BYTES:-0}")
+
+    # P2: Auto-scale checkpoint count based on context size
+    # Base: 8 checkpoints at 65K context
+    # Scale: +1 checkpoint per 8K context above 65K
+    # Cap: 32 checkpoints max
+    if [[ -z "${SOLVER_CHECKPOINTS:-}" ]]; then
+        local base_ctx=65536
+        local base_cp=8
+        local scale_per=8192
+        local max_cp=32
+        if [[ $SOLVER_CTX_SIZE -gt $base_ctx ]]; then
+            local extra=$(( (SOLVER_CTX_SIZE - base_ctx) / scale_per ))
+            SOLVER_CHECKPOINTS=$(( base_cp + extra ))
+        else
+            SOLVER_CHECKPOINTS=$base_cp
+        fi
+        [[ $SOLVER_CHECKPOINTS -gt $max_cp ]] && SOLVER_CHECKPOINTS=$max_cp
+        SOLVER_REASONS+=("checkpoints: ${SOLVER_CHECKPOINTS}")
+    fi
 }
 
 _opt_detune_steps_phase2() {
