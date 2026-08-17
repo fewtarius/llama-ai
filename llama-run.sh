@@ -68,6 +68,17 @@ source "$PROJECT_ROOT/scripts/optimize.sh"
 : "${LLAMA_SPEC_DRAFT_N_MAX_DSPARK:=${LLAMA_SPEC_DRAFT_N_MAX:-3}}"
 : "${LLAMA_SPEC_DRAFT_N_MAX_MTP:=${LLAMA_SPEC_DRAFT_N_MAX:-2}}"
 : "${LLAMA_SPEC_DRAFT_N_MAX_DFLASH:=${LLAMA_SPEC_DRAFT_N_MAX:-7}}"
+# DFlash is a small drafter; without a per-token probability floor it commits
+# the full n_max draft every round even on tokens the target will reject,
+# dragging acceptance to 15-45% and net throughput below the no-draft baseline.
+# p_min=0.6 (the value the poolside/Reddit Protryt benchmark and the upstream
+# DFlash PR landed on) gates the drafter on its own top-1 probability and lifts
+# acceptance to 75-85% on math/code while keeping gen rate at the predicted
+# speed. Set LLAMA_SPEC_DRAFT_P_MIN_DFLASH=0 to disable the floor.
+: "${LLAMA_SPEC_DRAFT_P_MIN:=}"
+: "${LLAMA_SPEC_DRAFT_P_MIN_DFLASH:=${LLAMA_SPEC_DRAFT_P_MIN:-0.6}}"
+: "${LLAMA_SPEC_DRAFT_P_MIN_DSPARK:=${LLAMA_SPEC_DRAFT_P_MIN:-0.0}}"
+: "${LLAMA_SPEC_DRAFT_P_MIN_MTP:=${LLAMA_SPEC_DRAFT_P_MIN:-0.0}}"
 
 # Platform detection
 if [[ "$(uname -s)" == "Darwin" ]]; then
@@ -772,14 +783,14 @@ assign_profile() {
 
     # Speculative decoding
     if [[ "${SOLVER_DRAFT_ENABLE}" == "true" && -n "${prof_dspark:-}" ]]; then
-        log_info "DSpark speculative decoding enabled: $prof_dspark (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DSPARK)"
-        EXTRA_SERVER_ARGS+=" -md $prof_dspark --spec-type draft-dspark --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DSPARK --fit off"
+        log_info "DSpark speculative decoding enabled: $prof_dspark (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DSPARK, p_min=$LLAMA_SPEC_DRAFT_P_MIN_DSPARK)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dspark --spec-type draft-dspark --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DSPARK --spec-draft-p-min $LLAMA_SPEC_DRAFT_P_MIN_DSPARK --fit off"
     elif [[ "${is_mtp}" == "true" && "${SOLVER_DRAFT_ENABLE}" == "true" ]]; then
-        log_info "MTP speculative decoding enabled (n_max=$LLAMA_SPEC_DRAFT_N_MAX_MTP)"
-        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_MTP --fit off"
+        log_info "MTP speculative decoding enabled (n_max=$LLAMA_SPEC_DRAFT_N_MAX_MTP, p_min=$LLAMA_SPEC_DRAFT_P_MIN_MTP)"
+        EXTRA_SERVER_ARGS+=" --spec-type draft-mtp --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_MTP --spec-draft-p-min $LLAMA_SPEC_DRAFT_P_MIN_MTP --fit off"
     elif [[ "${SOLVER_DRAFT_ENABLE}" == "true" && -n "${prof_dflash:-}" ]]; then
-        log_info "DFlash speculative decoding enabled: $prof_dflash (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DFLASH)"
-        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DFLASH --fit off"
+        log_info "DFlash speculative decoding enabled: $prof_dflash (n_max=$LLAMA_SPEC_DRAFT_N_MAX_DFLASH, p_min=$LLAMA_SPEC_DRAFT_P_MIN_DFLASH)"
+        EXTRA_SERVER_ARGS+=" -md $prof_dflash --spec-type draft-dflash --spec-draft-n-max $LLAMA_SPEC_DRAFT_N_MAX_DFLASH --spec-draft-p-min $LLAMA_SPEC_DRAFT_P_MIN_DFLASH --fit off"
     fi
 
     profile_name="${SOLVER_PROFILE_NAME}"
@@ -1099,6 +1110,7 @@ print_profile_summary() {
     slot_sim=$(_extract_arg --slot-prompt-similarity "")
     spec_type=$(_extract_arg --spec-type "")
     spec_n_max=$(_extract_arg --spec-draft-n-max "")
+    spec_p_min=$(_extract_arg --spec-draft-p-min "")
     checkpoint_min=$(_extract_arg --checkpoint-min-step "")
     checkpoint_count=$(_extract_arg --ctx-checkpoints "")
 
@@ -1139,7 +1151,7 @@ print_profile_summary() {
     printf '  %-28s %s\n' "Threads (batch/gen):" "${THREADS_BATCH}/${THREADS}"
     printf '  %-28s %s/%s\n' "KV cache type:"   "${KV_CACHE_TYPE_K}" "${KV_CACHE_TYPE_V}"
     printf '  %-28s %s\n' "Batch/UBatch:"    "${OVERRIDE_BATCH_SIZE:-default}"
-    printf '  %-28s %s\n' "Spec decode:"     "$( [[ -n "$spec_type" ]] && echo "$spec_type (n_max=$spec_n_max, draft=${spec_draft:-self})" || echo "off" )"
+    printf '  %-28s %s\n' "Spec decode:"     "$( [[ -n "$spec_type" ]] && echo "$spec_type (n_max=$spec_n_max, p_min=$spec_p_min, draft=${spec_draft:-self})" || echo "off" )"
     printf '  %-28s %s\n' "MoE experts:"     "$moe_strategy"
     printf '  %-28s %s\n' "Load mode:"       "$load_mode"
     printf '  %-28s %s\n' "Flash attention:" "$flash_attn"
