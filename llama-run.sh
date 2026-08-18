@@ -45,7 +45,7 @@ source "$PROJECT_ROOT/scripts/optimize.sh"
 : "${LLAMA_SSD_SYSTEM_PROMPTS:=8}"
 : "${LLAMA_SSD_SYSTEM_MAX_DAYS:=30}"
 : "${LLAMA_PROMPT_MAX:=8}"
-: "${LLAMA_REASONING_BUDGET:=4096}"
+: "${LLAMA_REASONING_BUDGET:=8192}"
 : "${LLAMA_PRESERVE_REASONING:=true}"
 : "${LLAMA_TEMP:=1.0}"
 : "${LLAMA_TOP_P:=0.95}"
@@ -860,7 +860,7 @@ ${YELLOW}Options:${NC}
     --list-backends         List available backends
     --preserve-reasoning    Include reasoning in prior assistant messages
     --no-preserve-reasoning Strip reasoning from prior assistant messages (default)
-    --reasoning-budget N    Max thinking tokens per response (default: 4096)
+    --reasoning-budget N    Max thinking tokens per response (default: 8192)
     --no-reasoning-budget   Disable thinking token limit
     --hardware-tier TIER    Override detected tier: halo, standard, handheld
     --is-strix-halo         Force Strix Halo preset

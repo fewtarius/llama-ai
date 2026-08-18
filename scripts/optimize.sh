@@ -442,7 +442,7 @@ _opt_start_optimistic() {
     SOLVER_MOE_PREWARM_TOP_K=16
     SOLVER_LOAD_MODE="${SOLVER_LOAD_MODE:-dio}"
     SOLVER_VK_NPS="${GGML_VK_NODES_PER_SUBMIT:-}"
-    SOLVER_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-2048}"
+    SOLVER_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-8192}"
 
     # Default checkpoint count (auto-scaled at end of solve_optimal_config)
     SOLVER_CHECKPOINTS="${SOLVER_CHECKPOINTS:-}"
