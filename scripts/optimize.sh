@@ -165,12 +165,24 @@ _opt_model_gpu_footprint() {
         residency)
             # 30% of model stays GPU-side (attention + small expert cache).
             # This is a conservative estimate for initial load and command
-            # submission overhead.
-            gpu_fraction=0.30
+            # submission overhead. Only applies to MoE models - residency has
+            # no meaning for dense/SSM models where there are no experts to
+            # evict and the full model stays GPU-side. Forcing gpu_fraction=1
+            # for non-MoE prevents the solver from picking configs that
+            # fit the budget under residency but OOM at runtime.
+            if [[ "${is_moe:-false}" == "true" ]]; then
+                gpu_fraction=0.30
+            else
+                gpu_fraction=1
+            fi
             ;;
         cpu)
             # --cpu-moe + --load-mode none: only attn/emb/head on GPU (~6%)
-            gpu_fraction=0.06
+            if [[ "${is_moe:-false}" == "true" ]]; then
+                gpu_fraction=0.06
+            else
+                gpu_fraction=1
+            fi
             ;;
     esac
 
@@ -651,9 +663,9 @@ solve_optimal_config() {
         else
             strategies+=("residency" "cpu")
         fi
-    else
-        strategies+=("residency")
     fi
+    # Dense/SSM models: residency and cpu are meaningless (no experts to
+    # evict). Only the gpu strategy is valid, so we leave strategies=("gpu").
 
     # -------------------------------------------------------------------------
     # Build scored combinations
