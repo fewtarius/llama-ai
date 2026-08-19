@@ -738,6 +738,20 @@ assign_profile() {
         exit 1
     fi
 
+    # Cap GPU_LAYERS at SOLVER_NGL so the solver's NGL reduction actually
+    # applies to the launched server. Without this, the solver might reduce
+    # NGL to fit a dense model on a tight UMA budget, but the server would
+    # still get -ngl 99 (the default) and try to load all layers to GPU.
+    # User explicit --gpu-layers is preserved if smaller (offload more to CPU).
+    # OVERRIDE_FIT sets SOLVER_NGL=-1 to let llama-server auto-fit, so don't cap.
+    # Only cap when SOLVER_NGL was actually reduced below the model layer count.
+    if [[ "${SOLVER_NGL:-0}" -gt 0 ]] \
+       && [[ "${SOLVER_N_LAYER:-${SOLVER_NGL}}" -gt "${SOLVER_NGL}" ]] \
+       && [[ "${GPU_LAYERS:-99}" -gt "${SOLVER_NGL}" ]]; then
+        log_info "Capping -ngl from ${GPU_LAYERS} to ${SOLVER_NGL} (solver-detuned to fit budget)"
+        GPU_LAYERS="${SOLVER_NGL}"
+    fi
+
     CTX_SIZE="${SOLVER_CTX_SIZE}"
     KV_CACHE_TYPE_K="${SOLVER_K_TYPE}"
     KV_CACHE_TYPE_V="${SOLVER_V_TYPE}"

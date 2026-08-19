@@ -834,7 +834,9 @@ solve_optimal_config() {
         SOLVER_CTX_SIZE=$MIN_CTX
         SOLVER_K_TYPE="q4_0"
         SOLVER_V_TYPE="q4_0"
-        SOLVER_REASONS+=("ctx: ${MIN_CTX} KV: q4_0/q4_0 (no fit at any strategy/kv/ctx)")
+        # Note: 'no fit' message deferred to after phase 2. If phase 2 finds a
+        # fit, the message is skipped so llama-run.sh's fast-fail doesn't
+        # false-positive on a stale fallback message.
     else
         SOLVER_CTX_SIZE=$chosen_ctx
         SOLVER_K_TYPE=$chosen_k_type
@@ -856,6 +858,7 @@ solve_optimal_config() {
     local kv_per_token=$(( kv_per_token_per_layer * n_attn ))
 
     # Phase 2: fine-tune if still over budget
+    local _phase2_fit=0
     local step_idx=0
     while [[ $step_idx -lt 50 ]]; do
         local offloaded_bytes
@@ -912,7 +915,10 @@ solve_optimal_config() {
         if [[ $mem_needed_gib -le $solver_budget_gib ]] || [[ $solver_budget_gib -le 0 ]]; then
             local sys_ok=0
             [[ $sys_mem_needed -le $sys_budget ]] || [[ $sys_budget -le 0 ]] && sys_ok=1
-            [[ $sys_ok -eq 1 ]] && break
+            if [[ $sys_ok -eq 1 ]]; then
+                _phase2_fit=1
+                break
+            fi
         fi
 
         local applied=0
@@ -928,6 +934,13 @@ solve_optimal_config() {
         [[ $applied -eq 0 ]] && break
         step_idx=$(( step_idx + 1 ))
     done
+
+    # If phase 1 had no fit AND phase 2 didn't find one either, record the
+    # 'no fit' message. Phase 2 alone is enough to recover most borderline
+    # cases (e.g. dense 16-17 GiB models on 17 GiB UMA budget - fits at NGL=53).
+    if [[ $found -eq 0 && $_phase2_fit -eq 0 ]]; then
+        SOLVER_REASONS+=("ctx: ${MIN_CTX} KV: q4_0/q4_0 (no fit at any strategy/kv/ctx)")
+    fi
 
     # Final cache RAM derivation
     kv_per_token_per_layer=$(_opt_layer_kv_bytes_per_token "$SOLVER_K_TYPE" "$SOLVER_V_TYPE" "$hckv" "$kl" "$vl")
