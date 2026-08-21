@@ -47,6 +47,7 @@ cmake "$LLAMA_DIR" \
     -DGGML_NATIVE=ON \
     -DLLAMA_BUILD_SERVER=ON \
     -DLLAMA_BUILD_TESTS=OFF \
+    -DLLAMA_BUILD_TOOLS=ON \
     -DLLAMA_BUILD_EXAMPLES=OFF
 
 cmake --build . --config Release -j$(nproc)

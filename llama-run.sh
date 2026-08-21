@@ -257,7 +257,7 @@ list_models() {
 list_backends_v2() {
     echo -e "${BLUE}Available Backends:${NC}"
     for b in rocm vulkan metal; do
-        local bin="$PROJECT_ROOT/src/cachy-llama-$b/build/bin/llama-cli"
+        local bin="$PROJECT_ROOT/src/cachy-llama-$b/build/bin/llama-server"
         if [[ -x "$bin" ]]; then
             echo -e "  ${GREEN}[*] ${b^}${NC}       - available"
         else

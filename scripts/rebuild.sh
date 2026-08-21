@@ -417,6 +417,7 @@ build_rocm() {
         -DGGML_NATIVE=OFF \
         $LLAMA_CMAKE_CPU_FLAGS \
         -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_TOOLS=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=ON
 
@@ -452,6 +453,7 @@ build_vulkan() {
         -DGGML_NATIVE=OFF \
         $LLAMA_CMAKE_CPU_FLAGS \
         -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_TOOLS=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=ON \
         2>&1 | tail -5
@@ -492,6 +494,7 @@ build_metal() {
         -DGGML_CPU=ON \
         -DGGML_NATIVE=ON \
         -DLLAMA_BUILD_SERVER=ON \
+        -DLLAMA_BUILD_TOOLS=ON \
         -DLLAMA_BUILD_TESTS=OFF \
         -DLLAMA_BUILD_EXAMPLES=ON \
         2>&1 | tail -5
