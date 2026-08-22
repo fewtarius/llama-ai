@@ -30,7 +30,7 @@ if [[ -d "/sf_root/rootfs" ]]; then
         if [[ -d "$d" ]]; then sf_root_lib="$d"; break; fi
     done
     if [[ -n "$sf_root_lib" ]]; then
-        export LD_LIBRARY_PATH="$sf_root_lib:$LD_LIBRARY_PATH"
+        export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:$sf_root_lib"
     fi
 fi
 export PATH="$PROJECT_ROOT/deps/lib/llvm/bin:$PATH"
@@ -43,6 +43,7 @@ cmake "$LLAMA_DIR" \
     -DGGML_HIPBLAS=OFF \
     -DGGML_VULKAN=ON \
     -DGGML_VULKAN_USE_COOPMAT=ON \
+    -DGGML_RPC=ON \
     -DGGML_CPU=ON \
     -DGGML_NATIVE=ON \
     -DLLAMA_BUILD_SERVER=ON \
