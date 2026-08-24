@@ -42,6 +42,7 @@ patches-archive/
 kv-cache/
 ssd-cache/
 benchmarks/
+ai-assisted/
 
 # Transient
 patches/
