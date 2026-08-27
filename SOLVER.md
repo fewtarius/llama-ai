@@ -30,7 +30,7 @@ The solver proceeds in five stages:
 
 ### 1. Read GGUF Metadata
 
-Uses `scratch/read_gguf_kv.py` to extract:
+Uses `scripts/read_gguf_kv.py` to extract:
 
 - `block_count`, `embedding_length`, `head_count`, `head_count_kv`
 - `key_length`, `value_length`
@@ -49,6 +49,9 @@ This data drives all memory and performance calculations.
 - Ubatch: 2048 (Halo), 1024 (standard), 512 (handheld)
 - Threads: batch = physical cores, gen = half of that
 - MoE strategy: `gpu` (all layers offloaded)
+- Checkpoints: auto-scaled to context size (base 8 at 65K ctx, +1 per 8K,
+  capped at 16 during pre-fit / 32 after phase 2). Min-step = ctx /
+  checkpoints (floor 8K, or 32K when SSD is off).
 
 ### 3. Model Memory
 
@@ -89,10 +92,12 @@ leaves at least the minimum required cache RAM wins.
 
 **Strategy selection rules**:
 
+- Non-MoE/dense/SSM models: only `gpu` is valid (no experts to offload or
+  evict). `cpu` and `residency` are skipped entirely.
 - If the model is **MoE** and **model size > 80% of GPU budget** and
   the model fits in system RAM with an 8 GiB OS reserve, `cpu` is
   preferred over `residency`. `residency` is skipped entirely.
-- Otherwise, the order is `gpu → residency → cpu`.
+- Otherwise (MoE), the order is `gpu -> residency -> cpu`.
 - On low‑VRAM systems (<32 GiB GPU budget), MoE models:
     - Context is capped at 64K.
     - f16 KV is removed; only q8_0 / q4_0 are considered.
@@ -156,7 +161,7 @@ solver, use the corresponding `*_OVERRIDE` variable or CLI flag.
 
 ## Hardware Notes
 
-### Strix Halo (Nimo) – 128 GB RAM, 112 GB GPU budget
+### Strix Halo (Nimo) – 128 GB RAM, ~63 GB GPU budget
 
 - SSD cache is **disabled** because serialization overhead reduces prompt
   throughput by 20–30%.
@@ -168,13 +173,15 @@ solver, use the corresponding `*_OVERRIDE` variable or CLI flag.
 ### AYANEO Flip – 26 GB RAM, 22 GB GPU budget
 
 - SSD cache is **enabled** but capped to ~1 GiB.
-- MoE models are run with **residency** (CPU‑MoE doesn't fit) or
-  **CPU‑MoE** if the model is small enough.
+- MoE models are run with **residency** or **CPU–MoE** if small enough.
+  Non-MoE dense models use the `gpu` strategy only.
 - Context is limited to 64K for MoE models; KV is q8_0 or q4_0.
 
 ### Low‑RAM systems (<32 GB total RAM)
 
 - Prompt cache is capped at 2048 MiB.
+- OS reserve for handheld tier is 4 GiB (not 8 GiB); for standard/halo it
+  is 8 GiB. The reserve protects OS responsiveness under GPU memory pressure.
 - SSD cache default: 512 MiB hot + 512 MiB warm.
 
 ## Per‑Model Architecture Handling
@@ -193,7 +200,7 @@ solver, use the corresponding `*_OVERRIDE` variable or CLI flag.
 ## Files
 
 - `scripts/optimize.sh` – solver module (sourced)
-- `scratch/read_gguf_kv.py` – GGUF v3 metadata reader
+- `scripts/read_gguf_kv.py` – GGUF v3 metadata reader
 - `llama-run.sh` – integration in `assign_profile_solver()`
 - `scratch/test-solver.sh` – unit test harness
 - `scratch/test-solver-multi.sh` – multi-model comparison

@@ -71,7 +71,7 @@ Reasoning models — DeepSeek-R1, Qwen3.6, GLM-4.7 — emit thinking blocks befo
 each response. By default the runner strips these from prior assistant messages
 in the conversation history so they don't waste prompt tokens. To preserve them
 across turns, pass `--preserve-reasoning`. Use `--reasoning-budget N` to cap
-thinking tokens per response (default: 2048).
+thinking tokens per response (default: 8192).
 
 ### Solver and profile selection
 
@@ -82,7 +82,7 @@ configuration path. The legacy preset table is only used with `--noauto`.
 
 **Solver pipeline:**
 
-1. **Read GGUF metadata** via `scratch/read_gguf_kv.py` -- block count,
+1. **Read GGUF metadata** via `scripts/read_gguf_kv.py` -- block count,
    `head_count_kv`, `key/value_length`, `full_attention_interval` (for hybrid
    SSM models), `nextn_predict_layers` (for MTP), `expert_count` (for MoE),
    training context.
@@ -91,6 +91,9 @@ configuration path. The legacy preset table is only used with `--noauto`.
    SSD cache on (Halo: off), draft model enabled if found, ubatch 2048
    (Halo) / 1024 (standard) / 512 (handheld), threads = physical cores
    (batch) / half (gen), MoE strategy = `gpu`.
+- **Checkpoints**: auto-scaled to context size (base 8 at 65K ctx, +1 per
+   8K, capped at 16 during pre-fit / 32 after phase 2). Min-step = ctx /
+   checkpoints (floor 8K, or 32K when SSD is off).
 
 3. **Score and search** -- builds a priority list of all valid combinations:
    - **Strategy**: `gpu` (300), `cpu` (250), `residency` (200)
@@ -102,9 +105,11 @@ configuration path. The legacy preset table is only used with `--noauto`.
    GPU and system budgets with minimum cache RAM wins.
 
    **Strategy selection rules:**
+   - Non-MoE/dense/SSM models: only `gpu` is valid (no experts to offload or
+     evict). `cpu` and `residency` are skipped entirely.
    - MoE model >80% of GPU budget **and** fits in system RAM (8 GiB OS reserve)
      -> `cpu` preferred, `residency` skipped entirely.
-   - Otherwise: `gpu` -> `residency` -> `cpu`.
+   - Otherwise (MoE): `gpu` -> `residency` -> `cpu`.
    - Low-VRAM (<32 GiB GPU budget), MoE: context capped at 64K, f16 KV
      removed (only q8_0/q4_0).
 
@@ -136,14 +141,24 @@ configuration path. The legacy preset table is only used with `--noauto`.
 | Threads | `--threads` | `LLAMA_THREADS_OVERRIDE` |
 | Ubatch | `--ubatch-size` | `OVERRIDE_UBATCH_SIZE` / `MOE_UBATCH_OVERRIDE` |
 | Cache RAM | `--cache-ram` | `OVERRIDE_CACHE_RAM` |
-| Disable SSD | `--no-ssd-cache` | `_SSD_DISABLE` |
+| Disable SSD | `--no-ssd-cache` | `_SSD_DISABLE` / `LLAMA_NO_SSD_CACHE` |
 | GPU layers | `-ngl` / `--gpu-layers` | `OVERRIDE_NGL` |
 | Fit mode | `--fit on` | `OVERRIDE_FIT` |
 | Reasoning budget | `--reasoning-budget` | `OVERRIDE_REASONING_BUDGET` |
+| Checkpoint every-N-tokens | `--checkpoint-every-n-tokens` | `OVERRIDE_CHECKPOINT_EVERY` |
+| Spec draft p-min (DFlash) | (env) | `LLAMA_SPEC_DRAFT_P_MIN_DFLASH` |
+| Spec draft p-min (DSpark) | (env) | `LLAMA_SPEC_DRAFT_P_MIN_DSPARK` |
+| Spec draft p-min (MTP) | (env) | `LLAMA_SPEC_DRAFT_P_MIN_MTP` |
 
 Note: `LLAMA_SSD_HOT_RAM`, `LLAMA_SSD_WARM_RAM`, `LLAMA_THREADS`,
 `LLAMA_KV_CACHE_TYPE_K` are **defaults** (level 2), not overrides. Use the
 `*_OVERRIDE` variants to win over the solver.
+
+When the solver reduces NGL (layers offloaded to GPU) to fit the GPU budget,
+`llama-run.sh` caps the launched server's `-ngl` at the solver's value so the
+reduction actually applies at launch time (not just in profile output).
+`OVERRIDE_FIT` sets `SOLVER_NGL=-1` to let `llama-server` auto-fit, which skips
+the cap.
 
 **Legacy preset table** (`--noauto` only -- kept for script compatibility):
 
@@ -167,7 +182,7 @@ algorithm, benchmark data, and hardware notes.
 
 ### Hardware-specific behavior
 
-**Strix Halo (Nimo) — 128 GB RAM, 112 GB GPU budget**
+**Strix Halo (Nimo) — 128 GB RAM, ~63 GB GPU budget**
 - SSD cache **disabled** (serialization overhead reduces prompt throughput 20–30%).
 - Large MoE models (DeepSeek-V4-Flash 97 GB) run with **CPU-MoE + `--load-mode none`**:
   model in system RAM, GPU handles attention + KV only. Avoids Vulkan OOM.
@@ -570,7 +585,7 @@ a final analysis). Two ran on the Nimo Axis N161 (Strix Halo, Ryzen AI Max+ 395,
 unified memory, 2 TB SSD). Qwen3.6 uses self-MTP speculative decoding
 (`--spec-type draft-mtp`, n_max=2); DeepSeek and Laguna do not use spec decoding
 (Laguna uses DFlash as a target architecture). All sessions use flash attention
-and reasoning budget 4096.
+and reasoning budget 8192.
 
 Metrics are from `scripts/log_analyzer.py` on the paired server logs in
 `scratch/`. PP and Gen are weighted by token count (total prompt tokens divided
@@ -594,7 +609,7 @@ generated tokens is 72.5% (Nimo) and 76.8% (Flip). **LCP sim.** = Longest Common
 
 Qwen3.6-35B-A3B-UD-Q8_K_XL, 131072 context, self-MTP draft (n_max=2), f16/f16 KV,
 flash attention, 16/32 threads, batch/ubatch 4096/2048, GPU strategy, SSD off,
-31 GB cache-RAM. GPU budget: 112 GiB. LCP sim: 0.948, 0.471; f_keep: 0.993, 0.986.
+31 GB cache-RAM. GPU budget: ~61 GiB. LCP sim: 0.948, 0.471; f_keep: 0.993, 0.986.
 
 | Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
 |---|--:|--------------:|--------------:|---------:|---------:|
@@ -628,7 +643,7 @@ Total: 5:19 (35,329 prompt + 2,423 decode = 37,752 tokens). Draft acceptance:
 
 DeepSeek-V4-Flash-731-UD-IQ3_XXS, 131072 context, no draft, q4_0/q4_0 KV, flash
 attention, 16/32 threads, batch/ubatch 4096/2048, GPU strategy, SSD off, 5 GB
-cache-RAM. GPU budget: 112 GiB. LCP sim: 0.964, 0.824, 0.917; f_keep: 0.997, 0.996, 0.995.
+cache-RAM. GPU budget: ~61 GiB. LCP sim: 0.964, 0.824, 0.917; f_keep: 0.997, 0.996, 0.995.
 
 | Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
 |---|--:|--------------:|--------------:|---------:|---------:|
@@ -643,7 +658,7 @@ Total: 6:03 (34,350 prompt + 1,911 decode = 36,261 tokens).
 
 Laguna-S-2.1-UD-Q5_K_XL, 131072 context, no spec-decode draft (DFlash target
 architecture), q8_0/q8_0 KV, flash attention, 16/32 threads, batch/ubatch
-4096/2048, GPU strategy, SSD off, 11 GB cache-RAM. GPU budget: 112 GiB. LCP sim: 0.998, 0.957, 0.707, 0.979, 0.999, 0.753, 0.920, 0.852; f_keep: 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 0.996.
+4096/2048, GPU strategy, SSD off, 11 GB cache-RAM. GPU budget: ~61 GiB. LCP sim: 0.998, 0.957, 0.707, 0.979, 0.999, 0.753, 0.920, 0.852; f_keep: 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 1.000, 0.996.
 
 | Turn | Prompt tokens | Decode tokens | TTFT (s) | PP (t/s) | Gen (t/s) |
 |---|--:|--------------:|--------------:|---------:|---------:|
@@ -670,7 +685,7 @@ Total: 9:36 (72,626 prompt + 5,340 decode = 77,966 tokens).
 
 - **Strix Halo dominates.** Session 1 (Qwen3.6 Q8_K_XL, halo) hits 68 t/s prompt
   and 47 t/s generation, versus 22/21 t/s on Flip (Session 2) with the same model
-  at Q4_K_XL. The 112 GiB GPU budget and f16 KV cache let the Lightning Indexer
+  at Q4_K_XL. The ~61 GiB GPU budget and f16 KV cache let the Lightning Indexer
   run at full throughput.
 - **DeepSeek IQ3_XXS is compute-bound.** At 184 t/s prompt and 12 t/s generation,
   the 1.6T-parameter model pushes the GPU hard -- generation is 3-4x slower than
