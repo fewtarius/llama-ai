@@ -23,8 +23,9 @@ KV_TYPE_NAMES = {
     8: "string", 9: "array", 10: "uint64", 11: "int64", 12: "float64",
 }
 
-# GGUF type element sizes for array element decoding (only uint32/int32/float32/uint64/int64 supported in arrays)
-ARRAY_ELT_SIZES = {0: 1, 1: 1, 4: 4, 5: 4, 11: 8, 12: 8, 6: 4}
+# GGUF type element sizes for array element decoding.
+# Keys are GGUF value type codes (uint32, int32, float32, etc.)
+ARRAY_ELT_SIZES = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
 
 
 def read_string(f):
@@ -55,22 +56,44 @@ def read_kv(f, kv_type):
     elif kv_type == 9:  # array
         array_type = struct.unpack("<I", f.read(4))[0]
         array_len = struct.unpack("<Q", f.read(8))[0]
+        # Decode the first element and return it as a scalar. Many GGUF
+        # metadata fields that the solver expects as scalars (e.g.
+        # attention.head_count_kv) are stored as per-layer arrays. Taking
+        # the first element is correct because the array is either uniform
+        # across layers or the first layer is representative.
+        if array_type == 8:  # string elements
+            if array_len == 0:
+                return ""
+            first = read_string(f)
+            for _ in range(array_len - 1):
+                sl = struct.unpack("<Q", f.read(8))[0]
+                f.read(sl)
+            return first
         array_elt_size = ARRAY_ELT_SIZES.get(array_type)
         if array_elt_size is None:
-            # String arrays: each element is itself a length-prefixed string.
-            if array_type == 8:
-                for _ in range(array_len):
-                    read_string(f)
-            elif array_type == 9:
-                # Nested arrays - bail out by reading nothing further; we
-                # only have these in tokenizer config which we don't care about.
+            if array_type == 9:  # nested array - cannot easily skip
                 return f"<nested array len={array_len}>"
             else:
-                # Unknown element type - assume 8 bytes per element
                 f.read(array_len * 8)
             return f"<array type={array_type}>"
-        f.read(array_len * array_elt_size)
-        return f"[array type={array_type} len={array_len}]"
+        # Read first element, bulk-skip the rest
+        first = None
+        if array_type == 0:       first = struct.unpack("<B", f.read(1))[0]
+        elif array_type == 1:     first = struct.unpack("<b", f.read(1))[0]
+        elif array_type == 2:     first = struct.unpack("<H", f.read(2))[0]
+        elif array_type == 3:     first = struct.unpack("<h", f.read(2))[0]
+        elif array_type == 4:     first = struct.unpack("<I", f.read(4))[0]
+        elif array_type == 5:     first = struct.unpack("<i", f.read(4))[0]
+        elif array_type == 6:     first = struct.unpack("<f", f.read(4))[0]
+        elif array_type == 7:     first = struct.unpack("<B", f.read(1))[0] != 0
+        elif array_type == 10:    first = struct.unpack("<Q", f.read(8))[0]
+        elif array_type == 11:    first = struct.unpack("<q", f.read(8))[0]
+        elif array_type == 12:    first = struct.unpack("<d", f.read(8))[0]
+        else:
+            f.read(array_elt_size)
+        if array_len > 1:
+            f.read((array_len - 1) * array_elt_size)
+        return first if first is not None else array_len
     return None
 
 

@@ -28,6 +28,7 @@ source "$PROJECT_ROOT/scripts/optimize.sh"
 : "${KV_CACHE_V_OVERRIDE:=}"
 : "${MOE_UBATCH_OVERRIDE:=}"
 : "${CACHE_RAM_OVERRIDE:=}"
+: "${LLAMA_NO_SSD_CACHE:=false}"
 : "${LLAMA_THREADS:=}"
 : "${LLAMA_GPU_LAYERS:=99}"
 : "${LLAMA_CTX_SIZE:=65536}"
@@ -220,9 +221,20 @@ _compute_gpu_budget_bytes() {
     if [[ $total_ram_gib -le 16 ]]; then
         os_reserve_gib=$(( total_ram_gib / 4 ))
     fi
+    # Handhelds are dedicated devices; the OS runs very lean (~3-4 GiB).
+    # Reduce the reserve so more VRAM+GTT is available for the model.
+    [[ "${LLAMA_HARDWARE_TIER:-standard}" == "handheld" ]] && os_reserve_gib=4
 
     local unified_budget_gib=$(( gpu_vis_gib - 2 ))
-    local system_limit_gib=$(( total_ram_gib - os_reserve_gib ))
+    # On UMA (vram > 0, gtt > 0), the GPU can access both dedicated VRAM
+    # and system RAM via GTT.  The system_limit should include the VRAM
+    # carveout (which is reserved for GPU use and NOT part of OS-visible
+    # RAM) so that the unified budget reflects the true GPU-accessible pool.
+    # On discrete GPUs vram is separate from system RAM, but adding it to
+    # the system_limit is harmless since the unified_budget is already
+    # capped by gpu_vis_gib - 2.
+    local vram_gib=$(( vram / 1073741824 ))
+    local system_limit_gib=$(( vram_gib + total_ram_gib - os_reserve_gib ))
     [[ $unified_budget_gib -gt $system_limit_gib ]] && unified_budget_gib=$system_limit_gib
     [[ $unified_budget_gib -lt 1 ]] && unified_budget_gib=1
 
@@ -811,8 +823,10 @@ assign_profile() {
 
     SOLVER_CHECKPOINT_MIN="${SOLVER_CHECKPOINT_MIN:-32768}"
     SOLVER_CHECKPOINTS="${SOLVER_CHECKPOINTS:-8}"
+    SOLVER_CHECKPOINT_EVERY_N_TOKENS="${SOLVER_CHECKPOINT_EVERY_N_TOKENS:--1}"
     EXTRA_SERVER_ARGS+=" --checkpoint-min-step ${SOLVER_CHECKPOINT_MIN} --ctx-checkpoints ${SOLVER_CHECKPOINTS}"
     EXTRA_SERVER_ARGS+=" --no-checkpoint-near-end"
+    [[ "$SOLVER_CHECKPOINT_EVERY_N_TOKENS" != "-1" ]] && EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens ${SOLVER_CHECKPOINT_EVERY_N_TOKENS}"
 
     local cache_ram_mib="${SOLVER_CACHE_RAM:-0}"
     [[ $cache_ram_mib -gt 0 ]] && EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
@@ -935,7 +949,7 @@ OVERRIDE_REASONING_BUDGET="$LLAMA_REASONING_BUDGET"
 PRESERVE_REASONING="$LLAMA_PRESERVE_REASONING"
 OVERRIDE_CHECKPOINT_EVERY=""
 OVERRIDE_CTX_CHECKPOINTS=""
-OVERRIDE_CACHE_RAM=""
+OVERRIDE_CACHE_RAM="$CACHE_RAM_OVERRIDE"
 OVERRIDE_UBATCH_SIZE=""
 OVERRIDE_N_PARALLEL=""
 SSD_PATH=""
@@ -955,7 +969,8 @@ EXTRA_COMMON_ARGS=""
 EXTRA_SERVER_ARGS=""
 OVERRIDE_BATCH_SIZE=""
 _SSD_DISABLE=false
-SSD_CACHE_DISABLED_USER=false
+SSD_CACHE_DISABLED_USER="$LLAMA_NO_SSD_CACHE"
+_SSD_DISABLE="$LLAMA_NO_SSD_CACHE"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -983,6 +998,7 @@ while [[ $# -gt 0 ]]; do
         --prompt-max) PROMPT_MAX="$2"; shift 2 ;;
         --checkpoint-min-step) OVERRIDE_CHECKPOINT_EVERY="$2"; shift 2 ;;
         --ctx-checkpoints) OVERRIDE_CTX_CHECKPOINTS="$2"; shift 2 ;;
+        --checkpoint-every-n-tokens) OVERRIDE_CHECKPOINT_EVERY_N_TOKENS="$2"; SOLVER_CHECKPOINT_EVERY_N_TOKENS="$2"; shift 2 ;;
         --cache-ram) OVERRIDE_CACHE_RAM="$2"; shift 2 ;;
         --ubatch-size) OVERRIDE_UBATCH_SIZE="$2"; shift 2 ;;
         --np) OVERRIDE_N_PARALLEL="$2"; shift 2 ;;
@@ -1154,6 +1170,7 @@ print_profile_summary() {
         spec_type="draft-${spec_type#draft-}"
     fi
     no_near_end=$(_has_flag --no-checkpoint-near-end)
+    checkpoint_every=$(_extract_arg --checkpoint-every-n-tokens "-1")
 
     printf '%b─── Profile ──────────────────────────────────────────────%b\n' "$BLUE" "$NC"
     printf '  %-28s %s\n' "Model:"           "$(basename "$MODEL" .gguf)"
@@ -1171,7 +1188,7 @@ print_profile_summary() {
     printf '  %-28s %s\n' "Flash attention:" "$flash_attn"
     printf '  %-28s %s\n' "Reasoning:"       "${OVERRIDE_REASONING:-off} (budget=${OVERRIDE_REASONING_BUDGET:-0})"
     printf '  %-28s %s\n' "Cache RAM:"       "$( [[ "$cache_ram_val" == "0" ]] && echo disabled || echo "${cache_ram_val} MiB" )"
-    printf '  %-28s %s\n' "Checkpoints:"     "$( [[ -n "$checkpoint_min" ]] && echo "min=$checkpoint_min, count=${checkpoint_count:--}${no_near_end:+ (no-near-end)}" || echo "off" )"
+    printf '  %-28s %s\n' "Checkpoints:"     "$( [[ -n "$checkpoint_min" ]] && echo "min=$checkpoint_min, count=${checkpoint_count:--}${no_near_end:+ (no-near-end)}$([[ "$checkpoint_every" != "-1" ]] && echo ", every=${checkpoint_every}")" || echo "off" )"
     printf '  %-28s %s\n' "Slot similarity:" "${slot_sim:-default}"
     printf '  %-28s %s\n' "Chat template:"   "$chat_template"
     printf '  %-28s %s\n' "SSD cache:"       "$( [[ "${_SSD_DISABLE:-false}" == "true" ]] && echo disabled || echo "${SSD_PATH:-default}" )"

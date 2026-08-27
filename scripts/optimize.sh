@@ -223,6 +223,18 @@ _opt_gpu_memory() {
         local draft_kv_cap=$(( draft_bytes * 10 / 100 ))
         [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
     fi
+
+    # For "gpu" strategy with NGL >= n_layer, KV cache lives on GPU
+    # (already counted in _opt_gpu_memory). Don't double-count it as
+    # system RAM — this freed ~1.5 GiB of system budget per slot.
+    local sys_kv_total=$kv_total
+    local sys_draft_kv_total=$draft_kv_total
+    local sys_draft_bytes=$draft_bytes
+    if [[ "$strategy" == "gpu" ]]; then
+        sys_kv_total=0
+        sys_draft_kv_total=0
+        sys_draft_bytes=0
+    fi
     local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
     local system_bytes=$(( 256 * 1048576 ))
 
@@ -258,6 +270,18 @@ _opt_system_memory() {
         [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
     fi
 
+    # For "gpu" strategy with NGL >= n_layer, KV cache lives on GPU
+    # (already counted in _opt_gpu_memory). Don't double-count it as
+    # system RAM — this freed ~1.5 GiB of system budget per slot.
+    local sys_kv_total=$kv_total
+    local sys_draft_kv_total=$draft_kv_total
+    local sys_draft_bytes=$draft_bytes
+    if [[ "$strategy" == "gpu" ]]; then
+        sys_kv_total=0
+        sys_draft_kv_total=0
+        sys_draft_bytes=0
+    fi
+
     local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
     local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
     local system_bytes=$(( 256 * 1048576 ))
@@ -268,7 +292,11 @@ _opt_system_memory() {
             model_sys_bytes=0
             ;;
         residency)
-            model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.30 }')
+            # 70% of model lives in system RAM (1 - gpu_fraction=0.30).
+            # 30% is GPU-pinned but also resides in system RAM on UMA, so
+            # the CPU-side fraction is the additional system RAM beyond the
+            # GPU budget.
+            model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.70 }')
             ;;
         cpu)
             model_sys_bytes="$model_bytes"
@@ -276,8 +304,32 @@ _opt_system_memory() {
     esac
 
     local model_and_offloaded=$model_sys_bytes
-    [[ "$strategy" == "gpu" ]] && model_and_offloaded=$(( model_sys_bytes + offloaded_bytes ))
-    local raw=$(( model_and_offloaded + draft_bytes + kv_total + draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram ))
+    # For the "gpu" strategy, the model and KV cache reside on the GPU
+    # (VRAM or GTT). They are already accounted for by the GPU budget
+    # check (_opt_gpu_memory). On UMA, GTT IS system RAM, but the GPU
+    # budget (vram + gtt - os_reserve) already covers it. Adding
+    # offloaded_bytes here would double-count the model, making the
+    # system check impossibly restrictive — e.g. 20.8 GiB model on GPU
+    # counted AGAIN as system RAM, leaving zero room for checkpoints.
+    # The runtime proves NGL=99 + 8 checkpoints works fine; the solver
+    # should too. Only count CPU-side allocations here.
+    [[ "$strategy" == "gpu" ]] && model_and_offloaded=$model_sys_bytes
+
+    # Checkpoint hot-set memory: _ckpt_memory_budget() in server-context.cpp
+    # = max(2 GiB, n_ctx_checkpoints * 400 MiB) per active slot. The 400 MiB
+    # figure is a conservative worst-case (q8_0 KV at 262K context). For the
+    # actual model at the chosen ctx+ KV type, the hot set is smaller —
+    # only the smallest checkpoints survive memory-based eviction. Use a
+    # data-driven estimate: average checkpoint KV size * log2(count) to
+    # approximate the geometric growth of cumulative checkpoint sizes.
+    local ckpt_count="${SOLVER_CHECKPOINTS:-8}"
+    local ckpt_avg_kv=$(( ctx_size * kv_per_token / 2 ))  # avg position = ctx/2
+    local ckpt_budget_mib=2048  # 2 GiB floor
+    local ckpt_est_mib=$(( ckpt_avg_kv / 1048576 * ckpt_count ))
+    [[ $ckpt_est_mib -gt $ckpt_budget_mib ]] && ckpt_est_mib=$ckpt_budget_mib
+    local ckpt_mem_bytes=$(( ckpt_est_mib * 1048576 * n_parallel ))
+
+    local raw=$(( model_and_offloaded + sys_draft_bytes + sys_kv_total + sys_draft_kv_total + ssd_bytes + compute_bytes + system_bytes + moe_in_ram + ckpt_mem_bytes ))
     echo $(( raw * 110 / 100 ))
 }
 
@@ -315,6 +367,15 @@ _opt_update_cache_ram() {
     local ubatch="$7"
 
     [[ $solver_budget_bytes -le 0 ]] && return 0
+
+    # If user explicitly set cache-ram, use that value and skip computation
+    if [[ -n "${OVERRIDE_CACHE_RAM:-}" ]]; then
+        SOLVER_CACHE_RAM="${OVERRIDE_CACHE_RAM}"
+        SOLVER_SSD_HOT_RAM=0
+        SOLVER_SSD_WARM_RAM=0
+        SOLVER_REASONS+=("cache-ram: ${OVERRIDE_CACHE_RAM} MiB (SSD: 0 MiB) [user override]")
+        return 0
+    fi
 
     # GPU leftover
     local used_gpu
@@ -446,6 +507,14 @@ _opt_start_optimistic() {
             handheld)  SOLVER_SSD_HOT_RAM=512;  SOLVER_SSD_WARM_RAM=768  ;;
             *)         SOLVER_SSD_HOT_RAM=960;  SOLVER_SSD_WARM_RAM=1440 ;;
         esac
+    fi
+
+    # Honor user overrides for SSD cache (must be set before solver runs
+    # so memory budgeting accounts for disabled SSD).
+    if [[ "${_SSD_DISABLE:-false}" == "true" || "${LLAMA_NO_SSD_CACHE:-false}" == "true" ]]; then
+        SOLVER_SSD_ENABLE=false
+        SOLVER_SSD_HOT_RAM=0
+        SOLVER_SSD_WARM_RAM=0
     fi
 
     SOLVER_DRAFT_ENABLE=true
@@ -585,7 +654,18 @@ solve_optimal_config() {
     fi
 
     local fai=$(_opt_gguf full_attention_interval 1)
-    local n_attn=$(_opt_attn_layers "$n_layer" "$fai")
+    # Only reduce n_attn for hybrid SSM models (e.g. Qwen3.6-Moe) where
+    # full_attention_interval means some layers lack KV caches entirely.
+    # Pure transformer models (Gemma-4, Qwen3.8) have KV in ALL layers
+    # regardless of attention pattern — full_attention_interval only controls
+    # attention sparsity, not which layers store KV.  Reducing n_attn for
+    # these models under-counts KV cache by up to 7.5x, making the solver
+    # pick configs far more conservatively than the runtime actually needs.
+    if [[ "${is_ssm:-false}" == "true" ]]; then
+        n_attn=$(_opt_attn_layers "$n_layer" "$fai")
+    else
+        n_attn=$n_layer
+    fi
 
     local hckv=$(_opt_gguf head_count_kv 0)
     [[ $hckv -eq 0 ]] && hckv=$(_opt_gguf n_head_kv 0)
@@ -641,6 +721,52 @@ solve_optimal_config() {
     [[ $solver_budget_bytes -gt 0 && $solver_budget_bytes -lt $(( 32 * _OPT_GIB )) ]] && low_vram=1
 
     # -------------------------------------------------------------------------
+    # Checkpoint auto-scaling (computed early so the fit-check in _opt_system_memory
+    # can account for checkpoint hot-set RAM = max(2 GiB, n*400 MiB) per slot).
+    # -------------------------------------------------------------------------
+    # Honor user overrides so adaptive min-step matches the actual count
+    [[ -n "${OVERRIDE_CTX_CHECKPOINTS:-}" ]] && SOLVER_CHECKPOINTS="$OVERRIDE_CTX_CHECKPOINTS"
+    [[ -n "${OVERRIDE_CHECKPOINT_EVERY:-}" ]] && SOLVER_CHECKPOINT_MIN="$OVERRIDE_CHECKPOINT_EVERY"
+
+    # P1: Auto-scale checkpoint count based on context size
+    # Cap at 16 so the pre-fit-check memory estimate is conservative.
+    # The final count is re-scaled after phase 2 (where ctx may be detuned).
+    if [[ -z "${SOLVER_CHECKPOINTS:-}" ]]; then
+        local base_ctx=65536
+        local base_cp=8
+        local scale_per=8192
+        local max_cp=16
+        if [[ $SOLVER_CTX_SIZE -gt $base_ctx ]]; then
+            local extra=$(( (SOLVER_CTX_SIZE - base_ctx) / scale_per ))
+            SOLVER_CHECKPOINTS=$(( base_cp + extra ))
+        else
+            SOLVER_CHECKPOINTS=$base_cp
+        fi
+        [[ $SOLVER_CHECKPOINTS -gt $max_cp ]] && SOLVER_CHECKPOINTS=$max_cp
+    fi
+
+    # P2: Adaptive checkpoint min-step (even coverage across ctx window)
+    if [[ -z "${SOLVER_CHECKPOINT_MIN:-}" ]]; then
+        SOLVER_CHECKPOINT_MIN=$(( SOLVER_CTX_SIZE / SOLVER_CHECKPOINTS ))
+        [[ $SOLVER_CHECKPOINT_MIN -lt 8192 ]] && SOLVER_CHECKPOINT_MIN=8192
+
+        if [[ "${SOLVER_SSD_ENABLE:-true}" != "true" ]]; then
+            [[ $SOLVER_CHECKPOINT_MIN -lt 32768 ]] && SOLVER_CHECKPOINT_MIN=32768
+            local ssd_off_max=$(( SOLVER_CTX_SIZE / SOLVER_CHECKPOINT_MIN ))
+            [[ $SOLVER_CHECKPOINTS -gt $ssd_off_max ]] && SOLVER_CHECKPOINTS=$ssd_off_max
+        fi
+    fi
+
+    # P3: Enable periodic prefill checkpoints for SSD-on configs
+    if [[ -z "${SOLVER_CHECKPOINT_EVERY_N_TOKENS:-}" ]]; then
+        if [[ "${SOLVER_SSD_ENABLE:-true}" == "true" ]]; then
+            SOLVER_CHECKPOINT_EVERY_N_TOKENS="${SOLVER_CHECKPOINT_MIN}"
+        else
+            SOLVER_CHECKPOINT_EVERY_N_TOKENS="-1"
+        fi
+    fi
+
+    # -------------------------------------------------------------------------
     # Strategy selection:
     #   - default: gpu -> residency -> cpu
     #   - We now reorder for MoE when CPU-MoE is viable: gpu -> cpu -> residency
@@ -671,14 +797,7 @@ solve_optimal_config() {
     # Build scored combinations
     # -------------------------------------------------------------------------
     local ctx_values=(262144 196608 131072 98304 65536)
-    if [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
-        ctx_values=(65536)
-    fi
-
     local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
-    if [[ $low_vram -eq 1 && "${is_moe:-false}" == "true" ]]; then
-        kv_qualities=("q8_0/q8_0" "q4_0/q4_0")
-    fi
 
     declare -A combo_score
     for strategy in "${strategies[@]}"; do
@@ -790,16 +909,20 @@ solve_optimal_config() {
             0)
 
         local sys_budget
-        case "$strategy" in
-            residency|cpu)
-                local os_reserve=$(( 8 * _OPT_GIB ))
-                sys_budget=$(( sys_mem_total - os_reserve ))
-                [[ $sys_budget -lt 0 ]] && sys_budget=0
-                ;;
-            *)
-                sys_budget=$sys_mem_avail
-                ;;
-        esac
+        # On UMA (dedicated VRAM > 0), GPU allocations consume system RAM
+        # via GTT.  Use a deterministic sys_total - os_reserve budget so the
+        # check doesn't fluctuate with other processes' memory usage.
+        # On discrete GPUs, the model lives in VRAM (not system RAM), so
+        # using sys_total - os_reserve is permissive but harmless — the GPU
+        # check is the real gatekeeper for VRAM capacity.
+        local os_reserve
+        if [[ "${LLAMA_HARDWARE_TIER:-standard}" == "handheld" ]]; then
+            os_reserve=$(( 4 * _OPT_GIB ))
+        else
+            os_reserve=$(( 8 * _OPT_GIB ))
+        fi
+        sys_budget=$(( sys_mem_total - os_reserve ))
+        [[ $sys_budget -lt 0 ]] && sys_budget=0
 
         local solver_budget_gib=$(( solver_budget_bytes / _OPT_GIB ))
         local mem_needed_gib=$(( mem_needed / _OPT_GIB ))
@@ -935,6 +1058,48 @@ solve_optimal_config() {
         step_idx=$(( step_idx + 1 ))
     done
 
+    # Re-scale checkpoint config based on the FINAL ctx_size (phase 2 may have
+    # detuned the context from the initial optimistic value).
+    if [[ -z "${OVERRIDE_CTX_CHECKPOINTS:-}" ]]; then
+        SOLVER_CHECKPOINTS=""
+    fi
+    if [[ -z "${OVERRIDE_CHECKPOINT_EVERY:-}" ]]; then
+        SOLVER_CHECKPOINT_MIN=""
+    fi
+    if [[ -z "${SOLVER_CHECKPOINTS:-}" ]]; then
+        local base_ctx=65536
+        local base_cp=8
+        local scale_per=8192
+        local max_cp=32
+        if [[ $SOLVER_CTX_SIZE -gt $base_ctx ]]; then
+            local extra=$(( (SOLVER_CTX_SIZE - base_ctx) / scale_per ))
+            SOLVER_CHECKPOINTS=$(( base_cp + extra ))
+        else
+            SOLVER_CHECKPOINTS=$base_cp
+        fi
+        [[ $SOLVER_CHECKPOINTS -gt $max_cp ]] && SOLVER_CHECKPOINTS=$max_cp
+    fi
+    if [[ -z "${SOLVER_CHECKPOINT_MIN:-}" ]]; then
+        SOLVER_CHECKPOINT_MIN=$(( SOLVER_CTX_SIZE / SOLVER_CHECKPOINTS ))
+        [[ $SOLVER_CHECKPOINT_MIN -lt 8192 ]] && SOLVER_CHECKPOINT_MIN=8192
+        if [[ "${SOLVER_SSD_ENABLE:-true}" != "true" ]]; then
+            [[ $SOLVER_CHECKPOINT_MIN -lt 32768 ]] && SOLVER_CHECKPOINT_MIN=32768
+            local ssd_off_max=$(( SOLVER_CTX_SIZE / SOLVER_CHECKPOINT_MIN ))
+            [[ $SOLVER_CHECKPOINTS -gt $ssd_off_max ]] && SOLVER_CHECKPOINTS=$ssd_off_max
+        fi
+    fi
+    SOLVER_REASONS+=("checkpoints: ${SOLVER_CHECKPOINTS} (rescaled)")
+    SOLVER_REASONS+=("checkpoint-min-step: ${SOLVER_CHECKPOINT_MIN}")
+
+    # Re-derive checkpoint-every-n-tokens from the final min-step
+    if [[ -z "${OVERRIDE_CHECKPOINT_EVERY_N_TOKENS:-}" ]]; then
+        if [[ "${SOLVER_SSD_ENABLE:-true}" == "true" ]]; then
+            SOLVER_CHECKPOINT_EVERY_N_TOKENS="${SOLVER_CHECKPOINT_MIN}"
+        else
+            SOLVER_CHECKPOINT_EVERY_N_TOKENS="-1"
+        fi
+    fi
+
     # If phase 1 had no fit AND phase 2 didn't find one either, record the
     # 'no fit' message. Phase 2 alone is enough to recover most borderline
     # cases (e.g. dense 16-17 GiB models on 17 GiB UMA budget - fits at NGL=53).
@@ -970,25 +1135,6 @@ solve_optimal_config() {
     SOLVER_KV_CACHE_MIB=$(( kv_cache_bytes / 1048576 + 1024 ))
 
     SOLVER_PROFILE_NAME=$(_opt_pick_legacy_profile "$n_attn" "${MODEL_BYTES:-0}")
-
-    # P2: Auto-scale checkpoint count based on context size
-    # Base: 8 checkpoints at 65K context
-    # Scale: +1 checkpoint per 8K context above 65K
-    # Cap: 32 checkpoints max
-    if [[ -z "${SOLVER_CHECKPOINTS:-}" ]]; then
-        local base_ctx=65536
-        local base_cp=8
-        local scale_per=8192
-        local max_cp=32
-        if [[ $SOLVER_CTX_SIZE -gt $base_ctx ]]; then
-            local extra=$(( (SOLVER_CTX_SIZE - base_ctx) / scale_per ))
-            SOLVER_CHECKPOINTS=$(( base_cp + extra ))
-        else
-            SOLVER_CHECKPOINTS=$base_cp
-        fi
-        [[ $SOLVER_CHECKPOINTS -gt $max_cp ]] && SOLVER_CHECKPOINTS=$max_cp
-        SOLVER_REASONS+=("checkpoints: ${SOLVER_CHECKPOINTS}")
-    fi
 }
 
 _opt_detune_steps_phase2() {
@@ -1000,6 +1146,7 @@ _reduce_ssd_ram
 _drop_draft
 _drop_ssd
 _reduce_ubatch
+_reduce_ctx
 STEPS
 }
 
