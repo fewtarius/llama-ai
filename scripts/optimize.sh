@@ -218,24 +218,30 @@ _opt_model_gpu_footprint() {
             ;;
     esac
 
-    # For qwen4exp models, the PLE (n-gram hash embedding) is a large,
-    # non-offloadable component that always resides on GPU. It sits outside
-    # the transformer layer stack, so reducing -ngl does not evict it.
-    # Account for it as fixed overhead when NGL < n_layer.
+    # For qwen4exp models, the PLE (n-gram hash embedding) is always offloaded
+    # to CPU via the -ot tensor override (see assign_profile in llama-run.sh).
+    # It sits outside the transformer layer stack and is NOT counted in the
+    # GPU footprint for ANY strategy — it's always on system RAM.
+    # This is separate from NGL-based layer offloading: the PLE can't be
+    # evicted by reducing -ngl because it's not a "layer" — it's a standalone
+    # tensor. The -ot flag handles this at the llama-server level.
     local ple_bytes=0
-    if [[ "${is_qwen4exp:-false}" == "true" && "$moe_strategy" != "cpu" ]]; then
+    if [[ "${is_qwen4exp:-false}" == "true" ]]; then
         ple_bytes=$(_opt_qwen4exp_ple_bytes)
     fi
 
     if [[ "$ngl" -ge "$n_layer" ]]; then
-        awk -v frac="$gpu_fraction" -v total="$total_model_bytes" \
-            'BEGIN { printf "%.0f", frac * total }'
+        # All layers on GPU, but PLE is offloaded. Subtract PLE from total
+        # so the GPU footprint reflects only the on-GPU tensors.
+        awk -v frac="$gpu_fraction" -v total="$total_model_bytes" -v ple="$ple_bytes" \
+            'BEGIN { printf "%.0f", frac * (total - ple) }'
     else
-        # PLE can't be offloaded by NGL reduction — only the transformer
-        # layers are proportionally reduced; PLE stays at full size.
+        # NGL < n_layer: offloaded layers are proportionally reduced.
+        # PLE is already offloaded (not counted), so it's not in the
+        # proportional calculation either.
         awk -v ngl="$ngl" -v nl="$n_layer" -v frac="$gpu_fraction" \
             -v total="$total_model_bytes" -v ple="$ple_bytes" \
-            'BEGIN { printf "%.0f", (ngl / nl) * frac * (total - ple) + ple }'
+            'BEGIN { printf "%.0f", (ngl / nl) * frac * (total - ple) }'
     fi
 }
 
@@ -331,7 +337,13 @@ _opt_system_memory() {
     local model_sys_bytes=0
     case "$strategy" in
         gpu)
-            model_sys_bytes=0
+            # qwen4exp: PLE is offloaded to CPU via -ot, so add it to system RAM.
+            # The rest of the model is on GPU (covered by the GPU budget check).
+            if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+                model_sys_bytes=$(_opt_qwen4exp_ple_bytes)
+            else
+                model_sys_bytes=0
+            fi
             ;;
         residency)
             # 70% of model lives in system RAM (1 - gpu_fraction=0.30).
@@ -341,16 +353,7 @@ _opt_system_memory() {
             model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.70 }')
             ;;
         cpu)
-            if [[ "${is_qwen4exp:-false}" == "true" ]]; then
-                # With --cpu-moe + --load-mode dio, MoE expert tensors are
-                # loaded to system RAM (~94% of model for qwen4exp where
-                # ~6% gpu_fraction stays on GPU). Non-expert tensors
-                # (attention, GDN, HC, PLE via TENSOR_READ_LAZY) go to GPU
-                # or page in from mmap on demand.
-                model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.94 }')
-            else
-                model_sys_bytes="$model_bytes"
-            fi
+            model_sys_bytes="$model_bytes"
             ;;
     esac
 
@@ -829,27 +832,16 @@ solve_optimal_config() {
     # -------------------------------------------------------------------------
     # Strategy selection:
     #   - default: gpu -> residency -> cpu
-    #   - For qwen4exp (Qwen3.8-Flash-Next): the PLE n-gram embedding (~40%
-    #     of model) is non-offloadable and always sits in GPU memory. When
-    #     the model is >85% of GPU budget, the gpu strategy is too marginal
-    #     even with NGL reduction — prefer CPU-MoE to keep PLE and experts
-    #     in system RAM, only keeping attention/router layers on GPU.
+    #   - For qwen4exp (Qwen3.8-Flash-Next): the PLE n-gram embedding is
+    #     offloaded to CPU via -ot, reducing GPU footprint by ~40%. When the
+    #     PLE-offloaded model fits on GPU, prefer "gpu" strategy (all compute
+    #     on GPU = 2x faster decode than --cpu-moe). CPU-MoE is only used as
+    #     fallback when the model still doesn't fit after PLE offload.
     #   - For regular MoE when CPU-MoE is viable: gpu -> cpu -> residency
     #     to avoid Vulkan OOM from residency on large models.
     # -------------------------------------------------------------------------
     local strategies=("gpu")
-    if [[ "${is_qwen4exp:-false}" == "true" ]]; then
-        local sys_total_bytes=$(_opt_get_total_memory_bytes)
-        local os_reserve_bytes=$(( 8 * _OPT_GIB ))
-        local sys_avail_bytes=$(( sys_total_bytes - os_reserve_bytes ))
-        local model_fits_cpu=0
-        [[ ${MODEL_BYTES:-0} -le $sys_avail_bytes ]] && model_fits_cpu=1
-        if [[ $model_fits_cpu -eq 1 && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
-            strategies=("cpu" "gpu")
-        else
-            strategies+=("residency" "cpu")
-        fi
-    elif [[ "${is_moe:-false}" == "true" ]]; then
+    if [[ "${is_moe:-false}" == "true" ]]; then
         # Check if CPU-MoE is viable: model fits in system RAM with OS reserve.
         local sys_total_bytes=$(_opt_get_total_memory_bytes)
         local os_reserve_bytes=$(( 8 * _OPT_GIB ))
@@ -886,13 +878,6 @@ solve_optimal_config() {
                     [[ "$strategy" == "gpu" ]] && strategy_score=300
                     [[ "$strategy" == "cpu" ]] && strategy_score=250
                     [[ "$strategy" == "residency" ]] && strategy_score=200
-                    # For qwen4exp, swap gpu/cpu scores so CPU-MoE is preferred
-                    # when the model is >85% of GPU budget (set via strategy
-                    # selection above). This avoids marginal gpu fits that OOM.
-                    if [[ "${is_qwen4exp:-false}" == "true" && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
-                        [[ "$strategy" == "gpu" ]] && strategy_score=250
-                        [[ "$strategy" == "cpu" ]] && strategy_score=300
-                    fi
 
                     local ctx_score=0
                     case "$ctx" in
@@ -1049,19 +1034,7 @@ solve_optimal_config() {
         SOLVER_V_TYPE=$chosen_v_type
         SOLVER_DRAFT_ENABLE=$chosen_draft_enable
         case "$chosen_strategy" in
-            cpu)
-                SOLVER_MOE_STRATEGY="cpu"
-                # qwen4exp: use mmap (not dio) so the 27 GiB PLE n-gram table
-                # is mmap'd and offloaded to CPU via -ot instead of loaded
-                # into GTT. DIO would load the entire 103 GiB file at startup,
-                # causing OOM and long load times. The model fits in system
-                # RAM so mmap page-cache pressure is manageable.
-                if [[ "${is_qwen4exp:-false}" == "true" ]]; then
-                    SOLVER_LOAD_MODE="mmap"
-                else
-                    SOLVER_LOAD_MODE="none"
-                fi
-                ;;
+            cpu)        SOLVER_MOE_STRATEGY="cpu"; SOLVER_LOAD_MODE="none" ;;
             residency)  SOLVER_MOE_STRATEGY="residency"; SOLVER_LOAD_MODE="mmap" ;;
             *)          SOLVER_MOE_STRATEGY="gpu"; SOLVER_LOAD_MODE="dio" ;;
         esac

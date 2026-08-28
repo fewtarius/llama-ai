@@ -786,11 +786,10 @@ assign_profile() {
         case "${SOLVER_MOE_STRATEGY}" in
             cpu)
                 local total_mem=$(get_total_memory_bytes)
-                if [[ "${is_qwen4exp:-false}" == "true" && ${MODEL_BYTES:-0} -lt $total_mem ]]; then
-                    # qwen4exp: offload PLE n-gram table (27 GiB) to CPU via -ot
-                    # and use mmap so the file is paged in on demand rather than
-                    # loaded wholesale via DIO. --cpu-moe keeps MoE experts on CPU.
-                    EXTRA_SERVER_ARGS+=" --cpu-moe -ot 'per_layer_token_embd.weight=CPU'"
+                if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+                    # For qwen4exp, PLE offload (-ot) is already added below
+                    # for all strategies. --cpu-moe keeps MoE experts on CPU.
+                    EXTRA_SERVER_ARGS+=" --cpu-moe"
                 elif [[ ${MODEL_BYTES:-0} -lt $total_mem ]]; then
                     EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
                 else
@@ -801,6 +800,16 @@ assign_profile() {
                 EXTRA_SERVER_ARGS+=" --moe-expert-residency"
                 ;;
         esac
+    fi
+
+    # For qwen4exp (Qwen3.8-Flash-Next), offload the PLE n-gram hash embedding
+    # to CPU. This ~42 GiB tensor always resides in GPU memory otherwise,
+    # causing OOM. The -ot flag moves it to the CPU backend; with --load-mode
+    # dio (gpu strategy) the rest of the model loads to VRAM, and with --cpu-moe
+    # the MoE experts also stay on CPU. The PLE is accessed via sparse row
+    # lookups, so CPU access has negligible performance impact.
+    if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+        EXTRA_SERVER_ARGS+=" -ot 'per_layer_token_embd.weight=CPU'"
     fi
 
     _apply_reasoning_defaults
