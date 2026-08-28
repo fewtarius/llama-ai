@@ -1036,7 +1036,18 @@ solve_optimal_config() {
         case "$chosen_strategy" in
             cpu)        SOLVER_MOE_STRATEGY="cpu"; SOLVER_LOAD_MODE="none" ;;
             residency)  SOLVER_MOE_STRATEGY="residency"; SOLVER_LOAD_MODE="mmap" ;;
-            *)          SOLVER_MOE_STRATEGY="gpu"; SOLVER_LOAD_MODE="dio" ;;
+            *)
+                SOLVER_MOE_STRATEGY="gpu"
+                # qwen4exp: use mmap (not dio) so the 103 GB model file is
+                # paged in on demand rather than loaded wholesale at startup.
+                # The PLE n-gram table is offloaded to CPU via -ot, and the
+                # rest of the model lives in GTT; mmap avoids OOM during load.
+                if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+                    SOLVER_LOAD_MODE="mmap"
+                else
+                    SOLVER_LOAD_MODE="dio"
+                fi
+                ;;
         esac
         local draft_str=""
         [[ "$chosen_draft_enable" == "true" ]] && draft_str=" draft=on" || draft_str=" draft=off"
