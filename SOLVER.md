@@ -36,6 +36,7 @@ Uses `scripts/read_gguf_kv.py` to extract:
 - `key_length`, `value_length`
 - `full_attention_interval`
 - `expert_count`, `nextn_predict_layers` (for MoE / MTP detection)
+- `qwen4exp.*` arch keys (Qwen3.8-Flash-Next: PLE, hyper-connection, QSA)
 - `context_length`
 
 This data drives all memory and performance calculations.
@@ -196,6 +197,15 @@ solver, use the corresponding `*_OVERRIDE` variable or CLI flag.
 - **MTP models**:
   The solver adds 5% model size (capped 0.5–2 GiB) to both GPU and
   system memory estimates to cover speculative decoding overhead.
+- **Qwen3.8-Flash-Next (qwen4exp)**:
+  Has a PLE n-gram embedding (~40% of model) that is always on GPU and
+  not offloadable by reducing -ngl. The solver accounts for it as fixed
+  overhead in `_opt_model_gpu_footprint`. `full_attention_interval=4`
+  means only 12/48 layers store KV cache (GDN layers use linear attention).
+  When model >85% of GPU budget, solver prefers CPU-MoE with `--load-mode mmap`
+  and `-ot per_layer_token_embd.weight=CPU` to offload PLE + experts to RAM.
+  MTP is enabled only when the GGUF contains `nextn_predict_layers` (Unsloth
+  quants typically don't include MTP tensors).
 
 ## Files
 
