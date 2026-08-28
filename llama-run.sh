@@ -55,6 +55,7 @@ source "$PROJECT_ROOT/scripts/optimize.sh"
 : "${LLAMA_REPEAT_PENALTY:=1.0}"
 : "${LLAMA_PRESENCE_PENALTY:=0.0}"
 : "${LLAMA_SLOT_PROMPT_SIMILARITY:=0.20}"
+: "${LLAMA_PARALLEL:=1}"
 : "${LLAMA_PRIO:=3}"
 : "${LLAMA_PRIO_BATCH:=3}"
 : "${LLAMA_CTXCP:=64}"
@@ -851,7 +852,17 @@ assign_profile() {
     [[ "$SOLVER_CHECKPOINT_EVERY_N_TOKENS" != "-1" ]] && EXTRA_SERVER_ARGS+=" --checkpoint-every-n-tokens ${SOLVER_CHECKPOINT_EVERY_N_TOKENS}"
 
     local cache_ram_mib="${SOLVER_CACHE_RAM:-0}"
-    [[ $cache_ram_mib -gt 0 ]] && EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
+    if [[ $cache_ram_mib -gt 0 ]]; then
+        EXTRA_SERVER_ARGS+=" --cache-ram $cache_ram_mib"
+    elif [[ "${OVERRIDE_N_PARALLEL:-1}" -le 1 && -z "${OVERRIDE_CACHE_RAM:-}" ]]; then
+        # The solver sets cache-ram=0 when n_parallel=1 (the host-memory prompt
+        # cache is a no-op with a single slot; the save+load round-trip in
+        # server-context.cpp runs back-to-back on the same slot and the cache
+        # ends up empty every turn). Pass --cache-ram 0 explicitly so the
+        # server doesn't fall back to its 8192 MiB default, which would
+        # re-introduce the round-trip and trigger the startup warning.
+        EXTRA_SERVER_ARGS+=" --cache-ram 0"
+    fi
 
     log_info "Solver chose: ctx=$CTX_SIZE KV=$KV_CACHE_TYPE_K/$KV_CACHE_TYPE_V ubatch=$SOLVER_UBATCH batch=$SOLVER_BATCH threads=$THREADS_BATCH/$THREADS"
     if [[ ${#SOLVER_REASONS[@]} -gt 0 ]]; then
@@ -917,6 +928,10 @@ ${YELLOW}Options:${NC}
     --is-strix-halo         Force Strix Halo preset
     --no-strix-halo         Force non-Strix-Halo preset
     --no-ssd-cache          Disable SSD KV cache entirely
+    -np, --parallel N       Server slots (default: 1). Each slot holds its own KV
+                            cache; raise to host multiple agent sessions in parallel
+                            (queued, not batched). Per-slot KV memory cost is
+                            proportional to context size.
     -h, --help              Show this help
 
 ${YELLOW}Environment overrides:${NC}
@@ -974,7 +989,7 @@ OVERRIDE_CHECKPOINT_EVERY=""
 OVERRIDE_CTX_CHECKPOINTS=""
 OVERRIDE_CACHE_RAM="$CACHE_RAM_OVERRIDE"
 OVERRIDE_UBATCH_SIZE=""
-OVERRIDE_N_PARALLEL=""
+OVERRIDE_N_PARALLEL="${LLAMA_PARALLEL:-1}"
 SSD_PATH=""
 SSD_CHECKPOINTS=""
 SSD_HOT_WINDOW=""
@@ -1330,7 +1345,7 @@ COMMON_ARGS+=" --load-mode $LOAD_MODE"
 SERVER_ARGS="--host $HOST --port $PORT -fa on --jinja"
 SERVER_ARGS+=" --reasoning ${OVERRIDE_REASONING:-off}"
 [[ -n "$OVERRIDE_REASONING_BUDGET" && "$OVERRIDE_REASONING_BUDGET" != "0" ]] && SERVER_ARGS+=" --reasoning-budget $OVERRIDE_REASONING_BUDGET"
-SERVER_ARGS+=" -np ${OVERRIDE_N_PARALLEL:-1} --prio ${LLAMA_PRIO} --prio-batch ${LLAMA_PRIO_BATCH} --metrics"
+SERVER_ARGS+=" -np ${OVERRIDE_N_PARALLEL:-${LLAMA_PARALLEL}} --prio ${LLAMA_PRIO} --prio-batch ${LLAMA_PRIO_BATCH} --metrics"
 SERVER_ARGS+=" -ctxcp ${LLAMA_CTXCP} --cache-reuse ${LLAMA_CACHE_REUSE}"
 SERVER_ARGS+=" --slot-save-path $PROJECT_ROOT/kv-cache"
 SERVER_ARGS+=" --slot-prompt-similarity ${LLAMA_SLOT_PROMPT_SIMILARITY} --kv-unified"

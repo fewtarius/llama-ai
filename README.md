@@ -431,6 +431,30 @@ minutes for the first turn.
 The cache lives at `kv-cache/{model-stem}/sys-{hash}.bin`, keyed by the first N
 tokens of the prompt. Defaults to 8 entries per model with 30-day expiry.
 
+#### Multi-agent sessions (parallel slots)
+
+`--parallel N` (or `-np N`) configures the server with N independent slots, each
+holding its own KV cache. Two agentic sessions using the same server in
+parallel no longer block each other — the second agent queues onto slot 1 while
+the first is generating on slot 0. The host-memory prompt cache
+(`--cache-ram`, `--cache-idle-slots`) becomes useful here because slots can
+hold divergent state across each other and the LCP matcher hot-swaps them
+into fresh tasks.
+
+Per-slot KV cache memory is `n_ctx * layer_count * head_dim * 2 (K+V) *
+dtype_bytes`. On a 128K-context f16 model with 60 layers, that's ~2.6 GiB per
+slot. With `-np 4` and SSD disabled, that 10 GiB comes out of the GPU budget
+the solver would otherwise allocate to model and cache-ram. The solver
+accounts for this automatically — if `-np 2` doesn't fit, it shrinks
+`n_ctx` or `cache-ram` rather than failing the launch.
+
+CLI: `--parallel 2` or `LLAMA_PARALLEL=2 ./llama-run.sh --server ...`
+(LLAMA_PARALLEL only applies when `--parallel` is not given on the command line).
+With a single slot (`-np 1`, the default), the solver disables the host-memory
+prompt cache automatically — the cache cannot accumulate state when the only
+slot is also the one being saved+loaded, and the in-memory checkpoint ring
+covers the same use case at zero cost.
+
 ---
 
 ## Benchmarks

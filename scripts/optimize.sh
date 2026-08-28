@@ -431,6 +431,22 @@ _opt_update_cache_ram() {
         return 0
     fi
 
+    # The host-memory prompt cache (--cache-ram) is only useful with
+    # --parallel > 1. With a single slot the save+load round-trip in
+    # server-context.cpp is a back-to-back no-op: the just-saved entry is
+    # immediately consumed by prompt_load(), and the cache ends up empty
+    # every turn. CachyLLama's server logs show this costs ~1 second per
+    # turn + 0.9-2.6 GiB of VRAM<->RAM bandwidth for nothing. Skip the
+    # allocation when n_parallel <= 1 so the memory is available for the
+    # model, the KV cache, or SSD tiers.
+    if [[ "${OVERRIDE_N_PARALLEL:-1}" -le 1 ]]; then
+        SOLVER_CACHE_RAM=0
+        SOLVER_SSD_HOT_RAM=0
+        SOLVER_SSD_WARM_RAM=0
+        SOLVER_REASONS+=("cache-ram: 0 MiB (n_parallel=1, host prompt cache is a no-op with a single slot; in-memory checkpoint ring + SSD manager cover the use case)")
+        return 0
+    fi
+
     # GPU leftover
     local used_gpu
     used_gpu=$(_opt_gpu_memory \
