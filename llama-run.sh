@@ -659,6 +659,14 @@ _scan_gguf_arch() {
     if grep -q 'nextn_predict_layers' "$tmp" 2>/dev/null; then
         is_mtp=true
     fi
+    # Detect Qwen3.8-Flash-Next (qwen4exp): has PLE n-gram embeddings,
+    # hyper-connection, and QSA sparse attention. The architecture has an MTP
+    # draft block, but the GGUF may not include MTP tensors (Unsloth quants
+    # typically don't ship them). is_mtp is set only if nextn_predict_layers
+    # is found in the GGUF metadata above.
+    if grep -q 'qwen4exp' "$tmp" 2>/dev/null; then
+        is_qwen4exp=true
+    fi
     rm -f "$tmp"
 }
 
@@ -728,7 +736,7 @@ assign_profile() {
     MODEL_BYTES=$(compute_model_size_bytes "$model_path")
     local size_gb=$((MODEL_BYTES / 1073741824))
 
-    is_moe="false"; is_ssm="false"; is_mtp="false"
+    is_moe="false"; is_ssm="false"; is_mtp="false"; is_qwen4exp="false"
     if echo "$filename" | grep -qiE "moe|a3b|a8b|flash|expert|gpt-oss"; then
         is_moe=true
     fi
@@ -778,7 +786,12 @@ assign_profile() {
         case "${SOLVER_MOE_STRATEGY}" in
             cpu)
                 local total_mem=$(get_total_memory_bytes)
-                if [[ ${MODEL_BYTES:-0} -lt $total_mem ]]; then
+                if [[ "${is_qwen4exp:-false}" == "true" && ${MODEL_BYTES:-0} -lt $total_mem ]]; then
+                    # qwen4exp: offload PLE n-gram table (27 GiB) to CPU via -ot
+                    # and use mmap so the file is paged in on demand rather than
+                    # loaded wholesale via DIO. --cpu-moe keeps MoE experts on CPU.
+                    EXTRA_SERVER_ARGS+=" --cpu-moe -ot 'per_layer_token_embd.weight=CPU'"
+                elif [[ ${MODEL_BYTES:-0} -lt $total_mem ]]; then
                     EXTRA_SERVER_ARGS+=" --cpu-moe --load-mode none"
                 else
                     EXTRA_SERVER_ARGS+=" --cpu-moe"
@@ -836,8 +849,8 @@ assign_profile() {
         log_info "Solver detune steps: ${SOLVER_REASONS[*]}"
     fi
     log_info "Solver overrides applied: ${SOLVER_OVERRIDES[*]:-(none)}"
-    printf '%bAuto profile (solver): %b%s%b (%sGB, MoE=%s, SSM=%s)%b\n' \
-        "$CYAN" "$GREEN" "$profile_name" "$NC" "$size_gb" "${is_moe:-false}" "${is_ssm:-false}" "$NC"
+    printf '%bAuto profile (solver): %b%s%b (%sGB, MoE=%s, SSM=%s, MTP=%s, qwen4exp=%s)%b\n' \
+        "$CYAN" "$GREEN" "$profile_name" "$NC" "$size_gb" "${is_moe:-false}" "${is_ssm:-false}" "${is_mtp:-false}" "${is_qwen4exp:-false}" "$NC"
 }
 
 # -----------------------------------------------------------------------------
@@ -849,6 +862,7 @@ detect_chat_template() {
     for pair in \
         "deepseek[_-]?v4[_-]?flash:$tbase/deepseek-ai-DeepSeek-V4-Flash-0731.jinja" \
         "glm[_-]?4[.]7[_-]?flash:$tbase/GLM-4.7-Flash.jinja" \
+        "qwen3[._-]?8[._-]?flash[._-]?next:$tbase/Qwen-Qwen3-0.6B.jinja" \
         "qwen3[_-]?coder:$tbase/Qwen3-Coder.jinja" \
         "laguna[_-]?s[_-]?2[.]1:$tbase/poolside-Laguna-S-2.1.jinja"
     do
@@ -1157,7 +1171,7 @@ print_profile_summary() {
         if [[ "$EXTRA_SERVER_ARGS" == *" --load-mode none "* ]]; then
             moe_strategy="cpu-moe + --load-mode none (RAM)"
         else
-            moe_strategy="cpu-moe (mmap)"
+            moe_strategy="cpu-moe (${load_mode})"
         fi
     elif [[ "$EXTRA_SERVER_ARGS" == *" --moe-expert-residency "* ]]; then
         moe_strategy="residency (madvise tracking)"
@@ -1187,6 +1201,8 @@ print_profile_summary() {
     printf '  %-28s %s\n' "Load mode:"       "$load_mode"
     printf '  %-28s %s\n' "Flash attention:" "$flash_attn"
     printf '  %-28s %s\n' "Reasoning:"       "${OVERRIDE_REASONING:-off} (budget=${OVERRIDE_REASONING_BUDGET:-0})"
+    printf '  %-28s %s\n' "MTP draft:"       "$( [[ "${is_mtp:-false}" == "true" ]] && echo "enabled" || echo "off" )"
+    printf '  %-28s %s\n' "Qwen4exp arch:"   "$( [[ "${is_qwen4exp:-false}" == "true" ]] && echo "yes" || echo "no" )"
     printf '  %-28s %s\n' "Cache RAM:"       "$( [[ "$cache_ram_val" == "0" ]] && echo disabled || echo "${cache_ram_val} MiB" )"
     printf '  %-28s %s\n' "Checkpoints:"     "$( [[ -n "$checkpoint_min" ]] && echo "min=$checkpoint_min, count=${checkpoint_count:--}${no_near_end:+ (no-near-end)}$([[ "$checkpoint_every" != "-1" ]] && echo ", every=${checkpoint_every}")" || echo "off" )"
     printf '  %-28s %s\n' "Slot similarity:" "${slot_sim:-default}"

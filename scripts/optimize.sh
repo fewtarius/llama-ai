@@ -94,6 +94,38 @@ _opt_gguf() {
 }
 
 # -----------------------------------------------------------------------------
+# Qwen3.8-Flash-Next (qwen4exp) architecture detection and helpers
+# -----------------------------------------------------------------------------
+# qwen4exp has unique memory characteristics the solver must account for:
+#   - PLE (n-gram hash embedding): ~40% of model params, always on GPU,
+#     not offloadable by reducing -ngl (sits outside the layer stack)
+#   - Hyper-connection: 4x wide residual stream, increases activation memory
+#   - MTP draft block: 1 extra layer, adds ~2 GiB overhead
+#   - full_attention_interval: only every Nth layer stores KV cache
+#   Detect by checking for qwen4exp.-prefixed GGUF metadata keys.
+_opt_is_qwen4exp() {
+    local key
+    for key in "${!SOLVER_GGUF[@]}"; do
+        [[ "$key" == qwen4exp.* ]] && return 0
+    done
+    return 1
+}
+
+# Estimate PLE (n-gram hash embedding) size for qwen4exp models.
+# The PLE is a massive lookup table (~20M rows * 2560 dims) always loaded
+# to GPU via TENSOR_READ_LAZY. Cannot be offloaded by reducing -ngl.
+# Estimated as ~40% of model bytes (51B PLE params / 125B total).
+_opt_qwen4exp_ple_bytes() {
+    if [[ "${is_qwen4exp:-false}" != "true" ]]; then
+        echo 0
+        return
+    fi
+    local model_bytes="${MODEL_BYTES:-0}"
+    [[ $model_bytes -le 0 ]] && { echo 0; return; }
+    awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.40 }'
+}
+
+# -----------------------------------------------------------------------------
 # System memory detection (mirrors llama-run.sh functions)
 # -----------------------------------------------------------------------------
 _opt_get_total_memory_bytes() {
@@ -186,12 +218,24 @@ _opt_model_gpu_footprint() {
             ;;
     esac
 
+    # For qwen4exp models, the PLE (n-gram hash embedding) is a large,
+    # non-offloadable component that always resides on GPU. It sits outside
+    # the transformer layer stack, so reducing -ngl does not evict it.
+    # Account for it as fixed overhead when NGL < n_layer.
+    local ple_bytes=0
+    if [[ "${is_qwen4exp:-false}" == "true" && "$moe_strategy" != "cpu" ]]; then
+        ple_bytes=$(_opt_qwen4exp_ple_bytes)
+    fi
+
     if [[ "$ngl" -ge "$n_layer" ]]; then
         awk -v frac="$gpu_fraction" -v total="$total_model_bytes" \
             'BEGIN { printf "%.0f", frac * total }'
     else
-        awk -v ngl="$ngl" -v nl="$n_layer" -v frac="$gpu_fraction" -v total="$total_model_bytes" \
-            'BEGIN { printf "%.0f", (ngl / nl) * frac * total }'
+        # PLE can't be offloaded by NGL reduction — only the transformer
+        # layers are proportionally reduced; PLE stays at full size.
+        awk -v ngl="$ngl" -v nl="$n_layer" -v frac="$gpu_fraction" \
+            -v total="$total_model_bytes" -v ple="$ple_bytes" \
+            'BEGIN { printf "%.0f", (ngl / nl) * frac * (total - ple) + ple }'
     fi
 }
 
@@ -224,17 +268,16 @@ _opt_gpu_memory() {
         [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
     fi
 
-    # For "gpu" strategy with NGL >= n_layer, KV cache lives on GPU
-    # (already counted in _opt_gpu_memory). Don't double-count it as
-    # system RAM — this freed ~1.5 GiB of system budget per slot.
-    local sys_kv_total=$kv_total
-    local sys_draft_kv_total=$draft_kv_total
-    local sys_draft_bytes=$draft_bytes
-    if [[ "$strategy" == "gpu" ]]; then
-        sys_kv_total=0
-        sys_draft_kv_total=0
-        sys_draft_bytes=0
-    fi
+    # KV cache is on GPU for ALL GPU-backed strategies (Vulkan/ROCm/Metal).
+    # --cpu-moe and --moe-expert-residency only offload MoE expert weights;
+    # the KV cache is still managed by the GPU backend and must NOT be double-
+    # counted in system RAM. Previously only "gpu" strategy zeroed this out,
+    # which caused --cpu-moe configs to fail the system memory check for large
+    # models whose model_bytes + kv_total exceeded the system budget even
+    # though the KV cache was actually on GPU.
+    local sys_kv_total=0
+    local sys_draft_kv_total=0
+    local sys_draft_bytes=0
     local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
     local system_bytes=$(( 256 * 1048576 ))
 
@@ -270,17 +313,16 @@ _opt_system_memory() {
         [[ $draft_kv_total -gt $draft_kv_cap ]] && draft_kv_total=$draft_kv_cap
     fi
 
-    # For "gpu" strategy with NGL >= n_layer, KV cache lives on GPU
-    # (already counted in _opt_gpu_memory). Don't double-count it as
-    # system RAM — this freed ~1.5 GiB of system budget per slot.
-    local sys_kv_total=$kv_total
-    local sys_draft_kv_total=$draft_kv_total
-    local sys_draft_bytes=$draft_bytes
-    if [[ "$strategy" == "gpu" ]]; then
-        sys_kv_total=0
-        sys_draft_kv_total=0
-        sys_draft_bytes=0
-    fi
+    # KV cache is on GPU for ALL GPU-backed strategies (Vulkan/ROCm/Metal).
+    # --cpu-moe and --moe-expert-residency only offload MoE expert weights;
+    # the KV cache is still managed by the GPU backend and must NOT be double-
+    # counted in system RAM. Previously only "gpu" strategy zeroed this out,
+    # which caused --cpu-moe configs to fail the system memory check for large
+    # models whose model_bytes + kv_total exceeded the system budget even
+    # though the KV cache was actually on GPU.
+    local sys_kv_total=0
+    local sys_draft_kv_total=0
+    local sys_draft_bytes=0
 
     local ssd_bytes=$(( (ssd_hot_mib + ssd_warm_mib) * 1048576 ))
     local compute_bytes=$(( 512 * 1048576 + ubatch * 256 ))
@@ -299,7 +341,16 @@ _opt_system_memory() {
             model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.70 }')
             ;;
         cpu)
-            model_sys_bytes="$model_bytes"
+            if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+                # With --cpu-moe + --load-mode dio, MoE expert tensors are
+                # loaded to system RAM (~94% of model for qwen4exp where
+                # ~6% gpu_fraction stays on GPU). Non-expert tensors
+                # (attention, GDN, HC, PLE via TENSOR_READ_LAZY) go to GPU
+                # or page in from mmap on demand.
+                model_sys_bytes=$(awk -v m="$model_bytes" 'BEGIN { printf "%.0f", m * 0.94 }')
+            else
+                model_sys_bytes="$model_bytes"
+            fi
             ;;
     esac
 
@@ -456,6 +507,17 @@ _opt_start_optimistic() {
 
     SOLVER_MOE_STRATEGY="gpu"
     SOLVER_LOAD_MODE="dio"
+
+    # Detect qwen4exp (Qwen3.8-Flash-Next) architecture from GGUF metadata.
+    # This model has a large PLE (n-gram hash embedding) that must be off-
+    # loaded to CPU via -ot, and uses --cpu-moe for MoE expert offloading.
+    # MTP draft blocks may or may not be present in the GGUF (detected via
+    # nextn_predict_layers in _scan_gguf_arch); don't force is_mtp here.
+    if _opt_is_qwen4exp; then
+        is_qwen4exp=true
+    else
+        is_qwen4exp=false
+    fi
 
     local ctx_train=$(_opt_gguf context_length 32768)
     local ctx_cap=$(( ctx_train * 4 ))
@@ -654,14 +716,12 @@ solve_optimal_config() {
     fi
 
     local fai=$(_opt_gguf full_attention_interval 1)
-    # Only reduce n_attn for hybrid SSM models (e.g. Qwen3.6-Moe) where
+    # Reduce n_attn for hybrid SSM models (e.g. Qwen3.6-Moe) where
     # full_attention_interval means some layers lack KV caches entirely.
-    # Pure transformer models (Gemma-4, Qwen3.8) have KV in ALL layers
-    # regardless of attention pattern — full_attention_interval only controls
-    # attention sparsity, not which layers store KV.  Reducing n_attn for
-    # these models under-counts KV cache by up to 7.5x, making the solver
-    # pick configs far more conservatively than the runtime actually needs.
-    if [[ "${is_ssm:-false}" == "true" ]]; then
+    # Also for qwen4exp (Qwen3.8-Flash-Next): GDN layers use linear attention
+    # (no KV cache), only full-attention layers (every Nth) store KV.
+    # Pure transformer models without these patterns have KV in ALL layers.
+    if [[ "${is_ssm:-false}" == "true" ]] || [[ "${is_qwen4exp:-false}" == "true" ]]; then
         n_attn=$(_opt_attn_layers "$n_layer" "$fai")
     else
         n_attn=$n_layer
@@ -769,11 +829,27 @@ solve_optimal_config() {
     # -------------------------------------------------------------------------
     # Strategy selection:
     #   - default: gpu -> residency -> cpu
-    #   - We now reorder for MoE when CPU-MoE is viable: gpu -> cpu -> residency
+    #   - For qwen4exp (Qwen3.8-Flash-Next): the PLE n-gram embedding (~40%
+    #     of model) is non-offloadable and always sits in GPU memory. When
+    #     the model is >85% of GPU budget, the gpu strategy is too marginal
+    #     even with NGL reduction — prefer CPU-MoE to keep PLE and experts
+    #     in system RAM, only keeping attention/router layers on GPU.
+    #   - For regular MoE when CPU-MoE is viable: gpu -> cpu -> residency
     #     to avoid Vulkan OOM from residency on large models.
     # -------------------------------------------------------------------------
     local strategies=("gpu")
-    if [[ "${is_moe:-false}" == "true" ]]; then
+    if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+        local sys_total_bytes=$(_opt_get_total_memory_bytes)
+        local os_reserve_bytes=$(( 8 * _OPT_GIB ))
+        local sys_avail_bytes=$(( sys_total_bytes - os_reserve_bytes ))
+        local model_fits_cpu=0
+        [[ ${MODEL_BYTES:-0} -le $sys_avail_bytes ]] && model_fits_cpu=1
+        if [[ $model_fits_cpu -eq 1 && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
+            strategies=("cpu" "gpu")
+        else
+            strategies+=("residency" "cpu")
+        fi
+    elif [[ "${is_moe:-false}" == "true" ]]; then
         # Check if CPU-MoE is viable: model fits in system RAM with OS reserve.
         local sys_total_bytes=$(_opt_get_total_memory_bytes)
         local os_reserve_bytes=$(( 8 * _OPT_GIB ))
@@ -810,6 +886,13 @@ solve_optimal_config() {
                     [[ "$strategy" == "gpu" ]] && strategy_score=300
                     [[ "$strategy" == "cpu" ]] && strategy_score=250
                     [[ "$strategy" == "residency" ]] && strategy_score=200
+                    # For qwen4exp, swap gpu/cpu scores so CPU-MoE is preferred
+                    # when the model is >85% of GPU budget (set via strategy
+                    # selection above). This avoids marginal gpu fits that OOM.
+                    if [[ "${is_qwen4exp:-false}" == "true" && ${MODEL_BYTES:-0} -gt $(( solver_budget_bytes * 85 / 100 )) ]]; then
+                        [[ "$strategy" == "gpu" ]] && strategy_score=250
+                        [[ "$strategy" == "cpu" ]] && strategy_score=300
+                    fi
 
                     local ctx_score=0
                     case "$ctx" in
@@ -966,7 +1049,19 @@ solve_optimal_config() {
         SOLVER_V_TYPE=$chosen_v_type
         SOLVER_DRAFT_ENABLE=$chosen_draft_enable
         case "$chosen_strategy" in
-            cpu)        SOLVER_MOE_STRATEGY="cpu"; SOLVER_LOAD_MODE="none" ;;
+            cpu)
+                SOLVER_MOE_STRATEGY="cpu"
+                # qwen4exp: use mmap (not dio) so the 27 GiB PLE n-gram table
+                # is mmap'd and offloaded to CPU via -ot instead of loaded
+                # into GTT. DIO would load the entire 103 GiB file at startup,
+                # causing OOM and long load times. The model fits in system
+                # RAM so mmap page-cache pressure is manageable.
+                if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+                    SOLVER_LOAD_MODE="mmap"
+                else
+                    SOLVER_LOAD_MODE="none"
+                fi
+                ;;
             residency)  SOLVER_MOE_STRATEGY="residency"; SOLVER_LOAD_MODE="mmap" ;;
             *)          SOLVER_MOE_STRATEGY="gpu"; SOLVER_LOAD_MODE="dio" ;;
         esac
@@ -1158,6 +1253,8 @@ _opt_pick_legacy_profile() {
 
     if [[ "${is_ssm:-false}" == "true" ]]; then
         echo "ssm"
+    elif [[ "${is_qwen4exp:-false}" == "true" ]]; then
+        [[ $size_gb -gt 50 ]] && echo "halo-moe-large" || echo "halo-moe-small"
     elif $is_strix_halo && [[ "${is_moe:-false}" == "true" ]]; then
         [[ $size_gb -gt 50 ]] && echo "halo-moe-large" || echo "halo-moe-small"
     elif $is_strix_halo; then
