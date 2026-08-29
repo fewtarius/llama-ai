@@ -464,12 +464,17 @@ _opt_update_cache_ram() {
 
     [[ $solver_budget_bytes -le 0 ]] && return 0
 
-    # If user explicitly set cache-ram, use that value and skip computation
+    # If user explicitly set cache-ram, use that value and skip computation.
+    # SSD hot/warm are pinned to 128 MiB each instead of 0: the C++ side
+    # treats --cache-ssd-hot-ram 0 as "auto-size" and allocates up to 75%
+    # of MemAvailable for the hot tier, which on UMA APUs collides with
+    # the GTT-mapped model and OOMs. Passing an explicit non-zero value
+    # disables auto-size and keeps the SSD cache small.
     if [[ -n "${OVERRIDE_CACHE_RAM:-}" ]]; then
         SOLVER_CACHE_RAM="${OVERRIDE_CACHE_RAM}"
-        SOLVER_SSD_HOT_RAM=0
-        SOLVER_SSD_WARM_RAM=0
-        SOLVER_REASONS+=("cache-ram: ${OVERRIDE_CACHE_RAM} MiB (SSD: 0 MiB) [user override]")
+        SOLVER_SSD_HOT_RAM=128
+        SOLVER_SSD_WARM_RAM=128
+        SOLVER_REASONS+=("cache-ram: ${OVERRIDE_CACHE_RAM} MiB (SSD: 128/128 MiB, user override)")
         return 0
     fi
 
@@ -481,11 +486,18 @@ _opt_update_cache_ram() {
     # turn + 0.9-2.6 GiB of VRAM<->RAM bandwidth for nothing. Skip the
     # allocation when n_parallel <= 1 so the memory is available for the
     # model, the KV cache, or SSD tiers.
+    #
+    # SSD hot/warm tiers are also pinned to 128 MiB each (not 0) so the
+    # C++ side does not enter its auto-size path. Auto-size reads
+    # MemAvailable at startup (before the model is loaded) and would
+    # otherwise reserve ~75% of system RAM for the SSD hot tier. On UMA
+    # APUs (Ayaneo Flip 32 GB, Strix Halo) the GTT-mapped model lives in
+    # the same RAM and is OOM-killed as SSD checkpoints accumulate.
     if [[ "${OVERRIDE_N_PARALLEL:-1}" -le 1 ]]; then
         SOLVER_CACHE_RAM=0
-        SOLVER_SSD_HOT_RAM=0
-        SOLVER_SSD_WARM_RAM=0
-        SOLVER_REASONS+=("cache-ram: 0 MiB (n_parallel=1, host prompt cache is a no-op with a single slot; in-memory checkpoint ring + SSD manager cover the use case)")
+        SOLVER_SSD_HOT_RAM=128
+        SOLVER_SSD_WARM_RAM=128
+        SOLVER_REASONS+=("cache-ram: 0 MiB (n_parallel=1, host prompt cache is a no-op; SSD hot/warm pinned to 128 MiB each to avoid the C++ auto-size path which would otherwise allocate ~75% of MemAvailable and OOM the system on UMA APUs where the model also lives in GTT)")
         return 0
     fi
 
