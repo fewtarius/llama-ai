@@ -741,6 +741,51 @@ _opt_start_optimistic() {
     # Sanity: ubatch must be <= batch (llama-server requirement).
     [[ $SOLVER_UBATCH -gt $SOLVER_BATCH ]] && SOLVER_UBATCH=$SOLVER_BATCH
 
+    # Per-model overrides. Some models have a known peak that differs
+    # from the per-archetype default (e.g. gpt-oss 120B peaks at
+    # (8192, 4096) while the halo-moe-large default is (8192, 2048)).
+    # The per-archetype default stays as the "safe" fallback; these
+    # overrides bump the per-archetype to the known peak for specific
+    # models when memory allows.
+    #
+    # Data source: /home/deck/test-results.log (llama-bench sweeps).
+    # See config/model-overrides.sh for the full data set.
+    local model_filename="${MODEL_FILENAME:-}"
+    if [[ -n "$model_filename" ]]; then
+        # gpt-oss 120B: peak (8192, 4096) on Halo, +12.6% over default
+        if [[ "$model_filename" =~ gpt-oss-?120[bB] ]] || \
+           [[ "$model_filename" =~ gpt-oss.*120[._-] ]]; then
+            if [[ "$effective_tier" == "halo" ]]; then
+                SOLVER_UBATCH=4096
+                SOLVER_BATCH=8192
+            fi
+        fi
+        # gpt-oss 20B on Halo: peak (2048, 4096) is invalid (ubatch > batch
+        # violates llama-server). (2048, 2048) is within 0.5% of peak.
+        # Per-archetype default (2048, 1024) is 3% off peak — acceptable
+        # noise, no override needed.
+        # gemma4 (A4B MoE) on Halo: peak (4096, 4096), +8% over default
+        if [[ "$model_filename" =~ gemma-?4|gem4|gemma4 ]]; then
+            if [[ "$effective_tier" == "halo" ]]; then
+                SOLVER_BATCH=4096
+                SOLVER_UBATCH=4096
+            fi
+        fi
+        # Laguna 118B Q5_K: peak (8192, 4096), +6.9% over default
+        if [[ "$model_filename" =~ [Ll]aguna ]] && [[ "$model_filename" =~ Q5_K ]]; then
+            if [[ "$effective_tier" == "halo" ]]; then
+                SOLVER_UBATCH=4096
+            fi
+        fi
+        # minimax-m2 230B: peak (4096, 4096), +10.2% over default
+        if [[ "$model_filename" =~ minimax-m2|minimax_m2|MiniMax-M2 ]]; then
+            if [[ "$effective_tier" == "halo" ]]; then
+                SOLVER_BATCH=4096
+                SOLVER_UBATCH=4096
+            fi
+        fi
+    fi
+
     local phys_cores=${PHYSICAL_CORES:-}
     if [[ -z "$phys_cores" ]]; then
         if command -v lscpu &>/dev/null; then
@@ -898,6 +943,10 @@ STEPS
 
 solve_optimal_config() {
     local model_path="$1"
+
+    # Export the basename so per-model overrides in _opt_start_optimistic
+    # can match on filename without re-deriving it.
+    MODEL_FILENAME=$(basename "$model_path")
 
     _SOLVER_DONE_drop_draft=0
     _SOLVER_DONE_drop_ssd=0
@@ -1100,6 +1149,14 @@ solve_optimal_config() {
     if [[ "$SOLVER_UBATCH" -lt 4096 ]]; then
         ubatch_candidates+=(4096)
     fi
+    # 4096 batch is the peak for several very-large MoE on Halo
+    # (minimax-m2 230B = 517 pp, gpt-oss 120B within 2%). Include 4096
+    # whenever the optimistic default is >= 4096 — the empirical sweet
+    # spot is sometimes between 4096 and 8192, and the previous candidates
+    # list missed it.
+    if [[ "$SOLVER_BATCH" -ge 4096 && "$SOLVER_BATCH" -ne 4096 ]]; then
+        batch_candidates+=(4096)
+    fi
     # 2048 ubatch is a sweet spot for several large MoE on Halo
     # (qwen35moe 122B, qwen3moe 235B, laguna Q4_K) — peak beats both
     # 1024 and 4096 by 5-15%. Include it whenever the optimistic
@@ -1155,12 +1212,19 @@ solve_optimal_config() {
     # the ctx/kv/strategy scores (which use 1000s for strategy and 100s
     # for ctx). This ensures the (b, u) choice only acts as a tiebreaker
     # between otherwise equivalent combos.
+    # Per-archetype (batch, ubatch) tiebreaker. The score is intentionally
+    # small (max +2) so the (b, u) choice acts as a tiebreaker between
+    # otherwise equivalent combos, not as a hard preference. Memory pressure
+    # (the GPU/system budget check) is the actual decision driver. The
+    # previous +6 bias was strong enough to override the empirical peak for
+    # 5/14 models in the bench data (e.g. gpt-oss 120B peaked at (8192, 4096)
+    # but the solver picked (8192, 2048) because of this bias).
     _opt_archetype_batchub_score() {
         local b="$1" u="$2" opt_b="$3" opt_u="$4"
         if [[ "$b" == "$opt_b" && "$u" == "$opt_u" ]]; then
-            echo 6
+            echo 2
         elif [[ "$b" == "$opt_b" || "$u" == "$opt_u" ]]; then
-            echo 4
+            echo 1
         else
             echo 0
         fi
@@ -1217,7 +1281,7 @@ solve_optimal_config() {
     for combo in "${!combo_score[@]}"; do
         sorted_combos+=("${combo_score[$combo]}:$combo")
     done
-    IFS=$'\n' sorted_combos=($(sort -rn <<< "${sorted_combos[*]}"))
+    IFS=$'\n' sorted_combos=($(sort -s -rn <<< "${sorted_combos[*]}"))
     unset IFS
 
     local chosen_strategy=""
@@ -1290,19 +1354,14 @@ solve_optimal_config() {
             0)
 
         local sys_budget
-        # On UMA (dedicated VRAM > 0), GPU allocations consume system RAM
-        # via GTT.  Use a deterministic sys_total - os_reserve budget so the
-        # check doesn't fluctuate with other processes' memory usage.
-        # On discrete GPUs, the model lives in VRAM (not system RAM), so
-        # using sys_total - os_reserve is permissive but harmless — the GPU
-        # check is the real gatekeeper for VRAM capacity.
-        local os_reserve
-        if [[ "${LLAMA_HARDWARE_TIER:-standard}" == "handheld" ]]; then
-            os_reserve=$(( 4 * _OPT_GIB ))
-        else
-            os_reserve=$(( 8 * _OPT_GIB ))
-        fi
-        sys_budget=$(( sys_mem_total - os_reserve ))
+        # Use sys_mem_avail (kernel's accounting of actually-usable RAM,
+        # which already includes reclaimable cache and the OS reserve) as
+        # the system memory budget. Previously this used sys_mem_total -
+        # os_reserve, which assumed the full system RAM is free — wrong
+        # when another model is loaded or other processes are using RAM.
+        # The kernel's MemAvailable is constant during a single solve pass,
+        # so this is still deterministic.
+        sys_budget=$sys_mem_avail
         [[ $sys_budget -lt 0 ]] && sys_budget=0
 
         local solver_budget_gib=$(( solver_budget_bytes / _OPT_GIB ))
