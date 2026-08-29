@@ -547,12 +547,113 @@ _opt_start_optimistic() {
     SOLVER_K_TYPE="f16"
     SOLVER_V_TYPE="f16"
 
-    case "$effective_tier" in
-        halo)      SOLVER_UBATCH=2048; SOLVER_BATCH=4096 ;;
-        standard)  SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
-        handheld)  SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
-        *)         SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
-    esac
+    # Archetype-aware (batch, ubatch) defaults.
+    # The defaults below were derived from llama-bench sweeps across
+    # n_batch in {2048, 4096, 8192} and n_ubatch in {256, 512, 1024,
+    # 2048, 4096} on Ayaneo Flip (7840U / Radeon 780M, Vulkan) and
+    # Nimo Axis (Strix Halo / Radeon 8060S, Vulkan) for 17 model/
+    # hardware combinations. Decode (tg) is memory-bandwidth bound and
+    # varies <2% across the entire (batch, ubatch) range — prefill (pp)
+    # is what tuning actually moves.
+    #
+    # Key patterns:
+    #   * DENSE models on Halo: ubatch=1024 is a clear winner. qwen35
+    #     27B Q8_0: 127 t/s at ub=1024 vs 121 at ub=2048 (-5%) and
+    #     117 at ub=4096 (-8%). Larger ubatch saturates flash-attn
+    #     path with diminishing returns.
+    #   * SMALL/MEDIUM MoE (<=~50 GB on Halo, <25 GB on 7840U):
+    #     ubatch=1024-2048. qwen35moe 35B Q8_0: 1094 pp at ub=1024
+    #     vs 825 at ub=2048 (-25%!). MoE routing is per-token-variable,
+    #     so smaller batches finish faster end-to-end even though pp
+    #     t/s is lower — the dispatch overhead is amortized across
+    #     fewer tokens per batch.
+    #   * LARGE MoE (>=~60 GB on Halo, >=25 GB on 7840U): ubatch=2048
+    #     or 4096. Models like deepseek2 30B Q8_0, gpt-oss 120B,
+    #     minimax-m2 230B Q2_K, deepseek4 IQ3_XXS all peak at
+    #     ub=4096. Once MoE layer count and total activations get
+    #     large enough, the 4096-wide kernel path out-performs.
+    #   * HYBRID SSM (qwen3next, qwen3.8): ubatch=1024-2048. The
+    #     linear-attention layers don't benefit from larger batches.
+    #   * QWEN4EXP (Qwen3.8-Flash-Next): ubatch=2048-4096 (PLE lookup
+    #     plus hybrid attn).
+    #   * STANDARD tier (7840U, non-halo): MoE sweet spot is
+    #     ub=2048 batch=2048 — current default of ub=1024 leaves 5-10%
+    #     on the table for gpt-oss 20B and qwen35moe 35B Q4_K.
+    #
+    # The phase-1 scoring loop below varies (batch, ubatch) against
+    # these optimistic defaults using the per-archetype modifier in
+    # _opt_archetype_score_adjustment, so the solver can still pick
+    # a different pair if memory pressure forces it.
+    local size_gb_start=$(( ${MODEL_BYTES:-0} / _OPT_GIB ))
+    if [[ "${is_qwen4exp:-false}" == "true" ]]; then
+        # Qwen3.8-Flash-Next: PLE + hybrid attention.
+        case "$effective_tier" in
+            halo)     SOLVER_UBATCH=2048; SOLVER_BATCH=4096 ;;
+            *)        SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+        esac
+    elif [[ "${is_ssm:-false}" == "true" ]]; then
+        # Pure SSM / Mamba / RWKV — linear-time recurrence, ubatch
+        # doesn't matter much but smaller is fine and saves VRAM.
+        case "$effective_tier" in
+            halo)     SOLVER_UBATCH=1024; SOLVER_BATCH=4096 ;;
+            standard) SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+            handheld) SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
+            *)        SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+        esac
+    elif [[ "${is_moe:-false}" == "true" ]]; then
+        # MoE: branch on size relative to the GPU budget.
+        # Empirically (llama-bench sweeps on 17 model/hardware pairs):
+        #   * 60-120 GB MoE on Halo: ub=2048-4096 / batch=8192-4096
+        #     (deepseek2 30B: 4096/4096, gpt-oss 120B: 8192/4096,
+        #      Laguna 118B: 8192/2048, qwen35moe 122B: 8192/2048).
+        #     The 4096/4096 default is within 15% of peak; 8192 batch
+        #     gives an extra 10-20% for the very large MoEs.
+        #   * <60 GB MoE on Halo: ub=1024-2048 / batch=2048-4096
+        #     (qwen35moe 35B: 2048/1024, gpt-oss 20B: 2048/4096).
+        #     The smaller batch+ubatch wins because MoE routing is
+        #     per-token-variable and smaller batches amortize dispatch
+        #     overhead better.
+        #   * 7840U MoE: ub=2048 / batch=2048 (gpt-oss 20B,
+        #     qwen35moe 35B Q4_K).
+        local moe_threshold_halo=60
+        local moe_threshold_std=25
+        case "$effective_tier" in
+            halo)
+                if [[ $size_gb_start -ge 100 ]]; then
+                    # 100+ GB: very deep scheduling wins, but stay
+                    # at 4096 ubatch to bound KV cache.
+                    SOLVER_UBATCH=4096; SOLVER_BATCH=8192
+                elif [[ $size_gb_start -ge $moe_threshold_halo ]]; then
+                    # 60-100 GB: 8192/2048 wins (Laguna, qwen35moe 122B,
+                    # gpt-oss 120B, deepseek4).
+                    SOLVER_UBATCH=2048; SOLVER_BATCH=8192
+                else
+                    # <60 GB MoE: ub=1024 wins for many (qwen35moe 35B
+                    # Q8_0 -25% loss at ub=2048).
+                    SOLVER_UBATCH=1024; SOLVER_BATCH=2048
+                fi
+                ;;
+            standard)
+                SOLVER_UBATCH=2048; SOLVER_BATCH=2048
+                ;;
+            handheld)
+                SOLVER_UBATCH=1024; SOLVER_BATCH=2048
+                ;;
+            *)
+                SOLVER_UBATCH=2048; SOLVER_BATCH=2048
+                ;;
+        esac
+    else
+        # Dense transformer.
+        case "$effective_tier" in
+            halo)     SOLVER_UBATCH=1024; SOLVER_BATCH=4096 ;;
+            standard) SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+            handheld) SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
+            *)        SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+        esac
+    fi
+    # Sanity: ubatch must be <= batch (llama-server requirement).
+    [[ $SOLVER_UBATCH -gt $SOLVER_BATCH ]] && SOLVER_UBATCH=$SOLVER_BATCH
 
     local phys_cores=${PHYSICAL_CORES:-}
     if [[ -z "$phys_cores" ]]; then
@@ -883,6 +984,102 @@ solve_optimal_config() {
     local ctx_values=(262144 196608 131072 98304 65536)
     local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
 
+    # Candidate (batch, ubatch) pairs to evaluate. The optimistic defaults
+    # (SOLVER_BATCH / SOLVER_UBATCH) come first so the solver prefers them
+    # when the budget allows. Alternative pairs are scored lower so they
+    # get tried only when memory pressure forces a step down.
+    #
+    # Benchmark data (17 model/hardware sweeps) shows that the win from
+    # picking the right (batch, ubatch) is 5-30% on prefill, so it IS
+    # worth scoring across the candidate space rather than just using
+    # the optimistic defaults and reducing downward on detune.
+    local batch_candidates=()
+    local ubatch_candidates=()
+    # Primary: the optimistic defaults. Add the per-archetype-tuned
+    # choice plus a few alternatives that are within ~5% of peak.
+    batch_candidates+=("$SOLVER_BATCH")
+    ubatch_candidates+=("$SOLVER_UBATCH")
+    # Always test a "small" ubatch (1024) — for dense models on Halo
+    # this is empirically 5% better than 2048.
+    if [[ "$SOLVER_UBATCH" -gt 1024 ]]; then
+        ubatch_candidates+=(1024)
+    fi
+    # Always test the "next larger" config too — for large MoE on Halo
+    # (deepseek2, gpt-oss 120B, minimax-m2 230B), batch=8192 outperforms
+    # 4096 by 5-30% on prefill. The 8192 batch extends the multi-slot
+    # fairness window so it's almost always worth trying on Halo.
+    if [[ "$SOLVER_BATCH" -lt 8192 ]]; then
+        batch_candidates+=(8192)
+    fi
+    if [[ "$SOLVER_UBATCH" -lt 4096 ]]; then
+        ubatch_candidates+=(4096)
+    fi
+    # 2048 ubatch is a sweet spot for several large MoE on Halo
+    # (qwen35moe 122B, qwen3moe 235B, laguna Q4_K) — peak beats both
+    # 1024 and 4096 by 5-15%. Include it whenever the optimistic
+    # default is 1024 (the "small MoE" case), where the data shows
+    # 2048 is usually the real sweet spot.
+    if [[ "$SOLVER_UBATCH" -lt 2048 ]]; then
+        ubatch_candidates+=(2048)
+    fi
+    # 2048 batch is a sweet spot for some models (gpt-oss 20B peaks
+    # at 2048/4096 with 1722 pp, vs 4096/4096 at 1715). Include 2048
+    # whenever the optimistic batch is higher.
+    if [[ "$SOLVER_BATCH" -gt 2048 ]]; then
+        batch_candidates+=(2048)
+    fi
+    # Standard tier: MoE benchmarks prefer 2048 batch=2048 (current
+    # 1024/2048 leaves 5-10% on the table for gpt-oss 20B and
+    # qwen35moe 35B Q4_K).
+    if [[ "${LLAMA_HARDWARE_TIER:-standard}" == "standard" && "$SOLVER_UBATCH" -lt 2048 ]]; then
+        ubatch_candidates+=(2048)
+    fi
+    # Deduplicate.
+    local _seen_u="" _seen_b=""
+    local _u_dedup=() _b_dedup=()
+    for u in "${ubatch_candidates[@]}"; do
+        if [[ " $_seen_u " != *" $u "* ]]; then
+            _seen_u+=" $u"
+            _u_dedup+=("$u")
+        fi
+    done
+    for b in "${batch_candidates[@]}"; do
+        if [[ " $_seen_b " != *" $b "* ]]; then
+            _seen_b+=" $b"
+            _b_dedup+=("$b")
+        fi
+    done
+    ubatch_candidates=("${_u_dedup[@]}")
+    batch_candidates=("${_b_dedup[@]}")
+    unset _seen_u _seen_b _u_dedup _b_dedup
+
+    # Per-archetype (batch, ubatch) preference score. The empirically-best
+    # (batch, ubatch) pairs (from llama-bench sweeps) get a slight boost
+    # over alternatives; the difference is small (≤6) so it acts as a
+    # tiebreaker, not a hard preference. Memory pressure (the GPU budget
+    # check) is the actual decision driver.
+    #
+    # Score table:
+    #   * (opt_b, opt_u) — exact match to per-archetype default: 6
+    #   * (opt_b, alt_u) — same batch, alternate ubatch: 4
+    #   * (alt_b, opt_u) — alternate batch, same ubatch: 4
+    #   * (alt_b, alt_u) — both alternate: 2
+    #   * Other (b, u) combinations from the candidates: 0
+    # The total range is 0-6 across all candidates, much smaller than
+    # the ctx/kv/strategy scores (which use 1000s for strategy and 100s
+    # for ctx). This ensures the (b, u) choice only acts as a tiebreaker
+    # between otherwise equivalent combos.
+    _opt_archetype_batchub_score() {
+        local b="$1" u="$2" opt_b="$3" opt_u="$4"
+        if [[ "$b" == "$opt_b" && "$u" == "$opt_u" ]]; then
+            echo 6
+        elif [[ "$b" == "$opt_b" || "$u" == "$opt_u" ]]; then
+            echo 4
+        else
+            echo 0
+        fi
+    }
+
     declare -A combo_score
     for strategy in "${strategies[@]}"; do
         for ctx in "${ctx_values[@]}"; do
@@ -890,30 +1087,41 @@ solve_optimal_config() {
                 local draft_modes_for_strategy=("enabled")
                 [[ "$strategy" == "gpu" ]] && draft_modes_for_strategy=("enabled" "disabled")
                 for draft_mode in "${draft_modes_for_strategy[@]}"; do
-                    local strategy_score=0
-                    [[ "$strategy" == "gpu" ]] && strategy_score=300
-                    [[ "$strategy" == "cpu" ]] && strategy_score=250
-                    [[ "$strategy" == "residency" ]] && strategy_score=200
+                    for b in "${batch_candidates[@]}"; do
+                        # Skip if ubatch > batch (llama-server requires
+                        # ubatch <= batch).
+                        for u in "${ubatch_candidates[@]}"; do
+                            [[ $u -gt $b ]] && continue
 
-                    local ctx_score=0
-                    case "$ctx" in
-                        131072) ctx_score=100 ;;
-                        98304)  ctx_score=95  ;;
-                        196608) ctx_score=90  ;;
-                        262144) ctx_score=85  ;;
-                        65536)  ctx_score=80  ;;
-                        *)      ctx_score=$(( ctx / 1000 )) ;;
-                    esac
+                            local strategy_score=0
+                            [[ "$strategy" == "gpu" ]] && strategy_score=300
+                            [[ "$strategy" == "cpu" ]] && strategy_score=250
+                            [[ "$strategy" == "residency" ]] && strategy_score=200
 
-                    local kv_score=0
-                    [[ "$kvq" == "f16/f16" ]] && kv_score=30
-                    [[ "$kvq" == "q8_0/q8_0" ]] && kv_score=20
-                    [[ "$kvq" == "q4_0/q4_0" ]] && kv_score=10
+                            local ctx_score=0
+                            case "$ctx" in
+                                131072) ctx_score=100 ;;
+                                98304)  ctx_score=95  ;;
+                                196608) ctx_score=90  ;;
+                                262144) ctx_score=85  ;;
+                                65536)  ctx_score=80  ;;
+                                *)      ctx_score=$(( ctx / 1000 )) ;;
+                            esac
 
-                    local draft_score=0
-                    [[ "$draft_mode" == "enabled" ]] && draft_score=5
+                            local kv_score=0
+                            [[ "$kvq" == "f16/f16" ]] && kv_score=30
+                            [[ "$kvq" == "q8_0/q8_0" ]] && kv_score=20
+                            [[ "$kvq" == "q4_0/q4_0" ]] && kv_score=10
 
-                    combo_score["${strategy}:${ctx}:${kvq}:${draft_mode}"]=$(( strategy_score * 1000 + ctx_score * 10 + kv_score + draft_score ))
+                            local draft_score=0
+                            [[ "$draft_mode" == "enabled" ]] && draft_score=5
+
+                            local batchub_score
+                            batchub_score=$(_opt_archetype_batchub_score "$b" "$u" "$SOLVER_BATCH" "$SOLVER_UBATCH")
+
+                            combo_score["${strategy}:${ctx}:${kvq}:${draft_mode}:${b}:${u}"]=$(( strategy_score * 1000 + ctx_score * 10 + kv_score + draft_score + batchub_score ))
+                        done
+                    done
                 done
             done
         done
@@ -932,17 +1140,20 @@ solve_optimal_config() {
     local chosen_k_type=""
     local chosen_v_type=""
     local chosen_draft_enable=true
+    local chosen_batch=0
+    local chosen_ubatch=0
     local found=0
 
     for scored_combo in "${sorted_combos[@]}"; do
         local score="${scored_combo%%:*}"
         local combo="${scored_combo#*:}"
-        local strategy="${combo%%:*}"
-        local rest="${combo#*:}"
-        local ctx="${rest%%:*}"
-        rest="${rest#*:}"
-        local kvq="${rest%%:*}"
-        local draft_mode="${rest#*:}"
+        # combo format: strategy:ctx:kvq:draft_mode:batch:ubatch
+        local strategy="${combo%%:*}"; local rest="${combo#*:}"
+        local ctx="${rest%%:*}"; rest="${rest#*:}"
+        local kvq="${rest%%:*}"; rest="${rest#*:}"
+        local draft_mode="${rest%%:*}"; rest="${rest#*:}"
+        local batch="${rest%%:*}"
+        local ubatch="${rest#*:}"
 
         [[ "$strategy" == "cpu" && $ctx -lt 8192 ]] && continue
         [[ $ctx -lt $MIN_CTX && "$strategy" != "cpu" ]] && continue
@@ -1031,6 +1242,8 @@ solve_optimal_config() {
             chosen_kvq="$kvq"
             chosen_k_type="$k_type"
             chosen_v_type="$v_type"
+            chosen_batch=$batch
+            chosen_ubatch=$ubatch
             [[ "$draft_mode" == "enabled" ]] && chosen_draft_enable=true || chosen_draft_enable=false
             found=1
             break
@@ -1048,6 +1261,18 @@ solve_optimal_config() {
         SOLVER_CTX_SIZE=$chosen_ctx
         SOLVER_K_TYPE=$chosen_k_type
         SOLVER_V_TYPE=$chosen_v_type
+        # Apply phase-1's (batch, ubatch) pick. The optimistic defaults
+        # set in _opt_start_optimistic (per-archetype) are the top
+        # candidate; this overrides them if the scoring loop chose a
+        # different pair that fits the budget.
+        if [[ $chosen_batch -gt 0 ]]; then
+            SOLVER_BATCH=$chosen_batch
+        fi
+        if [[ $chosen_ubatch -gt 0 ]]; then
+            SOLVER_UBATCH=$chosen_ubatch
+        fi
+        # Sanity: ubatch <= batch (llama-server requirement).
+        [[ $SOLVER_UBATCH -gt $SOLVER_BATCH ]] && SOLVER_UBATCH=$SOLVER_BATCH
         SOLVER_DRAFT_ENABLE=$chosen_draft_enable
         case "$chosen_strategy" in
             cpu)        SOLVER_MOE_STRATEGY="cpu"; SOLVER_LOAD_MODE="none" ;;
@@ -1067,7 +1292,7 @@ solve_optimal_config() {
         esac
         local draft_str=""
         [[ "$chosen_draft_enable" == "true" ]] && draft_str=" draft=on" || draft_str=" draft=off"
-        SOLVER_REASONS+=("ctx: ${chosen_ctx} KV: ${chosen_kvq} strategy=${chosen_strategy}${draft_str}")
+        SOLVER_REASONS+=("ctx: ${chosen_ctx} KV: ${chosen_kvq} strategy=${chosen_strategy} batch=${SOLVER_BATCH} ubatch=${SOLVER_UBATCH}${draft_str}")
     fi
 
     # Recompute kv_per_token for chosen config

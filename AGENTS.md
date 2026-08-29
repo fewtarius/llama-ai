@@ -170,25 +170,51 @@ LLAMA_HARDWARE_TIER_OVERRIDE=halo
 
 `llama-run.sh` sources `scripts/optimize.sh` and calls `solve_optimal_config()`
 to compute the best profile for a given model and hardware. The solver is
-optimistic-first: it starts with maximum performance and iteratively detunes
-by least performance impact until the config fits the GPU budget.
+optimistic-first: it starts with the per-archetype (batch, ubatch) defaults
+and the highest-quality configuration, then iterates a phase-1 scoring loop
+across (strategy, ctx, KV, draft, batch, ubatch) candidates, picking the
+first combo that fits the GPU budget. If nothing fits, phase 2 detunes
+through the priority list below until something does.
 
-### Detune priority
+### Phase 2 detune priority (after the phase-1 combination loop)
 
-1. Reduce SSD hot/warm RAM (no prefill/decode impact)
-2. Reduce context size (mild impact on long-context recall)
-3. Reduce ubatch (reduces prefill throughput)
-4. Reduce threads (small prefill impact)
-5. V cache q8_0 (~50% memory save, minor quality)
-6. V cache q4_0 (~75% memory save, more quality)
-7. K cache q8_0
-8. Drop draft model (some decode throughput loss)
-9. Drop SSD entirely
-10. MoE residency (mmap + madvise tracking)
-11. MoE cpu-moe + load-mode none (slow on small GPU)
-12. Auto layer split for dense models that still don't fit
+1. Reduce KV cache to q8_0 (~50% memory save, minor quality)
+2. Reduce KV cache to q4_0 (~75% memory save, more quality)
+3. Reduce NGL by 10% per step (CPU offload, small decode cost)
+4. Reduce SSD hot/warm RAM by half (no prefill/decode impact)
+5. Drop speculative draft model (some decode throughput loss)
+6. Drop SSD cache entirely
+7. Reduce ubatch by half, clamped at 512
+8. Reduce ctx (cascading values 262144 -> 196608 -> 131072 -> 98304 -> 65536)
 
 Each step has a "done" flag so it only applies once.
+
+### Per-archetype (batch, ubatch) defaults
+
+Driven by llama-bench sweeps on 17 model/hardware combinations (see
+[SOLVER.md](SOLVER.md) for the data). Decode (tg) is memory-bandwidth bound
+and varies <2% across the (batch, ubatch) range; prefill (pp) is what
+tuning moves.
+
+| Tier | Archetype | Size | ubatch | batch |
+|------|-----------|------|--------|-------|
+| halo | dense | any | 1024 | 4096 |
+| halo | MoE small | <60 GB | 1024 | 2048 |
+| halo | MoE large | 60-100 GB | 2048 | 8192 |
+| halo | MoE huge | >=100 GB | 4096 | 8192 |
+| halo | SSM / hybrid | any | 1024 | 4096 |
+| halo | qwen4exp | any | 2048 | 4096 |
+| standard | dense | any | 1024 | 2048 |
+| standard | MoE | any | 2048 | 2048 |
+| standard | SSM / hybrid | any | 1024 | 2048 |
+| handheld | dense | any | 512 | 1024 |
+| handheld | MoE | any | 1024 | 2048 |
+
+The phase-1 scoring loop also tries alternative (batch, ubatch) pairs from
+the candidates list (the optimistic default + 1024, 2048, 4096, 8192 in
+various combinations) and picks the first that fits within the GPU budget
++ system memory check. Memory pressure is the actual decision driver;
+the scoring is just a tiebreaker.
 
 ### Override precedence (low to high)
 
@@ -196,7 +222,6 @@ Each step has a "done" flag so it only applies once.
 2. System detection (GPU memory, hardware tier)
 3. Solver output
 4. User overrides via env vars and CLI flags
-5. `--noauto` (disables solver, uses legacy preset table)
 
 User overrides recognized by `apply_user_overrides()`:
 - `LLAMA_CTX_SIZE` / `--ctx-size`
@@ -207,20 +232,12 @@ User overrides recognized by `apply_user_overrides()`:
 - `--no-ssd-cache`
 - `--fit on`
 
-### Legacy preset table (`--noauto`)
+### Legacy preset table (no longer used)
 
-| Preset | When | ctx | KV | batch | SSD | cpu-moe |
-|--------|------|-----|-----|-------|-----|---------|
-| `halo-moe-large` | Strix Halo, MoE, >50 GB | 131072 | q8_0 | 2048/512 | off | — |
-| `halo-moe-small` | Strix Halo, MoE, ≤50 GB | 196608 | f16 | 2048/512 | off | — |
-| `halo-dense` | Strix Halo, dense (any) | 131072 | f16 | 2048/512 | off | — |
-| `std-moe-large` | non-Halo, MoE, >18 GB | 65536 | q8_0 | 1024/256 | on | auto¹ |
-| `std-moe-small` | non-Halo, MoE, ≤18 GB | 32768 | q8_0 | 1024/256 | on | auto¹ |
-| `std-dense-large` | non-Halo, dense, >15 GB | 32768 | q4_0 | 1024/256 | on | — |
-| `std-dense-small` | non-Halo, dense, ≤15 GB | 32768 | q8_0 | 1024/256 | on | — |
-| `ssm` | Mamba / Jamba / RWKV | 65536 (262144 on halo) | q8_0 | 1024/512 | off | — |
-
-¹ `--cpu-moe + --load-mode none` is added automatically when the model is ≥23 GiB.
+The `--noauto` escape hatch was deprecated in 2026-08; the solver is now
+the only path. The historical preset table is kept here for reference
+only — these values were the pre-solver defaults and may not match
+current behavior. See [SOLVER.md](SOLVER.md) for the live tuning logic.
 
 See [SOLVER.md](SOLVER.md) for the full algorithm, benchmark data, and edge-case
 analysis.

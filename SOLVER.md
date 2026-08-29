@@ -1,219 +1,151 @@
-# Solver Reference (llama-ai)
+# Solver Algorithm and Tuning
 
-The solver in `scripts/optimize.sh` is the single configuration path for
-`llama-run.sh`. It replaces the old static preset table and uses an
-optimistic-first, memory‑aware search to pick the best settings for the
-model and hardware.
+The optimistic-first solver in `scripts/optimize.sh` picks (ctx, KV cache type,
+MoE strategy, batch, ubatch) for each (model, hardware) pair from a scored
+combination space. User overrides applied last.
 
-## Why
+## Decision order
 
-Static presets cannot adapt to the wide variety of model architectures,
-quantizations, and unified‑memory APU configurations. The solver reads
-actual GGUF metadata and system memory/GPU budgets to:
+1. **Built-in defaults** (solver starts here — see "Optimistic defaults" below)
+2. **System detection** (GPU memory, hardware tier via `detect-gpu.sh`)
+3. **Solver output** (chosen from a scored combination matrix)
+4. **User overrides** via env vars and CLI flags
+5. `--noauto` disables the solver and uses the legacy preset table in AGENTS.md
 
-- Use **f16 KV** when it fits (faster decode on big GPUs).
-- Use **q8_0 / q4_0** only when memory is tight.
-- Choose the **correct MoE strategy**:
-    - `gpu` when the whole model fits comfortably.
-    - `cpu` (CPU‑MoE, `--load-mode none`) when the model is large and fits
-      in system RAM; this avoids the Vulkan OOM that `residency` can cause
-      on unified‑memory APUs.
-    - `residency` only as a fallback when neither `gpu` nor `cpu` is safe.
-- Allocate **cache RAM** from actual leftover system memory, never
-  starving the OS or the GPU.
-- **Fail fast** when no workable configuration exists instead of
-  silently degrading to an undersized preset.
+## Optimistic defaults (per archetype)
 
-## How
+`llama-bench` sweeps across n_batch in {2048, 4096, 8192} and n_ubatch in
+{256, 512, 1024, 2048, 4096} on Ayaneo Flip (7840U) and Nimo Axis (Strix
+Halo) for 17 model/hardware combinations informed the per-archetype defaults
+below. Decode (tg) is memory-bandwidth bound and varies <2% across the
+entire (batch, ubatch) range — prefill (pp) is what tuning moves.
 
-The solver proceeds in five stages:
+### Strix Halo (Radeon 8060S, ~62 GB GPU-visible, 125 GB RAM)
 
-### 1. Read GGUF Metadata
+| Archetype | Size | ubatch | batch | Why |
+|-----------|------|--------|-------|-----|
+| Dense (qwen35 27B, GLM dense) | any | 1024 | 4096 | 5-8% pp loss at ub=2048 (qwen35 27B Q8_0: 127 vs 121 pp) |
+| MoE small/medium (<60 GB) | <60 | 1024 | 2048 | MoE routing is per-token-variable; smaller batches amortize dispatch (qwen35moe 35B Q8_0: 1094 vs 825 pp at ub=2048) |
+| MoE large (60-100 GB) | 60-100 | 2048 | 8192 | 8192 batch + 2048 ubatch is the empirical sweet spot (Laguna 118B, qwen35moe 122B, gpt-oss 120B) |
+| MoE huge (>=100 GB) | >=100 | 4096 | 8192 | 4096 ubatch needed to amortize the heavy per-token work |
+| SSM / hybrid (qwen3next) | any | 1024 | 4096 | Linear-attention layers don't benefit from larger batches |
+| qwen4exp (Qwen3.8-Flash-Next) | any | 2048 | 4096 | PLE + hybrid attention |
 
-Uses `scripts/read_gguf_kv.py` to extract:
+### Standard (7840U, ~24 GB GPU-visible, 32 GB RAM)
 
-- `block_count`, `embedding_length`, `head_count`, `head_count_kv`
-- `key_length`, `value_length`
-- `full_attention_interval`
-- `expert_count`, `nextn_predict_layers` (for MoE / MTP detection)
-- `qwen4exp.*` arch keys (Qwen3.8-Flash-Next: PLE, hyper-connection, QSA)
-- `context_length`
+| Archetype | ubatch | batch | Why |
+|-----------|--------|-------|-----|
+| Dense (qwen35 27B, gemma4) | 1024 | 2048 | Within 5% of larger configs; saves memory |
+| MoE (gpt-oss 20B, qwen35moe 35B Q4_K) | 2048 | 2048 | Benchmark sweet spot; 5-10% better than ub=1024 |
+| SSM / hybrid | 1024 | 2048 | Same as Halo |
 
-This data drives all memory and performance calculations.
+### Handheld (Flip KB, ~24 GB GPU-visible, 32 GB RAM)
 
-### 2. Start Optimistically
+| Archetype | ubatch | batch | Why |
+|-----------|--------|-------|-----|
+| Dense | 512 | 1024 | Memory-constrained; smaller is safer |
+| MoE | 1024 | 2048 | MoE benefits from slightly larger ubatch than dense |
+| SSM | 512 | 1024 | Same as dense |
 
-- KV cache: **f16/f16**
-- Context: training context (or 4× training, capped)
-- SSD cache: enabled (Halo: disabled)
-- Draft model: enabled if found (DSpark / DFlash / MTP)
-- Ubatch: 2048 (Halo), 1024 (standard), 512 (handheld)
-- Threads: batch = physical cores, gen = half of that
-- MoE strategy: `gpu` (all layers offloaded)
-- Checkpoints: auto-scaled to context size (base 8 at 65K ctx, +1 per 8K,
-  capped at 16 during pre-fit / 32 after phase 2). Min-step = ctx /
-  checkpoints (floor 8K, or 32K when SSD is off).
+## Combination scoring
 
-### 3. Model Memory
+For each (strategy, ctx, KV, draft, batch, ubatch) tuple, the solver computes
+a score. Higher scores are tried first. The first combo that fits the GPU
+budget AND system memory wins.
 
-The solver calculates both **GPU memory** and **system memory** for a
-candidate. Key components:
+```
+score = strategy_score * 1000      # gpu=300, cpu=250, residency=200
+      + ctx_score * 10             # 131072=100, 98304=95, 196608=90, 262144=85, 65536=80
+      + kv_score                   # f16=30, q8_0=20, q4_0=10
+      + draft_score                # enabled=5
+      + batchub_score              # opt=6, partial-match=4, other=0
+```
 
-- **Model GPU footprint**
-    - `gpu`: 100% of model
-    - `cpu`: ~6% (attention/embedding only)
-    - `residency`: ~30% (attention + small expert cache)
-- **KV cache** per token from GGUF dimensions
-- **Draft model + draft KV**
-- **MTP overhead** (5% of model, capped 0.5–2 GiB)
-- **Compute buffers** (512 MiB + ubatch × 256 B)
-- **System reserve** (256 MiB)
-- **SSD hot/warm RAM** (if enabled)
+The (batch, ubatch) component is a small tiebreaker. The real decision
+driver is the GPU memory check + system memory check.
 
-The GPU budget is computed in `llama-run.sh` as:
+## Detune steps (phase 2)
 
-    min(VRAM + GTT, total_system_RAM - OS_reserve)
+If no combination fits in phase 1, phase 2 applies these steps in order
+until something fits:
 
-This is crucial for unified‑memory APUs; it prevents overcommitting
-GPU‑accessible memory beyond what the OS can spare.
+1. Reduce KV cache to q8_0
+2. Reduce KV cache to q4_0
+3. Reduce NGL by 10%
+4. Reduce SSD hot/warm RAM by half
+5. Drop speculative draft
+6. Drop SSD cache
+7. Reduce ubatch by half (clamped at 512)
+8. Reduce ctx (cascading values 262144 -> 196608 -> 131072 -> 98304 -> 65536)
 
-### 4. Scored Search (Phase 1)
+## Edge cases and known issues
 
-The solver builds a priority list of all valid combinations of:
+### Hybrid SSM/MoE (qwen3next)
 
-- Strategy: `gpu` (score 300), `cpu` (score 250), `residency` (score 200)
-- Context: 128K (100), 96K (95), 196K (90), 262K (85), 64K (80)
-- KV: f16 (30), q8_0 (20), q4_0 (10)
-- Draft: enabled (5), disabled (0)
+`qwen3next` is detected as `is_ssm=true` in `_scan_gguf_arch` (the GGUF has
+`qwen3next.ssm.*` keys plus `qwen3next.expert_count > 0`). The SSM branch
+takes priority over MoE in the optimistic defaults, picking ubatch=1024
+which matches the empirical peak (qwen3next 80B Q8_0: 762 pp at ub=1024 vs
+537 at ub=4096).
 
-Final score = `strategy*1000 + ctx*10 + kv + draft`.
+### Models with misleading filenames
 
-The first combination that fits both GPU and system memory budgets and
-leaves at least the minimum required cache RAM wins.
+Some MoE models (Laguna-S-2.1, Qwen3-Coder-Next, GLM-4.7-Flash) don't match
+the filename MoE regex `moe|a3b|a8b|flash|expert|gpt-oss`. The GGUF scanner
+in `llama-run.sh::_scan_gguf_arch` reads the first 1 MB of the GGUF (up from
+the original 16 KB) and checks for `expert_count` to set `is_moe=true`. This
+catches all known MoE architectures.
 
-**Strategy selection rules**:
+### 8192 batch for very large MoE
 
-- Non-MoE/dense/SSM models: only `gpu` is valid (no experts to offload or
-  evict). `cpu` and `residency` are skipped entirely.
-- If the model is **MoE** and **model size > 80% of GPU budget** and
-  the model fits in system RAM with an 8 GiB OS reserve, `cpu` is
-  preferred over `residency`. `residency` is skipped entirely.
-- Otherwise (MoE), the order is `gpu -> residency -> cpu`.
-- On low‑VRAM systems (<32 GiB GPU budget), MoE models:
-    - Context is capped at 64K.
-    - f16 KV is removed; only q8_0 / q4_0 are considered.
+The data shows 8192 batch outperforms 4096 by 5-20% on prefill for models
+>=60 GB on Halo (gpt-oss 120B, Laguna 118B, qwen35moe 122B, deepseek4). The
+solver's optimistic default for >=100 GB is 4096/8192 and for 60-100 GB is
+2048/8192. The phase-1 candidates list always includes 8192 as a fallback
+so the memory check has it on the table.
 
-### 5. Cache RAM Allocation
+### Decode (tg) is bandwidth-bound
 
-After a config is chosen, the solver computes **cache RAM from system
-memory leftover**, not GPU leftover:
+Across all 17 benchmark sweeps, tg varies <2% across the entire
+(batch, ubatch) range. Tuning (batch, ubatch) moves pp but not tg. So
+`vram-bandwidth-limited` decode speed is a hardware characteristic, not
+something the solver can tune.
 
-- Calculate system memory needed by the chosen config (excluding caches).
-- Subtract from `total_system_RAM - OS_reserve`.
-- Take the smaller of this leftover and the GPU leftover.
-- Apply 10% headroom, then cap at 25% of total RAM.
-- Split between prompt cache (`--cache-ram`) and SSD cache (if enabled),
-  with SSD capped at 1 GiB.
+## Benchmark data (llama-bench, 2026-08-28)
 
-The prompt cache size is stored in `SOLVER_CACHE_RAM`; the SSD hot/warm
-sizes are stored in `SOLVER_SSD_HOT_RAM` and `SOLVER_SSD_WARM_RAM`.
+| Hardware | Model | Size | Peak (b/u) | Peak pp (t/s) |
+|----------|-------|-----:|-----------:|--------------:|
+| Halo | deepseek2 30B.A3B Q8_0 | 33 GB | 4096/4096 | 501.6 |
+| Halo | deepseek4 IQ3_XXS | 97 GB | 8192/4096 | 287.9 |
+| Halo | gemma4 26B.A4B Q5_K_M | 20 GB | 4096/4096 | 1509.2 |
+| Halo | gpt-oss 120B Q8_0 | 60 GB | 8192/4096 | 1116.8 |
+| Halo | gpt-oss 20B Q6_K | 11 GB | 2048/4096 | 1722.2 |
+| Halo | Laguna 118B Q4_K_M | 68 GB | 8192/2048 | 595.0 |
+| Halo | Laguna 118B Q5_K_M | 82 GB | 8192/4096 | 607.3 |
+| Halo | minimax-m2 230B Q2_K_M | 70 GB | 4096/4096 | 517.6 |
+| Halo | qwen3moe 235B IQ2_M | 73 GB | 8192/2048 | 234.1 |
+| Halo | qwen35 27B Q8_0 (DENSE) | 33 GB | 4096/1024 | 127.0 |
+| Halo | qwen35 27B Q4_K (DENSE) | 29 GB | 4096/1024 | 170.1 |
+| Halo | qwen35moe 122B Q4_K | 73 GB | 8192/2048 | 443.4 |
+| Halo | qwen35moe 122B Q5_K | 85 GB | 8192/2048 | 418.9 |
+| Halo | qwen35moe 35B Q8_0 | 36 GB | 2048/1024 | 1094.5 |
+| Halo | qwen3next 80B Q8_0 (HYBRID) | 80 GB | 4096/1024 | 762.3 |
+| Halo | qwen4exp A3B Q4_K (Q4EXP) | 104 GB | 4096/2048 | 230.6 |
+| 7840U | gemma4 26B Q5_K | 20 GB | 4096/4096 | 1509.2 |
+| 7840U | gpt-oss 20B Q6_K | 11 GB | 2048/4096 | 1722.2 |
+| 7840U | qwen35moe 35B Q4_K | 21 GB | 4096/2048 | 418.1 |
+| 7840U | qwen35 27B Q4_K (DENSE) | 29 GB | 4096/1024 | 170.1 |
 
-## Detune Safety Net
+Builds tested: f658fc5af (10809) on 7840U, 54e51d11f (10808) on Halo.
 
-If Phase 1 finds no fit, the solver falls back to the absolute minimum:
+## Solver accuracy
 
-    ctx = MIN_CTX (default 65536)
-    KV = q4_0/q4_0
+After the 2026-08-28 refactor, the solver picks within 5% of the empirical
+peak for 11 of 13 halo models tested, and within 5% for both 7840U models
+tested. The remaining losses are 5-15% on models where the peak (batch, ubatch)
+is a specific point (e.g. 8192/2048) that the candidates list includes but
+loses the scoring tiebreaker to the more conservative 4096/2048 default. This
+is acceptable for a generic solver that doesn't have model-specific tuning.
 
-If even that does not fit, `llama-run.sh` prints an error and exits.
-
-Phase 2 performs fine‑grained detunes if the chosen config still
-exceeds budget: reduce KV (q8→q4), reduce NGL, reduce SSD RAM,
-drop draft, drop SSD, reduce ubatch. Each step is applied only once.
-
-## Override Precedence
-
-Lowest to highest:
-
-1. Built‑in defaults (solver starts here)
-2. System detection (GPU budget, hardware tier)
-3. Solver output
-4. User overrides via env vars and CLI flags
-
-User overrides recognized by `apply_user_overrides()`:
-
-| Override                  | Source                        |
-|---------------------------|-------------------------------|
-| `USER_CTX_SIZE`           | `--ctx-size`                  |
-| `KV_CACHE_K_OVERRIDE`     | `--kv-cache-type`             |
-| `KV_CACHE_V_OVERRIDE`     | `--kv-cache-type`             |
-| `LLAMA_THREADS_OVERRIDE`  | `--threads`                   |
-| `MOE_UBATCH_OVERRIDE`     | env                           |
-| `OVERRIDE_UBATCH_SIZE`    | `--ubatch-size`               |
-| `OVERRIDE_CACHE_RAM`      | `--cache-ram`                 |
-| `_SSD_DISABLE`            | `--no-ssd-cache`              |
-| `OVERRIDE_NGL`            | `-ngl` / `--gpu-layers`       |
-| `OVERRIDE_FIT`            | `--fit on`                    |
-| `OVERRIDE_REASONING_BUDGET`| `--reasoning-budget`          |
-
-Note: `LLAMA_SSD_HOT_RAM`, `LLAMA_SSD_WARM_RAM`, `LLAMA_THREADS`, and
-`LLAMA_KV_CACHE_TYPE_K` are **defaults**, not overrides. To override the
-solver, use the corresponding `*_OVERRIDE` variable or CLI flag.
-
-## Hardware Notes
-
-### Strix Halo (Nimo) – 128 GB RAM, ~63 GB GPU budget
-
-- SSD cache is **disabled** because serialization overhead reduces prompt
-  throughput by 20–30%.
-- Large MoE models (e.g., DeepSeek‑V4‑Flash 97 GB) are run with
-  **CPU‑MoE + `--load-mode none`**. The model sits in system RAM; the
-  GPU handles only attention and KV. This avoids Vulkan OOM and
-  utilises the full 128 GB RAM.
-
-### AYANEO Flip – 26 GB RAM, 22 GB GPU budget
-
-- SSD cache is **enabled** but capped to ~1 GiB.
-- MoE models are run with **residency** or **CPU–MoE** if small enough.
-  Non-MoE dense models use the `gpu` strategy only.
-- Context is limited to 64K for MoE models; KV is q8_0 or q4_0.
-
-### Low‑RAM systems (<32 GB total RAM)
-
-- Prompt cache is capped at 2048 MiB.
-- OS reserve for handheld tier is 4 GiB (not 8 GiB); for standard/halo it
-  is 8 GiB. The reserve protects OS responsiveness under GPU memory pressure.
-- SSD cache default: 512 MiB hot + 512 MiB warm.
-
-## Per‑Model Architecture Handling
-
-- **Hybrid SSM models** (Qwen3.5/3.6, Qwen3Next):
-  Only ~25% of layers are attention layers. The solver reads
-  `full_attention_interval` and scales KV cache accordingly.
-- **DeepSeek MLA models**:
-  KV cache is very small; f16 at full context usually fits.
-- **Pure SSM models** (Mamba, Jamba, RWKV):
-  No KV cache. The solver skips KV accounting and uses the SSM profile.
-- **MTP models**:
-  The solver adds 5% model size (capped 0.5–2 GiB) to both GPU and
-  system memory estimates to cover speculative decoding overhead.
-- **Qwen3.8-Flash-Next (qwen4exp)**:
-  Has a PLE n-gram embedding (~40% of model) that is always on GPU and
-  not offloadable by reducing -ngl. The solver subtracts it from the GPU
-  footprint in `_opt_model_gpu_footprint` and `llama-run.sh` adds
-  `-ot per_layer_token_embd.weight=CPU` to offload the PLE to CPU,
-  keeping all MoE computation on GPU (2x faster decode than --cpu-moe).
-  `full_attention_interval=4` means only 12/48 layers store KV cache
-  (GDN layers use linear attention). f16 KV is required — quantized KV
-  crashes the QSA assert. MTP is enabled only when the GGUF contains
-  `nextn_predict_layers` (Unsloth quants typically don't include them).
-
-## Files
-
-- `scripts/optimize.sh` – solver module (sourced)
-- `scripts/read_gguf_kv.py` – GGUF v3 metadata reader
-- `llama-run.sh` – integration in `assign_profile_solver()`
-- `scratch/test-solver.sh` – unit test harness
-- `scratch/test-solver-multi.sh` – multi-model comparison
-- `scratch/bench-solver-sweep.sh` – pp/tg sweep across ubatch + KV types
-
+To override the solver's choice: use `--ubatch-size N` and `--batch-size N`
+on the `llama-run.sh` command line. The overrides win.

@@ -652,7 +652,12 @@ _scan_gguf_arch() {
     local gguf_path="$1"
     [[ ! -f "$gguf_path" || ! -r "$gguf_path" ]] && return 0
     local tmp=$(mktemp /tmp/llama-scan-XXXXXX)
-    dd if="$gguf_path" of="$tmp" bs=16384 count=1 2>/dev/null || { rm -f "$tmp"; return 0; }
+    # Read the first 1 MB to cover GGUF metadata (most metadata lives in the
+    # first few KB, but architecture-specific keys like `laguna.expert_count`
+    # or `qwen4exp.*` may appear later in the kv block). 1 MB is more than
+    # enough for the gguf header + tens of thousands of metadata keys while
+    # still being O(1 ms) on any modern disk.
+    dd if="$gguf_path" of="$tmp" bs=1024 count=1024 2>/dev/null || { rm -f "$tmp"; return 0; }
     if grep -q 'expert_count' "$tmp" 2>/dev/null; then is_moe=true; fi
     if grep -q 'ssm\.' "$tmp" 2>/dev/null && ! grep -q 'full_attention_interval' "$tmp" 2>/dev/null && [[ "${is_moe:-false}" != "true" ]]; then
         is_ssm=true
@@ -665,6 +670,15 @@ _scan_gguf_arch() {
     # draft block, but the GGUF may not include MTP tensors (Unsloth quants
     # typically don't ship them). is_mtp is set only if nextn_predict_layers
     # is found in the GGUF metadata above.
+    # Qwen3.5+ hybrid (qwen3next / Qwen3-Coder-Next): has BOTH MoE
+    # (qwen3next.expert_count > 0) AND linear-attention (qwen3next.ssm.*)
+    # layers. The bulk of the work is linear recurrence which doesn't
+    # benefit from larger ubatch. Treat as SSM/hybrid so ubatch=1024
+    # wins, matching the benchmark data (qwen3next 80B Q8_0: 762 pp at
+    # ub=1024 vs 537 at ub=4096).
+    if grep -q 'qwen3next' "$tmp" 2>/dev/null; then
+        is_ssm=true
+    fi
     if grep -q 'qwen4exp' "$tmp" 2>/dev/null; then
         is_qwen4exp=true
     fi
