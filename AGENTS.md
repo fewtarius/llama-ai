@@ -204,11 +204,20 @@ tuning moves.
 | halo | MoE huge | >=100 GB | 4096 | 8192 |
 | halo | SSM / hybrid | any | 1024 | 4096 |
 | halo | qwen4exp | any | 2048 | 4096 |
+| halo | MLA (DeepSeek-V2/V3/V4, GLM-4.x) | any | 4096 | 8192 |
 | standard | dense | any | 1024 | 2048 |
 | standard | MoE | any | 2048 | 2048 |
 | standard | SSM / hybrid | any | 1024 | 2048 |
 | handheld | dense | any | 512 | 1024 |
 | handheld | MoE | any | 1024 | 2048 |
+
+The MLA row wins for collapsed-KV architectures (`head_count_kv=1`,
+e.g. DeepSeek-V4-Flash, GLM-4.7-Flash). Latent attention uses a
+fraction of the per-token KV cache of non-MLA, so the activation
+budget can carry a heavier ubatch. CachyLLama's Lightning Indexer
+fused op (gated on Vulkan subgroup_size_control, applied via
+`--flash-attn auto` which is the default) accelerates the MLA
+prefill path 2-3x when the kernel gates are satisfied.
 
 The phase-1 scoring loop also tries alternative (batch, ubatch) pairs from
 the candidates list (the optimistic default + 1024, 2048, 4096, 8192 in

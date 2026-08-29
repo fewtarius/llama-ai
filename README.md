@@ -97,6 +97,7 @@ the best configuration -- it is the single configuration path.
    | halo | MoE huge | >=100 GB | 4096 | 8192 |
    | halo | SSM / hybrid | any | 1024 | 4096 |
    | halo | qwen4exp | any | 2048 | 4096 |
+   | halo | MLA (DeepSeek-V2/V3/V4, GLM-4.x) | any | 4096 | 8192 |
    | standard | dense | any | 1024 | 2048 |
    | standard | MoE | any | 2048 | 2048 |
    | standard | SSM / hybrid | any | 1024 | 2048 |

@@ -94,6 +94,48 @@ _opt_gguf() {
 }
 
 # -----------------------------------------------------------------------------
+# MLA (Multi-head Latent Attention) detection
+# -----------------------------------------------------------------------------
+# MLA collapses multiple KV heads into a single latent tensor. The signature
+# in GGUF metadata is `head_count_kv=1` with `key_length >> value_length` (e.g.
+# 576/512 for deepseek2). Standard transformers have head_count_kv equal to
+# (or close to) head_count with key_length == value_length.
+#
+# MLA models have radically smaller per-token KV cache: 1 latent head instead
+# of N, so the per-token cost is ~1/N of a comparable non-MLA model. This
+# means MLA can support much larger ubatch on the same memory budget, and
+# the per-token work shifts from KV-cache bandwidth to the indexer/fused
+# attention path (CachyLLama's Lightning Indexer for DSV4).
+#
+# Reads GGUF metadata directly from SOLVER_GGUF so it's callable from
+# _opt_start_optimistic before the full solve_optimal_config pass.
+_opt_is_mla() {
+    local hckv="${SOLVER_GGUF[head_count_kv]:-${SOLVER_GGUF[n_head_kv]:-0}}"
+    local hc="${SOLVER_GGUF[head_count]:-${SOLVER_GGUF[n_head]:-0}}"
+    local kl="${SOLVER_GGUF[key_length]:-0}"
+    local vl="${SOLVER_GGUF[value_length]:-0}"
+    # Strong signal: head_count_kv=1 (single latent head).
+    [[ "${hckv:-0}" -eq 1 ]] && return 0
+    # Soft signal: key_length and value_length differ significantly AND
+    # head_count_kv is small. MLA has K compressed to a smaller latent,
+    # V often equal or slightly different. If kl differs from vl by >20%
+    # AND hckv is small (<=2), treat as MLA.
+    if [[ -n "$kl" && -n "$vl" && "$kl" -gt 0 && "$vl" -gt 0 ]]; then
+        local diff_pct=$(( (kl - vl) * 100 / kl ))
+        [[ $diff_pct -gt 20 && "${hckv:-0}" -le 2 ]] && return 0
+    fi
+    # Arch prefix fallback (covers new MLA architectures before metadata
+    # is added to the detection script).
+    local key
+    for key in "${!SOLVER_GGUF[@]}"; do
+        case "$key" in
+            deepseek2.*|deepseek3.*|deepseek4.*|glm4.*) return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# -----------------------------------------------------------------------------
 # Qwen3.8-Flash-Next (qwen4exp) architecture detection and helpers
 # -----------------------------------------------------------------------------
 # qwen4exp has unique memory characteristics the solver must account for:
@@ -538,6 +580,18 @@ _opt_start_optimistic() {
         is_qwen4exp=false
     fi
 
+    # Detect MLA (Multi-head Latent Attention): collapsed-KV architectures
+    # like DeepSeek-V2/V3/V4 and GLM-4.x. These have much smaller per-token
+    # KV cache (1 latent head instead of N), so they can run with larger
+    # ubatch on the same memory budget and benefit from CachyLLama's
+    # Lightning Indexer fused op. See _opt_is_mla for the detection
+    # heuristic.
+    if _opt_is_mla; then
+        is_mla=true
+    else
+        is_mla=false
+    fi
+
     local ctx_train=$(_opt_gguf context_length 32768)
     local ctx_cap=$(( ctx_train * 4 ))
     [[ $ctx_cap -gt 1048576 ]] && ctx_cap=1048576
@@ -599,6 +653,38 @@ _opt_start_optimistic() {
             standard) SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
             handheld) SOLVER_UBATCH=512;  SOLVER_BATCH=1024 ;;
             *)        SOLVER_UBATCH=1024; SOLVER_BATCH=2048 ;;
+        esac
+    elif [[ "${is_mla:-false}" == "true" ]]; then
+        # MLA (Multi-head Latent Attention): DeepSeek-V2/V3/V4, GLM-4.x,
+        # and future collapsed-KV architectures. KV cache is ~1/N of a
+        # comparable non-MLA model (1 latent head vs N), so the activation
+        # memory budget for large ubatch is much smaller. The per-token
+        # work shifts to the indexer/fused-attention path; CachyLLama's
+        # Lightning Indexer for DSV4 gives a 2-3x prefill speedup when
+        # the kernel gates (subgroup_size_control, K-type) are satisfied.
+        #
+        # Defaults are tuned to fit the latent attention + indexer
+        # path. For 33 GB GLM-4.7-Flash and 97 GB DeepSeek-V4-Flash
+        # on Halo, ub=4096 batch=8192 fits comfortably at 131k f16 KV.
+        # The non-MLA MoE branch above would pick ub=2048 batch=2048 for
+        # the same model sizes, leaving 10-20% on the table because
+        # MLA's smaller KV cache can carry a heavier prefill.
+        case "$effective_tier" in
+            halo)
+                # Always use the largest ubatch the kernel can schedule;
+                # the latent path doesn't OOM at 4096 the way a 4096
+                # ubatch on a non-MLA 97 GB model would.
+                SOLVER_UBATCH=4096; SOLVER_BATCH=8192
+                ;;
+            standard)
+                SOLVER_UBATCH=4096; SOLVER_BATCH=2048
+                ;;
+            handheld)
+                SOLVER_UBATCH=2048; SOLVER_BATCH=2048
+                ;;
+            *)
+                SOLVER_UBATCH=4096; SOLVER_BATCH=8192
+                ;;
         esac
     elif [[ "${is_moe:-false}" == "true" ]]; then
         # MoE: branch on size relative to the GPU budget.

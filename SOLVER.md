@@ -29,6 +29,7 @@ entire (batch, ubatch) range — prefill (pp) is what tuning moves.
 | MoE huge (>=100 GB) | >=100 | 4096 | 8192 | 4096 ubatch needed to amortize the heavy per-token work |
 | SSM / hybrid (qwen3next) | any | 1024 | 4096 | Linear-attention layers don't benefit from larger batches |
 | qwen4exp (Qwen3.8-Flash-Next) | any | 2048 | 4096 | PLE + hybrid attention |
+| MLA (DeepSeek-V2/V3/V4, GLM-4.x) | any | 4096 | 8192 | Latent attention has ~1/N KV cache vs non-MLA, so ubatch can carry more; Lightning Indexer fused op in CachyLLama accelerates the indexer/attention split when subgroup_size_control gates pass |
 
 ### Standard (7840U, ~24 GB GPU-visible, 32 GB RAM)
 
