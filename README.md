@@ -16,8 +16,7 @@ the Minisforum UM580 (5800H / 16 GB), plus any other AMD APU in the detection ma
 
 Profiles are computed at runtime by an optimistic-first solver
 (`scripts/optimize.sh`) that reads GGUF metadata and iteratively detunes until
-the configuration fits the GPU budget. A legacy preset table is preserved as a
-fallback (`--noauto`).
+the configuration fits the GPU budget.
 
 ---
 
@@ -75,34 +74,52 @@ thinking tokens per response (default: 8192).
 
 ### Solver and profile selection
 
-`llama-run.sh` runs an **optimistic-first solver** by default (in
-`scripts/optimize.sh`). The solver reads actual GGUF metadata and system
-memory/GPU budgets to pick the best configuration -- it is the single
-configuration path. The legacy preset table is only used with `--noauto`.
+`llama-run.sh` runs an **optimistic-first solver** (in `scripts/optimize.sh`).
+The solver reads actual GGUF metadata and system memory/GPU budgets to pick
+the best configuration -- it is the single configuration path.
 
 **Solver pipeline:**
 
 1. **Read GGUF metadata** via `scripts/read_gguf_kv.py` -- block count,
    `head_count_kv`, `key/value_length`, `full_attention_interval` (for hybrid
    SSM models), `nextn_predict_layers` (for MTP), `expert_count` (for MoE),
-   training context.
+   training context. Reads up to 1 MB of the GGUF to catch architecture-
+   specific keys like `laguna.expert_count` or `qwen3next.expert_count`.
 
-2. **Start optimistically** -- f16/f16 KV, training context (or 4x capped),
-   SSD cache on (Halo: off), draft model enabled if found, ubatch 2048
-   (Halo) / 1024 (standard) / 512 (handheld), threads = physical cores
-   (batch) / half (gen), MoE strategy = `gpu`.
-- **Checkpoints**: auto-scaled to context size (base 8 at 65K ctx, +1 per
-   8K, capped at 16 during pre-fit / 32 after phase 2). Min-step = ctx /
-   checkpoints (floor 8K, or 32K when SSD is off).
+2. **Start optimistically** with the per-archetype (batch, ubatch) defaults
+   derived from llama-bench sweeps on 17 model/hardware combinations:
+
+   | Tier | Archetype | Size | ubatch | batch |
+   |------|-----------|------|--------|-------|
+   | halo | dense | any | 1024 | 4096 |
+   | halo | MoE small | <60 GB | 1024 | 2048 |
+   | halo | MoE large | 60-100 GB | 2048 | 8192 |
+   | halo | MoE huge | >=100 GB | 4096 | 8192 |
+   | halo | SSM / hybrid | any | 1024 | 4096 |
+   | halo | qwen4exp | any | 2048 | 4096 |
+   | standard | dense | any | 1024 | 2048 |
+   | standard | MoE | any | 2048 | 2048 |
+   | standard | SSM / hybrid | any | 1024 | 2048 |
+   | handheld | dense | any | 512 | 1024 |
+   | handheld | MoE | any | 1024 | 2048 |
+
+   Plus: f16/f16 KV, training context (or 4x capped), SSD cache on (Halo:
+   off), draft model enabled if found, threads = physical cores (batch) /
+   half (gen), MoE strategy = `gpu`. **Checkpoints**: auto-scaled to
+   context size (base 8 at 65K ctx, +1 per 8K, capped at 16 during pre-fit
+   / 32 after phase 2). Min-step = ctx / checkpoints (floor 8K, or 32K
+   when SSD is off).
 
 3. **Score and search** -- builds a priority list of all valid combinations:
    - **Strategy**: `gpu` (300), `cpu` (250), `residency` (200)
    - **Context**: 128K (100), 96K (95), 196K (90), 262K (85), 64K (80)
    - **KV type**: f16 (30), q8_0 (20), q4_0 (10)
    - **Draft**: enabled (5), disabled (0)
-   
-   Score = `strategy*1000 + ctx*10 + kv + draft`. First combo fitting both
-   GPU and system budgets with minimum cache RAM wins.
+   - **Batch/ubatch**: optimistic default (6), partial match (4), other (0)
+
+   Score = `strategy*1000 + ctx*10 + kv + draft + batchub`. First combo
+   fitting both GPU and system budgets with minimum cache RAM wins. Memory
+   pressure is the real decision driver; the scoring is just a tiebreaker.
 
    **Strategy selection rules:**
    - Non-MoE/dense/SSM models: only `gpu` is valid (no experts to offload or
@@ -116,12 +133,19 @@ configuration path. The legacy preset table is only used with `--noauto`.
 4. **Cache RAM allocation** -- from **system memory leftover**, not GPU
    leftover: total RAM - OS reserve - config system cost, capped at 25% of
    total RAM with 10% headroom, split between prompt cache and SSD (SSD
-   capped at 1 GiB).
+   capped at 1 GiB). With n_parallel=1 the prompt cache is set to 0 -- the
+   in-memory checkpoint ring covers the same use case at zero cost.
 
 5. **Detune safety net** -- if no fit: ctx = 65536, KV = q4_0/q4_0. If
    still no fit, exits with error. Phase 2 fine-grained detunes: reduce
    KV (q8->q4), reduce NGL, reduce SSD RAM, drop draft, drop SSD, reduce
    ubatch -- each step once.
+
+The solver maps its output to a profile name (`halo-moe-large`,
+`std-dense-small`, etc.) for `--print-profile` so users have a single,
+stable identifier regardless of which combination was picked. See
+[SOLVER.md](SOLVER.md) for the full algorithm, benchmark data, and
+hardware notes.
 
 **Override precedence** (low -> high):
 
@@ -160,26 +184,6 @@ reduction actually applies at launch time (not just in profile output).
 `OVERRIDE_FIT` sets `SOLVER_NGL=-1` to let `llama-server` auto-fit, which skips
 the cap.
 
-**Legacy preset table** (`--noauto` only -- kept for script compatibility):
-
-| Preset | When | ctx | KV | batch/ubatch | SSD | cpu-moe |
-|--------|------|-----|-----|--------------|-----|---------|
-| `halo-moe-large` | Strix Halo, MoE, >50 GB | 131072 | q8_0 | 2048/512 | off | — |
-| `halo-moe-small` | Strix Halo, MoE, ≤50 GB | 196608 | f16 | 2048/512 | off | — |
-| `halo-dense` | Strix Halo, dense (any) | 131072 | f16 | 2048/512 | off | — |
-| `std-moe-large` | non-Halo, MoE, >18 GB | 65536 | q8_0 | 1024/256 | on | auto¹ |
-| `std-moe-small` | non-Halo, MoE, ≤18 GB | 32768 | q8_0 | 1024/256 | on | auto¹ |
-| `std-dense-large` | non-Halo, dense, >15 GB | 32768 | q4_0 | 1024/256 | on | — |
-| `std-dense-small` | non-Halo, dense, ≤15 GB | 32768 | q8_0 | 1024/256 | on | — |
-| `ssm` | Mamba / Jamba / RWKV | 65536 (262144 on halo) | q8_0 | 1024/512 | off | — |
-
-¹ `--cpu-moe + --load-mode none` added when model ≥23 GiB to avoid the mmap
-+ `--moe-expert-residency` page-fault pathology. Halo never triggers this.
-
-The solver maps its output to a legacy profile name for `--print-profile`
-so existing scripts keep working. See [SOLVER.md](SOLVER.md) for the full
-algorithm, benchmark data, and hardware notes.
-
 ### Hardware-specific behavior
 
 **Strix Halo (Nimo) — 128 GB RAM, ~63 GB GPU budget**
@@ -189,8 +193,10 @@ algorithm, benchmark data, and hardware notes.
 
 **AYANEO Flip — 26 GB RAM, 22 GB GPU budget**
 - SSD cache **enabled** but capped ~1 GiB.
-- MoE models: **residency** (default) or **CPU-MoE** if small enough.
-- MoE context limited to 64K; KV is q8_0 or q4_0.
+- MoE strategy: `gpu` if the model fits, otherwise `residency` or `cpu`
+  per the solver's strategy rules (see "Solver pipeline" above).
+- Per-archetype defaults: dense ubatch=1024 batch=2048, MoE ubatch=2048
+  batch=2048 (5-10% faster than the old 1024/2048).
 
 **Low-RAM systems (<32 GB total)**
 - Prompt cache capped at 2048 MiB.
@@ -330,9 +336,8 @@ disabled. Large dense models get optimized batch sizes.
 
 The profile is logged at startup, e.g.:
 ```
-Auto profile (solver): std-moe-large (35GB, MoE=true, SSM=true)
-Solver chose: ctx=262144 KV=f16/f16 ubatch=4096 batch=4096 threads=8/16
-Solver detune steps: reduce SSD RAM, increase context, enable f16 KV
+Auto profile (solver): halo-moe-small (36GB, MoE=true, SSM=false, MTP=true, qwen4exp=false)
+Solver chose: ctx=131072 KV=f16/f16 ubatch=1024 batch=2048 threads=32/16
 ```
 
 ### Hybrid MoE architectures
@@ -587,9 +592,9 @@ per-model server logs and drilldowns.
   no amdgpu lockup_timeout observed. The conservative default (8) is kept in
   CachyLLama to avoid regressions on other APUs.
 
-- All models use the optimistic-first solver (`scripts/optimize.sh`) — no
-  `--noauto` legacy presets. Profiles are computed from GGUF metadata and the
-  26 GB OS-visible / 22 GiB GPU budget.
+- All models use the optimistic-first solver (`scripts/optimize.sh`).
+  Profiles are computed from GGUF metadata and the 26 GB OS-visible /
+  22 GiB GPU budget.
 
 - Full per-model logs and drilldowns in `benchmarks/vulkan/<model>/`:
   `summary.md` (this table), `cache/analysis.md`, `bench/report.md`,

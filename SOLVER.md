@@ -10,7 +10,6 @@ combination space. User overrides applied last.
 2. **System detection** (GPU memory, hardware tier via `detect-gpu.sh`)
 3. **Solver output** (chosen from a scored combination matrix)
 4. **User overrides** via env vars and CLI flags
-5. `--noauto` disables the solver and uses the legacy preset table in AGENTS.md
 
 ## Optimistic defaults (per archetype)
 

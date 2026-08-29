@@ -232,13 +232,6 @@ User overrides recognized by `apply_user_overrides()`:
 - `--no-ssd-cache`
 - `--fit on`
 
-### Legacy preset table (no longer used)
-
-The `--noauto` escape hatch was deprecated in 2026-08; the solver is now
-the only path. The historical preset table is kept here for reference
-only — these values were the pre-solver defaults and may not match
-current behavior. See [SOLVER.md](SOLVER.md) for the live tuning logic.
-
 See [SOLVER.md](SOLVER.md) for the full algorithm, benchmark data, and edge-case
 analysis.
 
