@@ -26,6 +26,29 @@ _OPT_GIB=1073741824
 : "${MIN_CTX:=65536}"
 
 # -----------------------------------------------------------------------------
+# Standard context sizes, largest first. Capped at 1M (llama.cpp hard limit).
+# Used for phase-1 candidate generation and phase-2 detune cascading.
+# -----------------------------------------------------------------------------
+_OPT_CTX_CANDIDATES=(1048576 524288 262144 196608 131072 98304 65536)
+
+_opt_build_ctx_candidates() {
+    local max_ctx="$1"
+    [[ $max_ctx -gt 1048576 ]] && max_ctx=1048576
+    local candidates=()
+    for sz in "${_OPT_CTX_CANDIDATES[@]}"; do
+        [[ $sz -le $max_ctx ]] && candidates+=("$sz")
+    done
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        candidates=("$MIN_CTX")
+    fi
+    local result=""
+    for c in "${candidates[@]}"; do
+        result="${result:+$result }$c"
+    done
+    echo "$result"
+}
+
+# -----------------------------------------------------------------------------
 # GGUF metadata reader
 # -----------------------------------------------------------------------------
 declare -A SOLVER_GGUF=()
@@ -605,9 +628,8 @@ _opt_start_optimistic() {
     fi
 
     local ctx_train=$(_opt_gguf context_length 32768)
-    local ctx_cap=$(( ctx_train * 4 ))
-    [[ $ctx_cap -gt 1048576 ]] && ctx_cap=1048576
-    SOLVER_CTX_SIZE="$ctx_cap"
+    SOLVER_CTX_SIZE="$ctx_train"
+    [[ $SOLVER_CTX_SIZE -gt 1048576 ]] && SOLVER_CTX_SIZE=1048576
     [[ $SOLVER_CTX_SIZE -lt $MIN_CTX ]] && SOLVER_CTX_SIZE=$MIN_CTX
 
     SOLVER_K_TYPE="f16"
@@ -859,7 +881,7 @@ _opt_start_optimistic() {
 _reduce_ctx() {
     local min_ctx=$MIN_CTX
     [[ $SOLVER_CTX_SIZE -le $min_ctx ]] && return 1
-    local ctx_values=(262144 196608 131072 98304 65536)
+    local ctx_values=(1048576 524288 262144 196608 131072 98304 65536)
     for c in "${ctx_values[@]}"; do
         if [[ $SOLVER_CTX_SIZE -gt $c && $c -ge $min_ctx ]]; then
             SOLVER_CTX_SIZE=$c
@@ -898,6 +920,9 @@ _reduce_ssd_ram() {
 
 _reduce_kv_q8_0() {
     [[ "${_SOLVER_DONE_kv_q8_0:-0}" == "1" ]] && return 1
+    # Only downgrade from f16/bf16; skip if already at q8 or q4 (upgrading
+    # would waste memory, not save it).
+    [[ "$SOLVER_K_TYPE" != "f16" && "$SOLVER_K_TYPE" != "bf16" ]] && return 1
     SOLVER_K_TYPE="q8_0"
     SOLVER_V_TYPE="q8_0"
     _SOLVER_DONE_kv_q8_0=1
@@ -907,6 +932,8 @@ _reduce_kv_q8_0() {
 
 _reduce_kv_q4_0() {
     [[ "${_SOLVER_DONE_kv_q4_0:-0}" == "1" ]] && return 1
+    # Only downgrade from f16 or q8; skip if already at q4.
+    [[ "$SOLVER_K_TYPE" == "q4_0" ]] && return 1
     SOLVER_K_TYPE="q4_0"
     SOLVER_V_TYPE="q4_0"
     _SOLVER_DONE_kv_q4_0=1
@@ -944,12 +971,12 @@ _opt_detune_steps() {
     cat <<'STEPS'
 _reduce_kv_q8_0
 _reduce_kv_q4_0
-_reduce_ngl
 _reduce_ssd_ram
 _drop_draft
 _drop_ssd
 _reduce_ubatch
 _reduce_ctx
+_reduce_ngl
 STEPS
 }
 
@@ -1128,8 +1155,10 @@ solve_optimal_config() {
     # -------------------------------------------------------------------------
     # Build scored combinations
     # -------------------------------------------------------------------------
-    local ctx_values=(262144 196608 131072 98304 65536)
-    local kv_qualities=("f16/f16" "q8_0/q8_0" "q4_0/q4_0")
+    local ctx_train=$(_opt_gguf context_length 32768)
+    local ctx_values=()
+    read -ra ctx_values <<< "$(_opt_build_ctx_candidates "$ctx_train")"
+    local kv_qualities=("f16/f16" "q8_0/q8_0")
 
     # Candidate (batch, ubatch) pairs to evaluate. The optimistic defaults
     # (SOLVER_BATCH / SOLVER_UBATCH) come first so the solver prefers them
@@ -1262,11 +1291,13 @@ solve_optimal_config() {
 
                             local ctx_score=0
                             case "$ctx" in
-                                131072) ctx_score=100 ;;
-                                98304)  ctx_score=95  ;;
-                                196608) ctx_score=90  ;;
-                                262144) ctx_score=85  ;;
-                                65536)  ctx_score=80  ;;
+                                1048576) ctx_score=110 ;;
+                                524288)  ctx_score=105 ;;
+                                262144)  ctx_score=100 ;;
+                                196608)  ctx_score=95  ;;
+                                131072)  ctx_score=90  ;;
+                                98304)   ctx_score=85  ;;
+                                65536)   ctx_score=80  ;;
                                 *)      ctx_score=$(( ctx / 1000 )) ;;
                             esac
 
@@ -1411,6 +1442,17 @@ solve_optimal_config() {
         SOLVER_CTX_SIZE=$MIN_CTX
         SOLVER_K_TYPE="q4_0"
         SOLVER_V_TYPE="q4_0"
+        # When phase 1 finds nothing, prefer CPU strategy for MoE models so
+        # the model goes to system RAM and only the on-GPU fraction + KV
+        # cache must fit in the GPU budget. Keeping SOLVER_MOE_STRATEGY="gpu"
+        # here would put the full model on GPU, requiring NGL reduction just
+        # to fit the weights — this skips the KV/ctx detune steps that have
+        # less quality impact. NGL stays at max so all layers remain on GPU
+        # (only 6% of MoE model bytes are GPU-resident under cpu strategy).
+        if [[ "${is_moe:-false}" == "true" ]]; then
+            SOLVER_MOE_STRATEGY="cpu"
+            SOLVER_LOAD_MODE="none"
+        fi
         # Note: 'no fit' message deferred to after phase 2. If phase 2 finds a
         # fit, the message is skipped so llama-run.sh's fast-fail doesn't
         # false-positive on a stale fallback message.
@@ -1618,12 +1660,12 @@ _opt_detune_steps_phase2() {
     cat <<'STEPS'
 _reduce_kv_q8_0
 _reduce_kv_q4_0
-_reduce_ngl
 _reduce_ssd_ram
 _drop_draft
 _drop_ssd
 _reduce_ubatch
 _reduce_ctx
+_reduce_ngl
 STEPS
 }
 

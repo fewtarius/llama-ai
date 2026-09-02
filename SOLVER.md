@@ -47,6 +47,26 @@ entire (batch, ubatch) range — prefill (pp) is what tuning moves.
 | MoE | 1024 | 2048 | MoE benefits from slightly larger ubatch than dense |
 | SSM | 512 | 1024 | Same as dense |
 
+### Context size candidates
+
+The solver reads the model's `context_length` from GGUF metadata (via
+`read_gguf_kv.py`) and uses it directly as the starting `SOLVER_CTX_SIZE`.
+Phase-1 candidate context sizes are generated dynamically via
+`_opt_build_ctx_candidates(context_length)`: the standard sizes
+`{1048576, 524288, 262144, 196608, 131072, 98304, 65536}` filtered to
+those ≤ the model's max, capped at 1M (llama.cpp hard limit).
+
+q4_0 KV cache is **not** a phase-1 candidate — it is reserved for phase 2
+as an absolute last resort. Phase 1 enumerates ctx from largest to smallest
+with KV types `{f16, q8_0}` in score order. The first combo that passes
+both GPU and system memory checks (including the `min_cache_ram_mib`
+leftover check) wins.
+
+If no phase-1 combo fits, phase 2 starts from the most memory-conservative
+fallback (`MIN_CTX` + `q4_0/q4_0` with CPU strategy for MoE models) and
+applies detune steps in priority order (q8 → q4 → SSD RAM → draft → SSD
+→ ubatch → ctx → NGL).
+
 ## Combination scoring
 
 For each (strategy, ctx, KV, draft, batch, ubatch) tuple, the solver computes
@@ -55,28 +75,44 @@ budget AND system memory wins.
 
 ```
 score = strategy_score * 1000      # gpu=300, cpu=250, residency=200
-      + ctx_score * 10             # 131072=100, 98304=95, 196608=90, 262144=85, 65536=80
-      + kv_score                   # f16=30, q8_0=20, q4_0=10
+      + ctx_score * 10             # 1048576=110, 524288=105, 262144=100, 196608=95,
+                                   # 131072=90, 98304=85, 65536=80
+      + kv_score                   # f16=30, q8_0=20
       + draft_score                # enabled=5
-      + batchub_score              # opt=6, partial-match=4, other=0
+      + batchub_score              # opt=2, partial-match=1, other=0
 ```
 
-The (batch, ubatch) component is a small tiebreaker. The real decision
-driver is the GPU memory check + system memory check.
+The ctx_score is monotonically increasing with context size, so the
+solver prefers the largest context that fits. The kv_score prefers f16
+over q8_0. q4_0 is NOT in phase 1 — it is a phase-2 detune step only,
+applied when no f16 or q8_0 configuration fits at any context size.
+
+Phase 1 enumerates (ctx from model max down to 128k, kv in {f16, q8_0})
+in score order. The (batch, ubatch) component is a small tiebreaker (max
++2) so it does not override the ctx/kv preference.
+
+The (batch, ubatch) component is a small tiebreaker (max +2) so it does
+not override the ctx/kv preference. The real decision driver is the GPU
+memory check + system memory check.
 
 ## Detune steps (phase 2)
 
-If no combination fits in phase 1, phase 2 applies these steps in order
-until something fits:
+If no combination fits in phase 1, phase 2 starts from the most
+memory-conservative fallback (MIN_CTX + q4_0/q4_0) and applies detune
+steps in priority order. The preference is: **q4_0 KV cache only when no
+choice, ctx below 128k only when no choice, reducing layers from GPU only
+when no choice.**
 
-1. Reduce KV cache to q8_0
-2. Reduce KV cache to q4_0
-3. Reduce NGL by 10%
-4. Reduce SSD hot/warm RAM by half
-5. Drop speculative draft
-6. Drop SSD cache
-7. Reduce ubatch by half (clamped at 512)
-8. Reduce ctx (cascading values 262144 -> 196608 -> 131072 -> 98304 -> 65536)
+The phase-2 detune order (first fit wins, each step applies at most once):
+
+1. Reduce KV cache to q8_0 (only downgrades from f16 — skipped if already q8 or q4)
+2. Reduce KV cache to q4_0 (only downgrades from f16/q8 — skipped if already q4)
+3. Reduce SSD hot/warm RAM by half
+4. Drop speculative draft model
+5. Drop SSD cache entirely
+6. Reduce ubatch by half (clamped at 512)
+7. Reduce ctx (cascading values 1048576 -> 524288 -> 262144 -> 196608 -> 131072 -> 98304 -> 65536)
+8. Reduce NGL by 10% per step (layers moved from GPU to CPU — absolute last resort)
 
 ## Edge cases and known issues
 
